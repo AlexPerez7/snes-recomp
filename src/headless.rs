@@ -159,13 +159,25 @@ fn nmi_flag_is_read_once_and_vblank_only_ends_the_frame() {
     let vblank: &[u8] = &[
         0xAD, 0x12, 0x42, 0x8D, 0x33, 0x21, // LDA $4212 -> $2133
         0xAD, 0x12, 0x42, 0x10, 0xFB, // LDA $4212 ; BPL
-        0x8D, 0x34, 0x21, // STA $2134
+        0x29, 0x80, 0x8D, 0x34, 0x21, // AND #$80 ; STA $2134
         0x80, 0xFE,
     ];
     let Some(r) = run("hl-hvbjoy", &[(0x8000, vblank)], &[0x8000], None, &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert_eq!(r.reg(0x2133), Some("reads=0 writes=1 last=00"), "{}", r.out);
     assert_eq!(r.reg(0x2134), Some("reads=0 writes=1 last=80"), "{}", r.out);
+
+    // Bit 6 (horizontal blank) is 0 at the start of a frame and becomes 1 before the frame ends, many times a frame.
+    let hblank: &[u8] = &[
+        0xAD, 0x12, 0x42, 0x29, 0x40, 0x8D, 0x35, 0x21, // LDA $4212 ; AND #$40 -> $2135
+        0xAD, 0x12, 0x42, 0x29, 0x40, 0xF0, 0xF9, // LDA $4212 ; AND #$40 ; BEQ
+        0x8D, 0x36, 0x21, // STA $2136
+        0x80, 0xFE,
+    ];
+    let Some(r) = run("hl-hblank", &[(0x8000, hblank)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(r.reg(0x2135), Some("reads=0 writes=1 last=00"), "{}", r.out);
+    assert_eq!(r.reg(0x2136), Some("reads=0 writes=1 last=40"), "{}", r.out);
 }
 
 #[test]
