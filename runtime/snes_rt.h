@@ -48,9 +48,21 @@ void rt_poll(Cpu *c);
 #define rt_tick(c) ((void)0)
 #endif
 
-#ifdef SNES_RT_CHECKS
+/* With SNES_RT_TRACE the runtime defines rt_block, the address of the block that started last. */
+#ifdef SNES_RT_TRACE
+extern uint32_t rt_block;
+#endif
+
+#if defined(SNES_RT_CHECKS) || defined(SNES_RT_TRACE)
 static inline void rt_check_flags(Cpu *c, uint32_t addr, uint8_t m, uint8_t x) {
+#ifdef SNES_RT_TRACE
+    rt_block = addr;
+#endif
+#ifdef SNES_RT_CHECKS
     if ((m != 2 && c->m != m) || (x != 2 && c->xf != x)) rt_flag_mismatch(c, addr);
+#else
+    (void)c; (void)m; (void)x;
+#endif
 }
 #else
 #define rt_check_flags(c, addr, m, x) ((void)0)

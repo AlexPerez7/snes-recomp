@@ -5,6 +5,7 @@
  * the generated C, defining SNES_RT_TICK (and SNES_RT_CHECKS to find width mismatches):
  *
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png]
+ *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]...
  *
  * The ROM is read from the file at run time and is never part of the generated sources.
  * Time is not cycle accurate: a frame is a fixed number of executed blocks.
@@ -139,7 +140,10 @@ static void oam_write(uint8_t v) {
     oam_byte = (oam_byte + 1) & 0x3FF;
 }
 
-uint8_t bus_read8(uint32_t a) {
+static int dma_active;
+static void bus_write8_raw(uint32_t a, uint8_t v);
+
+static uint8_t bus_read8_raw(uint32_t a) {
     uint32_t bank = (a >> 16) & 0xFF, off = a & 0xFFFF, b = bank & 0x7F;
     if (bank == 0x7E || bank == 0x7F) return wram[((bank & 1) << 16) | off];
     if (b < 0x40) {
@@ -183,6 +187,79 @@ uint8_t bus_read8(uint32_t a) {
     return 0;
 }
 
+/* ---- Trace: hardware reads and watched WRAM bytes, inside a window of frames ---- */
+
+uint32_t rt_block; /* address of the block that started last (set by rt_check_flags with SNES_RT_TRACE) */
+
+static int trace_window, trace_reads_on;
+static uint32_t trace_lo, trace_hi;
+static uint8_t watch[0x20000];
+static int watch_any;
+
+typedef struct { uint32_t block, reg, count; uint8_t val; } TraceRead;
+#define TRACE_MAX 512
+static TraceRead trace_tab[TRACE_MAX];
+static int trace_n;
+static uint32_t trace_frame;
+
+static int trace_active(void) {
+    return trace_window && frames >= trace_lo && frames <= trace_hi;
+}
+
+static void trace_flush(void) {
+    int i;
+    for (i = 0; i < trace_n; i++) {
+        printf("trace read frame %u block %02X:%04X reg $%04X = %02X x%u\n", (unsigned)trace_frame,
+               (unsigned)(trace_tab[i].block >> 16), (unsigned)(trace_tab[i].block & 0xFFFF),
+               (unsigned)trace_tab[i].reg, trace_tab[i].val, (unsigned)trace_tab[i].count);
+    }
+    trace_n = 0;
+}
+
+static void trace_read(uint32_t reg, uint8_t v) {
+    int i;
+    if (trace_n && trace_frame != frames) trace_flush();
+    trace_frame = frames;
+    for (i = 0; i < trace_n; i++) {
+        if (trace_tab[i].block == rt_block && trace_tab[i].reg == reg && trace_tab[i].val == v) {
+            trace_tab[i].count++;
+            return;
+        }
+    }
+    if (trace_n == TRACE_MAX) trace_flush();
+    trace_tab[trace_n].block = rt_block;
+    trace_tab[trace_n].reg = reg;
+    trace_tab[trace_n].val = v;
+    trace_tab[trace_n].count = 1;
+    trace_n++;
+}
+
+uint8_t bus_read8(uint32_t a) {
+    uint8_t v = bus_read8_raw(a);
+    uint32_t off = a & 0xFFFF;
+    if (trace_reads_on && !dma_active && ((a >> 16) & 0x7F) < 0x40 && off >= IO_FIRST && off <= IO_LAST && trace_active()) {
+        trace_read(off, v);
+    }
+    return v;
+}
+
+void bus_write8(uint32_t a, uint8_t v) {
+    uint32_t bank = (a >> 16) & 0xFF, off = a & 0xFFFF, b = bank & 0x7F;
+    int64_t idx = -1;
+    uint8_t old = 0;
+    if (watch_any) {
+        if (bank == 0x7E || bank == 0x7F) idx = ((bank & 1) << 16) | off;
+        else if (b < 0x40 && off < 0x2000) idx = off;
+        else if (b < 0x40 && off == 0x2180) idx = wram_port & 0x1FFFF;
+        if (idx >= 0) old = wram[idx];
+    }
+    bus_write8_raw(a, v);
+    if (idx >= 0 && watch[idx] && wram[idx] != old && trace_active()) {
+        printf("trace write frame %u block %02X:%04X wram %05X: %02X -> %02X\n", (unsigned)frames,
+               (unsigned)(rt_block >> 16), (unsigned)(rt_block & 0xFFFF), (unsigned)idx, old, wram[idx]);
+    }
+}
+
 /* General purpose DMA of one channel, run to the end as the CPU is halted meanwhile. Both sides go
  * through the bus, so the ports of the B bus behave as they do for the CPU. */
 static void run_dma(int ch) {
@@ -195,6 +272,7 @@ static void run_dma(int ch) {
     a = hw[base + 2] | (uint32_t)hw[base + 3] << 8;
     count = hw[base + 5] | (uint32_t)hw[base + 6] << 8;
     if (!count) count = 0x10000;
+    dma_active = 1;
     for (i = 0; i < count; i++) {
         uint32_t baddr = 0x2100 + ((b + pattern[mode][i % unit[mode]]) & 0xFF);
         uint32_t aaddr = (uint32_t)bank << 16 | a;
@@ -202,6 +280,7 @@ static void run_dma(int ch) {
         else bus_write8(baddr, bus_read8(aaddr));
         a = (a + (uint32_t)step) & 0xFFFF;
     }
+    dma_active = 0;
     hw[base + 2] = (uint8_t)a;
     hw[base + 3] = (uint8_t)(a >> 8);
     hw[base + 5] = 0;
@@ -210,7 +289,7 @@ static void run_dma(int ch) {
     dma_bytes[ch] += count;
 }
 
-void bus_write8(uint32_t a, uint8_t v) {
+static void bus_write8_raw(uint32_t a, uint8_t v) {
     uint32_t bank = (a >> 16) & 0xFF, off = a & 0xFFFF, b = bank & 0x7F;
     if (bank == 0x7E || bank == 0x7F) {
         wram[((bank & 1) << 16) | off] = v;
@@ -523,6 +602,7 @@ static void report(const char *cause) {
 }
 
 static void stop(int code, const char *cause) {
+    trace_flush();
     report(cause);
     exit(code);
 }
@@ -637,6 +717,29 @@ int main(int argc, char **argv) {
             frame_len = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) {
             shot_path = argv[++i];
+        } else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) {
+            char *end;
+            trace_lo = (uint32_t)strtoul(argv[++i], &end, 10);
+            if (*end != '-') { path = NULL; break; }
+            trace_hi = (uint32_t)strtoul(end + 1, &end, 10);
+            if (*end || trace_hi < trace_lo) { path = NULL; break; }
+            trace_window = 1;
+        } else if (!strcmp(argv[i], "--trace-reads")) {
+            trace_reads_on = 1;
+        } else if (!strcmp(argv[i], "--watch") && i + 1 < argc) {
+            char *end;
+            unsigned long v = strtoul(argv[++i], &end, 16);
+            if (*end == ':') {
+                unsigned long bank = v;
+                v = strtoul(end + 1, &end, 16);
+                if (*end || v > 0xFFFF || (bank != 0x7E && bank != 0x7F)) { path = NULL; break; }
+                v |= (bank & 1) << 16;
+            } else if (*end || v > 0x1FFFF) {
+                path = NULL;
+                break;
+            }
+            watch[v & 0x1FFFF] = 1;
+            watch_any = 1;
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -647,7 +750,8 @@ int main(int argc, char **argv) {
         }
     }
     if (!path || max_frames == 0 || frame_len == 0) {
-        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE]\n", argv[0]);
+        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE]\n"
+                        "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
