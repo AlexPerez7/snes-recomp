@@ -31,6 +31,9 @@ pub struct Discovery {
     pub flags: BTreeMap<u32, Flags>,
     /// Addresses reached with more than one combination of widths, with all of them.
     pub flag_conflicts: BTreeMap<u32, BTreeSet<Flags>>,
+    /// Where execution goes after an instruction run with some widths: the next instruction and the
+    /// widths it runs with, for every way found (fall-through, branches, jumps, returns of calls).
+    pub transitions: BTreeMap<(u32, Flags), BTreeSet<(u32, Flags)>>,
     /// Indirect jumps/calls reached with no table configured: candidates for the config.
     pub unresolved: BTreeSet<u32>,
     /// Calls (by address) whose callee never returns in the analysis and is not declared `no_return`.
@@ -147,6 +150,8 @@ struct Path {
     f: Flags,
     stack: Vec<Item>,
     ctx: Ctx,
+    /// The instruction (and its widths) this path comes from, when it continues the same function.
+    from: Option<(u32, Flags)>,
 }
 
 /// A call to an inline helper whose targets wait for the widths at the helper's exit.
@@ -171,7 +176,7 @@ struct Cont {
 
 impl Cont {
     fn resume(&self, f: Flags) -> Path {
-        Path { addr: self.ret, f, stack: self.stack.clone(), ctx: self.ctx }
+        Path { addr: self.ret, f, stack: self.stack.clone(), ctx: self.ctx, from: Some((self.site, self.before)) }
     }
 }
 
@@ -215,11 +220,12 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
     let mut started: HashSet<(usize, Flags)> = HashSet::new();
     let mut work: Vec<Path> = roots
         .iter()
-        .map(|&(a, f)| Path { addr: a, f, stack: Vec::new(), ctx: (a, f) })
+        .map(|&(a, f)| Path { addr: a, f, stack: Vec::new(), ctx: (a, f), from: None })
         .collect();
 
     loop {
-        while let Some(Path { mut addr, mut f, mut stack, ctx }) = work.pop() {
+        while let Some(Path { mut addr, mut f, mut stack, ctx, from }) = work.pop() {
+            let mut prev = from;
             loop {
                 if cfg.not_code.contains(&addr) {
                     break;
@@ -227,7 +233,10 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                 if let Some(&forced) = cfg.assume.get(&addr) {
                     f = forced;
                 }
-                if !seen.insert(Path { addr, f, stack: stack.clone(), ctx }) {
+                if let Some(p) = prev.take() {
+                    out.transitions.entry(p).or_default().insert((addr, f));
+                }
+                if !seen.insert(Path { addr, f, stack: stack.clone(), ctx, from: None }) {
                     break;
                 }
                 out.flags.entry(addr).or_insert(f);
@@ -257,8 +266,8 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                 let flow = ins.flow();
                 let table = cfg.tables.get(&addr);
                 out.instrs.entry(addr).or_insert(ins);
-                let here = |a: u32, stack: &[Item]| Path { addr: a, f: nf, stack: stack.to_vec(), ctx };
-                let callee = |t: u32| Path { addr: t, f: nf, stack: Vec::new(), ctx: (t, nf) };
+                let here = |a: u32, stack: &[Item]| Path { addr: a, f: nf, stack: stack.to_vec(), ctx, from: Some((addr, f)) };
+                let callee = |t: u32| Path { addr: t, f: nf, stack: Vec::new(), ctx: (t, nf), from: None };
 
                 let mut stop = false;
                 // Functions this instruction calls; the code after it resumes when they return.
@@ -378,6 +387,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                     }
                     break;
                 }
+                prev = Some((addr, f));
                 addr = next;
                 f = nf;
             }
@@ -395,7 +405,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             for f in widths {
                 if started.insert((i, f)) {
                     progress = true;
-                    work.extend(d.targets.iter().map(|&t| Path { addr: t, f, stack: d.stack.clone(), ctx: d.ctx }));
+                    work.extend(d.targets.iter().map(|&t| Path { addr: t, f, stack: d.stack.clone(), ctx: d.ctx, from: None }));
                 }
             }
         }
@@ -509,6 +519,20 @@ falls_through=true",
         assert_eq!(d.flags[&0x8002], Flags { m: false, x: true });
         assert_eq!(d.flags[&0x8007], Flags { m: true, x: true });
         assert!(d.flag_conflicts.is_empty());
+    }
+
+    #[test]
+    fn records_where_each_variant_goes() {
+        // 8000: SEP #$20 ; 8002: BEQ $8006 ; 8004: REP #$20 ; 8006: INC $0200 (M=8 via the branch, M=16 after REP) ; 8009: RTS
+        let rom = test_rom(&[(0x8000, &[0xE2, 0x20, 0xF0, 0x02, 0xC2, 0x20, 0xEE, 0x00, 0x02, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        let m8 = Flags { m: true, x: true };
+        let m16 = Flags { m: false, x: true };
+        assert_eq!(d.flag_conflicts[&0x8006], [m16, m8].into_iter().collect());
+        assert_eq!(d.transitions[&(0x8002, m8)], [(0x8004, m8), (0x8006, m8)].into_iter().collect());
+        assert_eq!(d.transitions[&(0x8004, m8)], [(0x8006, m16)].into_iter().collect());
+        assert_eq!(d.transitions[&(0x8006, m8)], [(0x8009, m8)].into_iter().collect());
+        assert_eq!(d.transitions[&(0x8006, m16)], [(0x8009, m16)].into_iter().collect());
     }
 
     #[test]

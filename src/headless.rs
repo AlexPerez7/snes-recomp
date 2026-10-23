@@ -1324,6 +1324,39 @@ fn bit_0_of_hvbjoy_is_set_only_at_the_start_of_vblank() {
 }
 
 #[test]
+fn the_hv_latch_gives_the_line_low_byte_then_bit_0_and_resets_with_2137() {
+    // $2137 ; $213D -> $2170 ; $213D -> $2171 ; $213F (bit 6) -> $2172 ; $213F -> $2173 ; $213D -> $2174
+    let ld = |r: u16, to: u16| vec![0xAD, r as u8, (r >> 8) as u8, 0x8D, to as u8, (to >> 8) as u8];
+    let code = prog(&[
+        vec![0xAD, 0x37, 0x21],
+        ld(0x213D, 0x2170),
+        ld(0x213D, 0x2171),
+        [vec![0xAD, 0x3F, 0x21, 0x29, 0x40], vec![0x8D, 0x72, 0x21]].concat(),
+        [vec![0xAD, 0x3F, 0x21, 0x29, 0x40], vec![0x8D, 0x73, 0x21]].concat(),
+        ld(0x213D, 0x2174),
+    ]);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "2620"];
+    let Some(r) = run("hl-hv", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let b = bits(&r, 5);
+    assert!(b[0] <= 1, "the program runs in line 0 of 262 (10 blocks per line): {b:?}
+{}", r.out);
+    assert_eq!(b[1], 0, "bit 0 of the V counter: {b:?}");
+    assert_eq!(b[2], 0x40, "latch pending");
+    assert_eq!(b[3], 0, "latch cleared by the previous $213F");
+    assert!(b[4] <= 1, "alternation restarted: low byte again {b:?}");
+}
+
+#[test]
+fn a_line_wait_through_the_hv_counter_ends() {
+    // $2137 ; LDA $213D ; CMP #$80 ; BCC back ; then STA $2170 (marker)
+    let code = prog(&[vec![0xAD, 0x37, 0x21, 0xAD, 0x3D, 0x21, 0xC9, 0x80, 0x90, 0xF6], st(0x55, 0x2170)]);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "2620"];
+    let Some(r) = run("hl-hv-wait", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2170).is_some_and(|l| l.ends_with("last=55")), "{}", r.out);
+}
+
+#[test]
 fn the_serial_read_gives_the_buttons_in_order_and_then_ones() {
     // Latch ($4016 = 1 then 0), then 18 reads.
     let mut parts = vec![st(1, 0x4016), st(0, 0x4016)];
