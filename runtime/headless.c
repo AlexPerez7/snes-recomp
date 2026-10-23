@@ -18,7 +18,7 @@
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
  * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned, 12 an execution context returned,
- * 13 too many contexts or nested interrupts.
+ * 13 too many contexts or nested interrupts, 14 a return to an address no call expects.
  */
 #include "snes_funcs.h"
 #include <stdio.h>
@@ -751,10 +751,26 @@ static void switch_to(Cpu *c, int to) {
     ctx_jump(&ctxs[from], &ctxs[to]);
 }
 
+/* An RTS/RTL returned to an address no active call expects and the return climbed out of the generated code. */
+void rt_lost_return(Cpu *c) {
+    printf("LOST_RETURN to %04X with S=%04X\n", (unsigned)c->ret, (unsigned)c->s);
+    stop(14, "return to an address no call expects");
+}
+
+/* Calls the function at `addr` as the CPU would enter it from outside the generated code. Such a function
+ * ends with RTI, which leaves c->ret as RT_NO_RET; if an RTS or RTL got here instead, nothing accepted it. */
+static int call_top(Cpu *c, uint32_t addr) {
+    int ok;
+    c->ret = RT_NO_RET;
+    ok = snes_call_entry(c, addr);
+    if (ok && c->ret != RT_NO_RET) rt_lost_return(c);
+    return ok;
+}
+
 /* Body of a context started from a frame the code built by hand. */
 static void ctx_body(void *unused) {
     (void)unused;
-    if (!snes_call_entry(ctx_cpu, ctx_entry_addr)) {
+    if (!call_top(ctx_cpu, ctx_entry_addr)) {
         printf("context entry %06X is not the entry of a function\n", (unsigned)ctx_entry_addr);
         stop(10, "context entry is not a function");
     }
@@ -813,7 +829,7 @@ static void deliver_interrupt(Cpu *c, uint16_t v, int is_nmi) {
      * the registers keep their high bytes, so the RTI gives everything back as it was. */
     c->m = 1;
     c->xf = 1;
-    if (!snes_call_entry(c, v)) {
+    if (!call_top(c, v)) {
         printf("%s vector %04X is not the entry of a function\n", is_nmi ? "NMI" : "IRQ", (unsigned)v);
         stop(10, "interrupt vector is not a function");
     }
@@ -948,7 +964,7 @@ int main(int argc, char **argv) {
 
     memset(&c, 0, sizeof c);
     c.e = 1; c.m = 1; c.xf = 1; c.s = 0x01FF; c.irq = 1; /* state right after reset */
-    if (!snes_call_entry(&c, vector(0xFFFC))) {
+    if (!call_top(&c, vector(0xFFFC))) {
         printf("reset vector %04X is not the entry of a function\n", (unsigned)vector(0xFFFC));
         stop(10, "interrupt vector is not a function");
     }
