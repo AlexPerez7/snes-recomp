@@ -1234,6 +1234,116 @@ fn what_is_not_drawn_is_reported() {
     assert!(r.out.contains("warning: colour math inside or outside the colour window is not applied"), "{}", r.out);
 }
 
+// ---- Joypad ----
+
+/// Reads `$4016` once and keeps its bit 0 in `$2170 + i`.
+fn read_serial(i: u16) -> Vec<u8> {
+    [vec![0xAD, 0x16, 0x40, 0x29, 0x01], vec![0x8D, (0x2170 + i) as u8, ((0x2170 + i) >> 8) as u8]].concat()
+}
+
+/// The bits `$2170..` hold after the program: `last=0X` of each register.
+fn bits(r: &Run, n: u16) -> Vec<u8> {
+    (0..n).map(|i| r.reg(0x2170 + i as u32).and_then(|l| l.rsplit("last=").next()).map_or(255, |v| u8::from_str_radix(v, 16).unwrap())).collect()
+}
+
+#[test]
+fn press_options_are_validated() {
+    let code: &[u8] = &[0x80, 0xFE];
+    for good in ["START@3-4", "A+RIGHT@10-12", "UP+DOWN+LEFT+RIGHT+SELECT+B+Y+X+L+R@0-0"] {
+        let Some(r) = run("hl-press-ok", &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--press", good]) else { return };
+        assert_eq!(r.code, 0, "{good}
+{}", r.out);
+    }
+    for bad in ["FIRE@1-2", "START@5-2", "START", "START@a-b", "START@1", "@1-2", "START+@1-2", "start@1-2"] {
+        let Some(r) = run("hl-press-bad", &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--press", bad]) else { return };
+        assert_eq!(r.code, 2, "{bad}
+{}", r.out);
+    }
+}
+
+#[test]
+fn the_automatic_read_gives_the_pressed_buttons_at_vblank() {
+    // $4200 = 1, then each vblank: LDA $4219 -> $2134 ; LDA $4218 -> $2135
+    let code = prog(&[st(0x01, 0x4200), vec![0xAD, 0x12, 0x42, 0x10, 0xFB], mv(0x4219, 0x2134), mv(0x4218, 0x2135), vec![0x80, 0xED]]);
+    // The BRA above goes back to the wait loop; the final prog() BRA is never reached.
+    let args = ["rom.sfc", "--frames", "4", "--frame-blocks", "50", "--press", "START+RIGHT@0-9", "--press", "A+R@0-9"];
+    let Some(r) = run("hl-joy-auto", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=11")), "START (bit 4) and RIGHT (bit 0) in $4219
+{}", r.out);
+    assert!(r.reg(0x2135).is_some_and(|l| l.ends_with("last=90")), "A (bit 7) and R (bit 4) in $4218
+{}", r.out);
+
+    // Nothing is held without the option.
+    let args = ["rom.sfc", "--frames", "4", "--frame-blocks", "50"];
+    let Some(r) = run("hl-joy-none", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")) && r.reg(0x2135).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+
+    // The buttons are those of the frame being read: held only in frame 2, they show in the vblank of frame 2.
+    let args = ["rom.sfc", "--frames", "5", "--frame-blocks", "50", "--press", "START@2-2"];
+    let Some(r) = run("hl-joy-frame", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")), "released again by the last frame
+{}", r.out);
+    assert_eq!(r.reg(0x2134).map(|l| l.contains("writes=")), Some(true));
+}
+
+#[test]
+fn the_automatic_read_needs_the_enable_bit_and_keeps_the_last_value() {
+    // $4200 is never written: the registers stay at 0 although START is held.
+    let code = prog(&[vec![0xAD, 0x12, 0x42, 0x10, 0xFB], mv(0x4219, 0x2134), vec![0x80, 0xF3]]);
+    let args = ["rom.sfc", "--frames", "3", "--frame-blocks", "50", "--press", "START@0-9"];
+    let Some(r) = run("hl-joy-off", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+
+    // Enabled during the first frames and disabled later (writing $4200 = 0 in the second wait): the last
+    // value read is kept.
+    let code = prog(&[
+        st(0x01, 0x4200),
+        vec![0xAD, 0x12, 0x42, 0x10, 0xFB],
+        st(0x00, 0x4200),
+        vec![0xAD, 0x12, 0x42, 0x30, 0xFB], // wait for vblank to end
+        vec![0xAD, 0x12, 0x42, 0x10, 0xFB], // and for the next one
+        mv(0x4219, 0x2134),
+    ]);
+    let args = ["rom.sfc", "--frames", "4", "--frame-blocks", "50", "--press", "START@0-0"];
+    let Some(r) = run("hl-joy-keep", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=10")), "{}", r.out);
+}
+
+#[test]
+fn bit_0_of_hvbjoy_is_set_only_at_the_start_of_vblank() {
+    // Right after reset: LDA $4212 ; AND #$01 -> $2135. Then wait for vblank and do the same -> $2136.
+    let code = prog(&[
+        vec![0xAD, 0x12, 0x42, 0x29, 0x01, 0x8D, 0x35, 0x21],
+        vec![0xAD, 0x12, 0x42, 0x10, 0xFB, 0x29, 0x01, 0x8D, 0x36, 0x21],
+    ]);
+    let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50"];
+    let Some(r) = run("hl-busy", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert!(r.reg(0x2135).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+    assert!(r.reg(0x2136).is_some_and(|l| l.ends_with("last=01")), "{}", r.out);
+}
+
+#[test]
+fn the_serial_read_gives_the_buttons_in_order_and_then_ones() {
+    // Latch ($4016 = 1 then 0), then 18 reads.
+    let mut parts = vec![st(1, 0x4016), st(0, 0x4016)];
+    parts.extend((0..18).map(read_serial));
+    let code = prog(&parts);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "400", "--press", "START+A@0-9"];
+    let Some(r) = run("hl-joy-serial", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    // B Y SELECT START UP DOWN LEFT RIGHT A X L R, four zeros, then ones.
+    assert_eq!(bits(&r, 18), [0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1], "{}", r.out);
+
+    // While the latch is 1 the read is always the B button; after it goes to 0 the register shifts.
+    let mut parts = vec![st(1, 0x4016), read_serial(0), read_serial(1), st(0, 0x4016), read_serial(2), read_serial(3)];
+    parts.push(vec![]);
+    let code = prog(&parts);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "400", "--press", "B@0-9"];
+    let Some(r) = run("hl-joy-latch", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(bits(&r, 4), [1, 1, 1, 0], "{}", r.out);
+}
+
 // ---- Execution trace ----
 
 /// The lines of the run that start with `trace `.
