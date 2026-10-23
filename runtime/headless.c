@@ -191,8 +191,11 @@ static uint8_t bus_read8_raw(uint32_t a) {
                 irq_flag = 0;
                 return v;
             case 0x4212:
-                /* Vertical blank during the last tenth of the frame; auto joypad read never busy. */
-                return (uint8_t)((uint64_t)tick_in_frame * 10 >= (uint64_t)frame_len * 9 ? 0x80 : 0);
+                /* Vertical blank during the last tenth of the frame; horizontal blank (bit 6) during the last fifth of
+                 * each of the 262 lines of the frame; auto joypad read never busy. */
+                v = (uint8_t)((uint64_t)tick_in_frame * 10 >= (uint64_t)frame_len * 9 ? 0x80 : 0);
+                if ((uint64_t)tick_in_frame * 262 % frame_len * 5 >= (uint64_t)frame_len * 4) v |= 0x40;
+                return v;
             default:
                 return hw[off];
             }
