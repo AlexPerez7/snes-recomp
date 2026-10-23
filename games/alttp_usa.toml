@@ -591,3 +591,28 @@ site = "06:9282"
 at = "06:9283"
 count = 243
 size = 2
+
+# Llamada a dispatch16 cuya tabla (14 entradas, hasta 06:C44C) no la acota el heuristico de 'inline_helper':
+# el menor destino por encima de la tabla queda lejos (06:C7A1) y se leeria como entrada el LDA $0D80,X que sigue (word $80BD).
+[[table]]
+kind = "inline"
+site = "06:C42C"
+count = 14
+size = 2
+
+# dispatch16 con solo 2 entradas (hasta 06:9715); lo que sigue (01 FF 02 FE 10 F0 ...) son desplazamientos, no punteros,
+# y el heuristico los leeria como destinos ($FF01, $FE02...).
+[[table]]
+kind = "inline"
+site = "06:970D"
+count = 2
+size = 2
+
+# Despacho de sprites por PHA/RTS (bloque 05): (tipo $0E20,X - $41) * 2 -> word de 05:B5E8 -> DEC A -> PHA -> RTS.
+# 48 entradas (tipos $41-$70); a partir del indice 48 (05:B648) empieza el codigo (BD 80 0D D0 ...).
+[[table]]
+kind = "indirect"
+site = "05:B5E7"
+at = "05:B5E8"
+count = 48
+size = 2
