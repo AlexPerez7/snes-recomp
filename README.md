@@ -15,7 +15,7 @@ License: not chosen yet (add a `LICENSE` before publishing).
 - [x] Recursive-descent code discovery (direct jumps, branches, calls)
 - [x] Indirect jump / jump-table resolution (per-game config; ALttP: 0 unresolved, 82,108 instructions reachable from 16,577)
 - [x] Function and basic-block graph (ALttP: 2,488 functions, 16,030 blocks, 1,485 tail calls, 0 missing targets, 440 shared blocks reported)
-- [x] C code generator, first slice: all 256 opcodes, calls, tail calls and indirect dispatch against a fixed runtime interface (`runtime/snes_rt.h`). ALttP's reset plus its callees compile and run to the NMI wait loop; 538 addresses are reached with different M/X widths and make any function containing them fail to generate. Whole-ROM emission is not done yet
+- [x] C code generator, first slice: all 256 opcodes, calls, tail calls and indirect dispatch against a fixed runtime interface (`runtime/snes_rt.h`). ALttP's reset plus its callees compile and run to the NMI wait loop; M/X widths are now tracked across calls, returns and `PHP`/`PLP`: 232 addresses (down from 538) are still reached with different widths and make any function containing them fail to generate (95 of the 1,326 directly called functions, down from 126). `discover --widths` lists them. ALttP now discovers 82,025 instructions in 15,989 blocks and 2,488 functions. Whole-ROM emission is not done yet
 - [ ] Runtime: bus, DMA/HDMA, PPU, APU, input
 
 ## Usage

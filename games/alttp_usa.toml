@@ -557,3 +557,10 @@ count = 8
 # 0E:F664 apunta varias veces a 0E:FB64, que es relleno $FF hasta el final del banco, no código.
 [[not_code]]
 addr = "0E:FB64"
+
+# Tras `JSL $01F093` (submódulo 02:904A) el manejador de 01:F18C vuelve con M=16 X=16 y los demás con 8/8:
+# polimorfismo real del llamador. Se fuerza 8/8, que es lo que hacen los otros cuatro manejadores.
+[[assume]]
+addr = "02:87AF"
+m = 8
+x = 8
