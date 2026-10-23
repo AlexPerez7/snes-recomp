@@ -19,7 +19,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc 00:8000 --depth 1 -o out/reset
 - `src/opcodes.rs`, `src/disasm.rs`: tabla de opcodes y decodificador, con seguimiento de los anchos M/X.
 - `src/discover.rs`: descubrimiento de código por descenso recursivo, guiado por la configuración. Sigue los anchos M/X por contexto de función (entrada, anchos), a través de llamadas, retornos y pares `PHP`/`PLP`.
 - `src/graph.rs`: bloques básicos y funciones a partir del descubrimiento (aristas, tail calls, diagnósticos).
-- `src/codegen.rs`: generador de C (una función por función del grafo, una etiqueta por bloque) y pruebas que compilan y ejecutan el C.
+- `src/codegen.rs`: generador de C (una función por función del grafo, una etiqueta por bloque) y pruebas que compilan y ejecutan el C. Solo rechaza conflictos de anchos M/X que cambian el C o la longitud de la instrucción.
 - `runtime/snes_rt.h`: interfaz del C generado con el runtime (estado de la CPU, bus, ganchos, aritmética). Se incrusta en el binario.
 - `src/cctest.rs`: solo para tests; busca `CC`/gcc/clang/cc o Visual Studio y compila C.
 - `src/config.rs`: formato de `games/<id>.toml` (documentado al inicio del fichero).

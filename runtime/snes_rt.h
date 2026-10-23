@@ -39,7 +39,7 @@ void rt_wdm(Cpu *c);
 
 #ifdef SNES_RT_CHECKS
 static inline void rt_check_flags(Cpu *c, uint32_t addr, uint8_t m, uint8_t x) {
-    if (c->m != m || c->xf != x) rt_flag_mismatch(c, addr);
+    if ((m != 2 && c->m != m) || (x != 2 && c->xf != x)) rt_flag_mismatch(c, addr);
 }
 #else
 #define rt_check_flags(c, addr, m, x) ((void)0)

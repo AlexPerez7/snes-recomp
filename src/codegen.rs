@@ -318,11 +318,28 @@ impl<'a> Emitter<'a> {
         seen
     }
 
+    /// Whether the C for `a`, or its length, would differ among the widths it is reached with.
+    fn depends_on_widths(&self, a: u32, set: &BTreeSet<Flags>) -> bool {
+        let ins = &self.d.instrs[&a];
+        let varies = |pick: fn(&Flags) -> bool| set.iter().map(pick).collect::<BTreeSet<_>>().len() > 1;
+        match ins.mode {
+            Mode::ImmM if varies(|f| f.m) => return true,
+            Mode::ImmX if varies(|f| f.x) => return true,
+            _ => {}
+        }
+        let mut lines = set.iter().map(|&f| instr_lines(ins, f, &[]));
+        let first = lines.next();
+        lines.any(|l| Some(l) != first)
+    }
+
     fn check_widths(&self, blocks: &BTreeSet<u32>) -> Result<(), String> {
         let mut problems = Vec::new();
         for start in blocks {
             for a in &self.g.blocks[start].instrs {
                 if let Some(set) = self.d.flag_conflicts.get(a) {
+                    if !self.depends_on_widths(*a, set) {
+                        continue;
+                    }
                     let seen: Vec<String> = set
                         .iter()
                         .map(|f| format!("M={} X={}", if f.m { 8 } else { 16 }, if f.x { 8 } else { 16 }))
@@ -331,7 +348,8 @@ impl<'a> Emitter<'a> {
                 }
             }
         }
-        if problems.is_empty() { Ok(()) } else { Err(problems.join("\n")) }
+        if problems.is_empty() { Ok(()) } else { Err(problems.join("
+")) }
     }
 
     /// Transfers control to `target`: a `goto` inside the function, or a tail call.
@@ -349,10 +367,12 @@ impl<'a> Emitter<'a> {
 
     fn block_lines(&self, body: &mut Body, block: &Block, next: Option<u32>) -> Result<Vec<String>, String> {
         let flags = self.d.flags[&block.start];
-        let mut out = vec![format!(
-            "rt_check_flags(c, 0x{:06X}, {}, {});",
-            block.start, flags.m as u8, flags.x as u8
-        )];
+        // A width that differs among the ways the block is entered (2) is not checked.
+        let varies = |pick: fn(&Flags) -> bool| {
+            self.d.flag_conflicts.get(&block.start).is_some_and(|s| s.iter().any(|f| pick(f) != pick(&flags)))
+        };
+        let (m, x) = (if varies(|f| f.m) { 2 } else { flags.m as u8 }, if varies(|f| f.x) { 2 } else { flags.x as u8 });
+        let mut out = vec![format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
         let dispatch: Vec<u32> = block
             .succs
             .iter()
@@ -913,10 +933,30 @@ sep xf=1 x=0034 p=10
 
     #[test]
     fn conflicting_widths_are_an_error_with_no_partial_output() {
-        // 8000: BEQ $8004 ; 8002: REP #$20 ; 8004: NOP (M=8 via the branch, M=16 falling through)
-        let rom = [(0x8000, &[0xF0, 0x02, 0xC2, 0x20, 0xEA, 0x60][..])];
+        // 8000: BEQ $8004 ; 8002: REP #$20 ; 8004: LDA #$12 (M=8 via the branch, M=16 falling through)
+        let rom = [(0x8000, &[0xF0, 0x02, 0xC2, 0x20, 0xA9, 0x12, 0x00, 0x60][..])];
         let err = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap_err();
         assert!(err.contains("00:8004") && err.contains("M=8") && err.contains("M=16"), "{err}");
+    }
+
+    #[test]
+    fn conflicting_widths_on_width_independent_instructions_are_allowed() {
+        // 8000: BEQ $8004 ; 8002: REP #$20 ; 8004: SEP #$30 (reached with M=8 and M=16) ; 8006: LDA #$12 ; RTS
+        let rom = [(0x8000, &[0xF0, 0x02, 0xC2, 0x20, 0xE2, 0x30, 0xA9, 0x12, 0x60][..])];
+        let out = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert!(b.contains(&"rt_check_flags(c, 0x008004, 2, 1);".to_string()), "{b:?}");
+        assert!(b.contains(&"rt_check_flags(c, 0x008002, 1, 1);".to_string()), "{b:?}");
+    }
+
+    #[test]
+    fn conflict_in_one_register_does_not_block_instructions_on_the_other() {
+        // 8000: SEP #$10 ; BEQ $8006 ; 8004: REP #$10 ; 8006: STA $10 ; RTS
+        // 8006 is reached with X=8 and X=16, but STA only depends on M.
+        let rom = [(0x8000, &[0xE2, 0x10, 0xF0, 0x02, 0xC2, 0x10, 0x85, 0x10, 0x60][..])];
+        let out = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert!(b.contains(&"rt_check_flags(c, 0x008006, 1, 2);".to_string()), "{b:?}");
     }
 
     #[test]
@@ -1083,6 +1123,25 @@ int main(void) {{
         let Some(out) = exec("checks", &rom, "", &[0x8000], r#"//report
             printf("a=%04X\n", c.a);"#) else { return };
         assert_eq!(out, "a=12FF\n");
+    }
+
+    #[test]
+    fn checked_builds_accept_a_callee_that_returns_with_either_width() {
+        // 8000: JSR $8020 ; 8003: SEP #$30 ; 8005: LDA #$12 ; 8007: RTS
+        // 8020: LDA $10 ; BEQ $8026 ; 8024: REP #$30 ; 8026: RTS (returns 8/8 or 16/16)
+        let rom = [
+            (0x8000, &[0x20, 0x20, 0x80, 0xE2, 0x30, 0xA9, 0x12, 0x60][..]),
+            (0x8020, &[0xA5, 0x10, 0xF0, 0x02, 0xC2, 0x30, 0x60][..]),
+        ];
+        for (flag, name) in [(0u8, "either_zero"), (1u8, "either_nonzero")] {
+            let body = format!(
+                r#"{{ const uint8_t v[] = {{{flag}}}; load(0x10, v, 1); }}
+            //report
+            printf("a=%02X m=%d xf=%d\n", c.a & 0xFF, c.m, c.xf);"#
+            );
+            let Some(out) = exec(name, &rom, "", &[0x8000], &body) else { return };
+            assert_eq!(out, "a=12 m=1 xf=1\n");
+        }
     }
 
     /// Bus for the real game: LoROM in banks $00-$3F/$80-$BF, WRAM, and a log of hardware writes.
