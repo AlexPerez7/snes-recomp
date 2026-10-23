@@ -303,7 +303,9 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let _ = std::fs::remove_dir_all(&dump);
     std::fs::create_dir_all(&dump).unwrap();
     let dump_arg = dump.to_string_lossy().into_owned();
-    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg]);
+    let shot_arg = dump.join("shot.png").to_string_lossy().into_owned();
+    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg, "--screenshot", &shot_arg]);
+    let shot = std::fs::read(dump.join("shot.png")).ok().map(|b| decode_png(&b));
     eprintln!("exit code {}\n{}", r.code, r.out);
     let read = |f: &str| std::fs::read(dump.join(f)).unwrap_or_default();
     let (vram, cgram, oam) = (read("vram.bin"), read("cgram.bin"), read("oam.bin"));
@@ -312,6 +314,10 @@ fn alttp_boots_and_takes_its_first_nmis() {
     // The game has uploaded graphics, a palette and sprites by now.
     assert!(filled(&vram) > 1000 && filled(&cgram) > 8 && filled(&oam) > 16, "vram {} cgram {} oam {}", filled(&vram), filled(&cgram), filled(&oam));
     assert!(!r.out.contains("warning: VRAM address translation"), "{}", r.out);
+    // The picture is not a single colour: the game draws text and sprites on the black backdrop.
+    let shot = shot.expect("the screenshot was written");
+    let distinct: std::collections::HashSet<[u8; 3]> = (0..shot.w * shot.h).map(|i| [shot.px[i * 3], shot.px[i * 3 + 1], shot.px[i * 3 + 2]]).collect();
+    assert!(distinct.len() >= 3, "only {} colours in the screenshot", distinct.len());
     assert!(r.out.contains("== report =="), "{}", r.out);
     // The reset code forces blank, the audio upload goes through the handshake, and NMI gets enabled.
     assert!(r.reg(0x2100).is_some(), "{}", r.out);
@@ -641,4 +647,387 @@ fn vram_address_translation_is_reported_when_requested() {
     let Some((r, _, dir)) = run_dump("hl-vram-translate", &code, &[], false) else { return };
     let _ = std::fs::remove_dir_all(dir);
     assert!(r.out.contains("warning: VRAM address translation ($2115=84) is not modelled"), "{}", r.out);
+}
+
+// ---- Screenshot ----
+
+/// A decoded PNG: RGB, 8 bits per channel.
+struct Img {
+    w: usize,
+    h: usize,
+    px: Vec<u8>,
+}
+
+impl Img {
+    fn rgb(&self, x: usize, y: usize) -> [u8; 3] {
+        let i = (y * self.w + x) * 3;
+        [self.px[i], self.px[i + 1], self.px[i + 2]]
+    }
+}
+
+/// Decode a PNG made of stored zlib blocks and filter 0 only, which is all the runtime writes.
+fn decode_png(b: &[u8]) -> Img {
+    assert_eq!(&b[..8], &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], "PNG signature");
+    let (mut pos, mut w, mut h, mut z) = (8, 0usize, 0usize, Vec::new());
+    let mut seen_end = false;
+    while pos < b.len() {
+        let n = u32::from_be_bytes(b[pos..pos + 4].try_into().unwrap()) as usize;
+        let kind = &b[pos + 4..pos + 8];
+        let data = &b[pos + 8..pos + 8 + n];
+        match kind {
+            b"IHDR" => {
+                w = u32::from_be_bytes(data[0..4].try_into().unwrap()) as usize;
+                h = u32::from_be_bytes(data[4..8].try_into().unwrap()) as usize;
+                assert_eq!(&data[8..], &[8, 2, 0, 0, 0]);
+            }
+            b"IDAT" => z.extend_from_slice(data),
+            b"IEND" => seen_end = true,
+            _ => {}
+        }
+        pos += 12 + n;
+    }
+    assert!(seen_end, "IEND");
+    let mut raw = Vec::new();
+    let mut p = 2; // zlib header
+    loop {
+        let last = z[p] & 1 == 1;
+        let len = u16::from_le_bytes([z[p + 1], z[p + 2]]) as usize;
+        assert_eq!(u16::from_le_bytes([z[p + 3], z[p + 4]]), !(len as u16), "stored block length check");
+        raw.extend_from_slice(&z[p + 5..p + 5 + len]);
+        p += 5 + len;
+        if last {
+            break;
+        }
+    }
+    assert_eq!(raw.len(), (1 + w * 3) * h);
+    let mut px = Vec::new();
+    for row in raw.chunks(1 + w * 3) {
+        assert_eq!(row[0], 0, "filter");
+        px.extend_from_slice(&row[1..]);
+    }
+    Img { w, h, px }
+}
+
+/// `LDA #v ; STA addr` sequences that fill VRAM from word address `addr`.
+fn vram_words(addr: u16, words: &[u16]) -> Vec<u8> {
+    let mut v = [st(0x80, 0x2115), st(addr as u8, 0x2116), st((addr >> 8) as u8, 0x2117)].concat();
+    for w in words {
+        v.extend(st(*w as u8, 0x2118));
+        v.extend(st((*w >> 8) as u8, 0x2119));
+    }
+    v
+}
+
+fn cgram_set(idx: u8, colors: &[u16]) -> Vec<u8> {
+    let mut v = st(idx, 0x2121);
+    for c in colors {
+        v.extend(st(*c as u8, 0x2122));
+        v.extend(st((*c >> 8) as u8, 0x2122));
+    }
+    v
+}
+
+fn oam_set(word: u16, bytes: &[u8]) -> Vec<u8> {
+    let mut v = [st(word as u8, 0x2102), st((word >> 8) as u8, 0x2103)].concat();
+    for b in bytes {
+        v.extend(st(*b, 0x2104));
+    }
+    v
+}
+
+/// A 4 bits per pixel tile (16 words) with the given `(x, y, colour)` pixels.
+fn tile4(pixels: &[(usize, usize, u8)]) -> Vec<u16> {
+    let mut t = vec![0u16; 16];
+    for &(x, y, c) in pixels {
+        let bit = 0x80u16 >> x;
+        for plane in 0..4 {
+            if c >> plane & 1 == 1 {
+                t[(plane / 2) * 8 + y] |= bit << ((plane % 2) * 8);
+            }
+        }
+    }
+    t
+}
+
+/// A 2 bits per pixel tile (8 words).
+fn tile2(pixels: &[(usize, usize, u8)]) -> Vec<u16> {
+    let mut t = vec![0u16; 8];
+    for &(x, y, c) in pixels {
+        let bit = 0x80u16 >> x;
+        for plane in 0..2 {
+            if c >> plane & 1 == 1 {
+                t[y] |= bit << (plane * 8);
+            }
+        }
+    }
+    t
+}
+
+const RED: u16 = 0x001F;
+const GREEN: u16 = 0x03E0;
+const BLUE: u16 = 0x7C00;
+const YELLOW: u16 = 0x03FF;
+
+/// The colour a BGR555 value shows at full brightness.
+fn rgb(c: u16) -> [u8; 3] {
+    let e = |v: u16| ((v << 3) | (v >> 2)) as u8;
+    [e(c & 31), e(c >> 5 & 31), e(c >> 10 & 31)]
+}
+
+/// Run `code` at 00:8000 for one short frame asking for a screenshot; returns the run and the decoded image.
+fn shot(name: &str, code: &[u8]) -> Option<(Run, Option<Img>)> {
+    let dir = std::env::temp_dir().join(format!("snes-recomp-shot-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("s.png").to_string_lossy().into_owned();
+    let r = run(name, &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--frames", "1", "--frame-blocks", "20", "--screenshot", &path])?;
+    let img = std::fs::read(dir.join("s.png")).ok().map(|b| decode_png(&b));
+    let _ = std::fs::remove_dir_all(dir);
+    Some((r, img))
+}
+
+/// Mode 1 with the layers in `main`, full brightness, BG1 map at word $1000 and BG2 at $1400, BG3 map at $1800
+/// with its tiles at word $2000, BG1/BG2 tiles at word 0 and sprite tiles at word $2000.
+fn ppu_base(main: u8) -> Vec<u8> {
+    [
+        st(0x0F, 0x2100),
+        st(0x01, 0x2105),
+        st(0x10, 0x2107),
+        st(0x14, 0x2108),
+        st(0x18, 0x2109),
+        st(0x00, 0x210B),
+        st(0x02, 0x210C),
+        st(0x01, 0x2101),
+        st(main, 0x212C),
+    ]
+    .concat()
+}
+
+#[test]
+fn the_screenshot_is_a_png_of_the_backdrop_when_nothing_else_is_drawn() {
+    let code = prog(&[st(0x0F, 0x2100), cgram_set(0, &[RED]), st(0x01, 0x212C)]);
+    let Some((r, img)) = shot("rd-backdrop", &code) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let img = img.expect("the screenshot exists");
+    assert_eq!((img.w, img.h), (256, 224));
+    assert!(img.px.chunks(3).all(|p| p == rgb(RED)));
+
+    // The screenshot is also written after a failure.
+    let code = [st(0x0F, 0x2100), cgram_set(0, &[BLUE]), vec![0x6C, 0x00, 0x00]].concat();
+    let Some((r, img)) = shot("rd-fail", &code) else { return };
+    assert_eq!(r.code, 5, "{}", r.out);
+    assert_eq!(img.expect("written after a failure").rgb(3, 3), rgb(BLUE));
+
+    // And nothing is written without the option.
+    let code = prog(&[cgram_set(0, &[RED])]);
+    let Some((_, m, dir)) = run_dump("rd-off", &code, &[], false) else { return };
+    assert!(m.vram.is_empty() && std::fs::read_dir(&dir).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn brightness_forced_blank_and_disabled_layers() {
+    let tile = vram_words(16, &tile4(&[(0, 0, 1)]));
+    let map = vram_words(0x1000, &[0x0001]);
+    let pal = cgram_set(0, &[RED, GREEN]);
+
+    // Brightness 7 of 15 scales every channel.
+    let code = prog(&[ppu_base(0x01), tile.clone(), map.clone(), pal.clone(), st(0x07, 0x2100)]);
+    let Some((_, img)) = shot("rd-bright", &code) else { return };
+    let img = img.unwrap();
+    assert_eq!(img.rgb(0, 0), [0, (255u32 * 7 / 15) as u8, 0]);
+    assert_eq!(img.rgb(5, 5), [(255u32 * 7 / 15) as u8, 0, 0]);
+
+    // Forced blank is black whatever the memories hold.
+    let code = prog(&[ppu_base(0x01), tile.clone(), map.clone(), pal.clone(), st(0x8F, 0x2100)]);
+    let Some((_, img)) = shot("rd-blank", &code) else { return };
+    assert!(img.unwrap().px.iter().all(|&b| b == 0));
+
+    // A background that is not on the main screen is not drawn.
+    let code = prog(&[ppu_base(0x02), tile, map, pal]);
+    let Some((_, img)) = shot("rd-off-layer", &code) else { return };
+    assert_eq!(img.unwrap().rgb(0, 0), rgb(RED));
+}
+
+#[test]
+fn a_background_tile_has_its_pixel_flips_and_transparency() {
+    // Tile 1 has colour 5 at (2,3); entry (0,0) of BG1 is tile 1 with palette 1.
+    let tile = vram_words(16, &tile4(&[(2, 3, 5)]));
+    let pal = cgram_set(0, &[RED]);
+    let green = cgram_set(16 + 5, &[GREEN]);
+    for (name, entry, at) in [("plain", 0x0401u16, (2, 3)), ("hflip", 0x4401, (5, 3)), ("vflip", 0x8401, (2, 4)), ("both", 0xC401, (5, 4))] {
+        let code = prog(&[ppu_base(0x01), tile.clone(), vram_words(0x1000, &[entry]), pal.clone(), green.clone()]);
+        let Some((r, img)) = shot(&format!("rd-tile-{name}"), &code) else { return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        let img = img.unwrap();
+        assert_eq!(img.rgb(at.0, at.1), rgb(GREEN), "{name}");
+        // Every other pixel of the tile is transparent: the backdrop shows.
+        assert_eq!(img.rgb(0, 0), rgb(RED), "{name}");
+        assert_eq!(img.rgb(at.0 + 1, at.1), rgb(RED), "{name}");
+    }
+}
+
+#[test]
+fn sixteen_pixel_tiles_use_four_tiles_and_swap_them_when_flipped() {
+    // Tile 17 (the bottom right quarter of tile 0) has colour 1 at (1,1).
+    let tile = vram_words(17 * 16, &tile4(&[(1, 1, 1)]));
+    let pal = cgram_set(0, &[RED, GREEN]);
+    for (name, entry, at) in [("plain", 0x0000u16, (9, 9)), ("hflip", 0x4000, (6, 9)), ("vflip", 0x8000, (9, 6))] {
+        let code = prog(&[ppu_base(0x01), st(0x11, 0x2105), tile.clone(), vram_words(0x1000, &[entry]), pal.clone()]);
+        let Some((_, img)) = shot(&format!("rd-big-{name}"), &code) else { return };
+        let img = img.unwrap();
+        assert_eq!(img.rgb(at.0, at.1), rgb(GREEN), "{name}");
+        assert_eq!(img.rgb(1, 1), rgb(RED), "{name}");
+    }
+}
+
+#[test]
+fn scroll_registers_take_two_writes_and_move_the_background() {
+    // Tile 1 has colour 1 at (0,0); the map puts it at tile column 1 and, in the 64x64 map, at (32,32).
+    let tile = vram_words(16, &tile4(&[(0, 0, 1)]));
+    let pal = cgram_set(0, &[RED, GREEN]);
+    // Horizontal scroll of 8: the tile at column 1 reaches the left edge.
+    let code = prog(&[ppu_base(0x01), tile.clone(), vram_words(0x1001, &[0x0001]), pal.clone(), st(0x08, 0x210D), st(0x00, 0x210D)]);
+    let Some((_, img)) = shot("rd-scroll-h", &code) else { return };
+    let img = img.unwrap();
+    assert_eq!(img.rgb(0, 0), rgb(GREEN));
+    assert_eq!(img.rgb(8, 0), rgb(RED));
+
+    // A 64x64 map scrolled by (256, 256) shows its fourth screen: entry (0,0) is at word $1000 + 3*$400.
+    let code = prog(&[
+        ppu_base(0x01),
+        st(0x13, 0x2107),
+        tile,
+        vram_words(0x1000 + 3 * 0x400, &[0x0001]),
+        pal,
+        st(0x00, 0x210D),
+        st(0x01, 0x210D),
+        st(0x00, 0x210E),
+        st(0x01, 0x210E),
+    ]);
+    let Some((_, img)) = shot("rd-scroll-big", &code) else { return };
+    assert_eq!(img.unwrap().rgb(0, 0), rgb(GREEN));
+}
+
+#[test]
+fn tile_priority_orders_the_backgrounds_and_the_bit_of_bg3() {
+    // BG1 and BG2 both have a tile with colour 1 at (0,0): BG1 uses palette 0, BG2 palette 1; BG3 (2 bits)
+    // has colour 1 of palette 2.
+    let t4 = [vram_words(16, &tile4(&[(0, 0, 1)])), vram_words(32, &tile4(&[(0, 0, 1)]))].concat();
+    let t2 = vram_words(0x2000 + 8, &tile2(&[(0, 0, 1)]));
+    let pal = cgram_set(0, &[0, RED]);
+    let pal2 = [cgram_set(16 + 1, &[GREEN]), cgram_set(2 * 4 + 1, &[BLUE])].concat();
+    let case = |name: &str, bg1: u16, bg2: u16, bg3: u16, extra: Vec<u8>| -> Option<[u8; 3]> {
+        let code = prog(&[
+            ppu_base(0x07),
+            t4.clone(),
+            t2.clone(),
+            vram_words(0x1000, &[bg1]),
+            vram_words(0x1400, &[bg2]),
+            vram_words(0x1800, &[bg3]),
+            pal.clone(),
+            pal2.clone(),
+            extra,
+        ]);
+        let (_, img) = shot(&format!("rd-pri-{name}"), &code)?;
+        Some(img.unwrap().rgb(0, 0))
+    };
+    let (e1, e2, e3) = (0x0001u16, 0x0401 | 0x0000, 0x0801);
+    // BG2 with high priority covers BG1 with low priority; and the reverse.
+    let Some(c) = case("bg2-front", e1, e2 | 0x2000, 0, vec![]) else { return };
+    assert_eq!(c, rgb(GREEN));
+    let Some(c) = case("bg1-front", e1 | 0x2000, e2, 0, vec![]) else { return };
+    assert_eq!(c, rgb(RED));
+    // With equal priority BG1 is in front of BG2, and both are in front of BG3 of low priority.
+    let Some(c) = case("equal", e1, e2, e3, vec![]) else { return };
+    assert_eq!(c, rgb(RED));
+    // BG3 with high priority is behind BG1 and BG2 of high priority, and in front of them with the bit set.
+    let Some(c) = case("bg3-high", e1 | 0x2000, e2, e3 | 0x2000, vec![]) else { return };
+    assert_eq!(c, rgb(RED));
+    let Some(c) = case("bg3-bit", e1 | 0x2000, e2, e3 | 0x2000, st(0x09, 0x2105)) else { return };
+    assert_eq!(c, rgb(BLUE));
+}
+
+/// Sprite tiles live at word $2000 (name base 1); `tile` is the tile number, `px` its pixels.
+fn sprite_tile(tile: u16, px: &[(usize, usize, u8)]) -> Vec<u8> {
+    vram_words(0x2000 + tile * 16, &tile4(px))
+}
+
+#[test]
+fn sprites_have_palette_flip_position_size_and_order() {
+    let pal = cgram_set(128 + 2 * 16 + 3, &[GREEN]);
+    let pal3 = cgram_set(128 + 3 * 16 + 3, &[BLUE]);
+    let back = cgram_set(0, &[RED]);
+    let one = |name: &str, oam: &[u8], hi: &[u8], extra: Vec<u8>| -> Option<Img> {
+        let code = prog(&[
+            ppu_base(0x10),
+            sprite_tile(1, &[(1, 1, 3)]),
+            sprite_tile(0x12, &[(0, 0, 3)]),
+            pal.clone(),
+            pal3.clone(),
+            back.clone(),
+            oam_set(0, oam),
+            oam_set(0x100, hi),
+            extra,
+        ]);
+        let (r, img) = shot(&format!("rd-spr-{name}"), &code)?;
+        assert_eq!(r.code, 0, "{}", r.out);
+        img
+    };
+    // Sprite 0: 8x8 at (10,20), tile 1, palette 2. The pixel (1,1) shows at (11, 22): Y is one line late.
+    let Some(img) = one("small", &[10, 20, 1, 0x04], &[], vec![]) else { return };
+    assert_eq!(img.rgb(11, 22), rgb(GREEN));
+    assert_eq!(img.rgb(10, 20), rgb(RED));
+    // Flipped both ways: the pixel (1,1) moves to (6,6).
+    let Some(img) = one("flip", &[10, 20, 1, 0x04 | 0xC0], &[], vec![]) else { return };
+    assert_eq!(img.rgb(16, 27), rgb(GREEN));
+    // X = 508 (9 bits): the sprite starts four pixels left of the screen, so pixel (1,1) is at (-3, ..) and is cut.
+    let Some(img) = one("negative", &[0xFC, 20, 1, 0x04], &[1], vec![]) else { return };
+    assert_eq!(img.rgb(0, 22), rgb(RED));
+    assert_eq!(img.rgb(1, 22), rgb(RED));
+    // Two sprites at the same place and priority: the lower index (palette 2) wins.
+    let Some(img) = one("order", &[10, 20, 1, 0x04, 10, 20, 1, 0x06], &[], vec![]) else { return };
+    assert_eq!(img.rgb(11, 22), rgb(GREEN));
+    // A large sprite (32x32 with size select 1): tile 1 + (1,1) is tile $12, shown at (+8,+8).
+    let Some(img) = one("large", &[10, 20, 1, 0x04], &[2], st(0x21, 0x2101)) else { return };
+    assert_eq!(img.rgb(10 + 8, 21 + 8), rgb(GREEN));
+}
+
+#[test]
+fn sprites_mix_with_the_backgrounds_by_priority() {
+    // BG1 tile 1 colour 1 (green) at (0,0), low priority; a sprite of priority 1 at the same place (blue).
+    let case = |name: &str, spr_pri: u8| -> Option<[u8; 3]> {
+        let code = prog(&[
+            ppu_base(0x11),
+            vram_words(16, &tile4(&[(0, 0, 1)])),
+            vram_words(0x1000, &[0x0001]),
+            sprite_tile(1, &[(0, 0, 1)]),
+            cgram_set(0, &[0, GREEN]),
+            cgram_set(128 + 1, &[BLUE]),
+            oam_set(0, &[0, 255, 1, spr_pri << 4]),
+            // the other 127 sprites are off screen
+            st(0x00, 0x2102),
+        ]);
+        let (_, img) = shot(&format!("rd-mix-{name}"), &code)?;
+        Some(img.unwrap().rgb(0, 0))
+    };
+    // Sprite Y = 255 puts the sprite on line 0; BG1 pixel (0,0) is low priority.
+    let Some(c) = case("s1", 1) else { return };
+    assert_eq!(c, rgb(GREEN), "priority 1 is behind BG1");
+    let Some(c) = case("s2", 2) else { return };
+    assert_eq!(c, rgb(BLUE), "priority 2 is in front of low priority BG1");
+}
+
+#[test]
+fn what_is_not_drawn_is_reported() {
+    let code = prog(&[st(0x0F, 0x2100), st(0x07, 0x2105), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
+    let Some((r, img)) = shot("rd-mode7", &code) else { return };
+    assert!(r.out.contains("warning: graphics mode 7 is not drawn"), "{}", r.out);
+    assert_eq!(img.unwrap().rgb(4, 4), rgb(RED));
+
+    let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x01, 0x212E), st(0x10, 0x2106)]);
+    let Some((r, _)) = shot("rd-math", &code) else { return };
+    assert!(r.out.contains("warning: colour math is not applied"), "{}", r.out);
+    assert!(r.out.contains("warning: windows are not applied"), "{}", r.out);
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
 }

@@ -4,12 +4,13 @@
  * runtime hooks, a frame clock driven by rt_tick, NMI delivery and a final report. Build it with
  * the generated C, defining SNES_RT_TICK (and SNES_RT_CHECKS to find width mismatches):
  *
- *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR]
+ *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png]
  *
  * The ROM is read from the file at run time and is never part of the generated sources.
  * Time is not cycle accurate: a frame is a fixed number of executed blocks.
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
- * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin and ppu_regs.bin.
+ * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin and ppu_regs.bin. --screenshot draws
+ * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
  * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned.
@@ -65,6 +66,7 @@ static int nmi_pending; /* a frame ended with NMI enabled and it has not been de
 static int in_nmi;
 
 static void report(const char *cause);
+static void write_scroll(uint32_t off, uint8_t v);
 
 static uint8_t rom_byte(uint32_t a) {
     uint32_t bank = (a >> 16) & 0x7F;
@@ -225,6 +227,9 @@ void bus_write8(uint32_t a, uint8_t v) {
             case 0x2102: oam_byte = (((oam_byte >> 1 & 0x100) | v) << 1) & 0x3FF; break;
             case 0x2103: oam_byte = (((oam_byte >> 1 & 0xFF) | (uint32_t)(v & 1) << 8) << 1) & 0x3FF; break;
             case 0x2104: oam_write(v); break;
+            case 0x210D: case 0x210E: case 0x210F: case 0x2110: case 0x2111: case 0x2112: case 0x2113: case 0x2114:
+                write_scroll(off, v);
+                break;
             case 0x2115:
                 if (v & 0x0C) vram_translate = v;
                 break;
@@ -260,6 +265,219 @@ void bus_write8(uint32_t a, uint8_t v) {
 }
 
 /* ---- Report and stop ---- */
+
+/* ---- Screenshot: background and sprite renderer, PNG writer ---- */
+
+#define SCREEN_W 256
+#define SCREEN_H 224
+
+/* The result of the last write to each scroll register pair; they are written twice with a shared latch. */
+static uint16_t bg_hofs[4], bg_vofs[4];
+static uint8_t bgofs_latch;
+
+static void write_scroll(uint32_t off, uint8_t v) {
+    int bg = (int)((off - 0x210D) / 2);
+    if ((off - 0x210D) % 2 == 0) {
+        bg_hofs[bg] = (uint16_t)((v << 8) | (bgofs_latch & ~7) | ((bg_hofs[bg] >> 8) & 7));
+    } else {
+        bg_vofs[bg] = (uint16_t)((v << 8) | bgofs_latch);
+    }
+    bgofs_latch = v;
+}
+
+/* One row of a tile as colour indices: `bpp` planes of 8 pixels, planes 0-1 first, then 2-3 sixteen bytes on. */
+static int tile_pixel(uint32_t byte_addr, int bpp, int ix, int iy) {
+    int plane, c = 0;
+    for (plane = 0; plane < bpp; plane++) {
+        uint32_t a = (byte_addr + (uint32_t)((plane >> 1) * 16 + iy * 2 + (plane & 1))) & 0xFFFF;
+        c |= (vram[a] >> (7 - ix) & 1) << plane;
+    }
+    return c;
+}
+
+/* CGRAM index of the pixel (x, y) of background `bg` (0-2) when its entry has priority `pri`, or -1. */
+static int bg_pixel(int bg, int x, int y, int pri) {
+    int bpp = bg < 2 ? 4 : 2;
+    int tsz = (hw[0x2105] >> (4 + bg) & 1) ? 16 : 8;
+    uint8_t map = hw[0x2107 + bg];
+    int size = map & 3;
+    int width = (size & 1 ? 64 : 32) * tsz, height = (size & 2 ? 64 : 32) * tsz;
+    int px = (x + (bg_hofs[bg] & 0x3FF)) & (width - 1), py = (y + (bg_vofs[bg] & 0x3FF)) & (height - 1);
+    int tx = px / tsz, ty = py / tsz, ix = px % tsz, iy = py % tsz;
+    int sx = (size & 1) ? (tx >> 5) & 1 : 0, sy = (size & 2) ? (ty >> 5) & 1 : 0;
+    uint32_t word = ((uint32_t)(map >> 2) << 10) + (uint32_t)(sx + sy * ((size & 1) ? 2 : 1)) * 0x400 + (uint32_t)((ty & 31) * 32 + (tx & 31));
+    uint32_t entry = (uint32_t)(vram[(word * 2) & 0xFFFF] | vram[(word * 2 + 1) & 0xFFFF] << 8);
+    uint32_t tile = entry & 0x3FF, chr;
+    int pal = (int)(entry >> 10 & 7), c;
+    if ((int)(entry >> 13 & 1) != pri) return -1;
+    if (entry & 0x4000) ix = tsz - 1 - ix;
+    if (entry & 0x8000) iy = tsz - 1 - iy;
+    if (tsz == 16) {
+        tile += (uint32_t)((ix >= 8) + (iy >= 8) * 16);
+        ix &= 7;
+        iy &= 7;
+    }
+    chr = bg == 0 ? (hw[0x210B] & 0xFu) : bg == 1 ? (uint32_t)(hw[0x210B] >> 4) : (hw[0x210C] & 0xFu);
+    c = tile_pixel((chr << 13) + tile * (uint32_t)bpp * 8, bpp, ix, iy);
+    if (!c) return -1;
+    return bpp == 4 ? pal * 16 + c : pal * 4 + c;
+}
+
+static int16_t spr_col[SCREEN_H][SCREEN_W];
+static uint8_t spr_pri[SCREEN_H][SCREEN_W];
+
+static void draw_sprites(void) {
+    static const int small_w[8] = {8, 8, 8, 16, 16, 32, 16, 16}, small_h[8] = {8, 8, 8, 16, 16, 32, 32, 32};
+    static const int large_w[8] = {16, 32, 64, 32, 64, 64, 32, 32}, large_h[8] = {16, 32, 64, 32, 64, 64, 64, 32};
+    int sel = hw[0x2101] >> 5, i, dy, dx;
+    uint32_t name_base = (uint32_t)(hw[0x2101] & 7) << 13;
+    uint32_t name_gap = (uint32_t)((hw[0x2101] >> 3 & 3) + 1) << 12;
+    memset(spr_col, 0xFF, sizeof spr_col); /* -1: nothing */
+    for (i = 127; i >= 0; i--) {
+        int hi = oam[512 + i / 4] >> ((i % 4) * 2) & 3;
+        int w = (hi & 2) ? large_w[sel] : small_w[sel], h = (hi & 2) ? large_h[sel] : small_h[sel];
+        int x = oam[i * 4] | (hi & 1) << 8, y = oam[i * 4 + 1];
+        uint8_t tile = oam[i * 4 + 2], attr = oam[i * 4 + 3];
+        uint32_t table = name_base + ((attr & 1) ? name_gap : 0);
+        if (x >= 256) x -= 512;
+        for (dy = 0; dy < h; dy++) {
+            int line = (y + 1 + dy) & 0xFF, iy = (attr & 0x80) ? h - 1 - dy : dy;
+            if (line >= SCREEN_H) continue;
+            for (dx = 0; dx < w; dx++) {
+                int sx = x + dx, ix = (attr & 0x40) ? w - 1 - dx : dx, c;
+                uint32_t sub;
+                if (sx < 0 || sx >= SCREEN_W) continue;
+                sub = (uint32_t)((((tile >> 4) + iy / 8) & 0xF) << 4 | (((tile & 0xF) + ix / 8) & 0xF));
+                c = tile_pixel(((table + sub * 16) * 2) & 0xFFFF, 4, ix & 7, iy & 7);
+                if (!c) continue;
+                spr_col[line][sx] = (int16_t)(128 + (attr >> 1 & 7) * 16 + c);
+                spr_pri[line][sx] = (uint8_t)(attr >> 4 & 3);
+            }
+        }
+    }
+}
+
+/* Layers front to back: kind 0 = sprites of priority n, 1 = BGn+1 with tile priority 1, 2 = BGn+1 with 0. */
+typedef struct { int kind, n; } Layer;
+
+static int pixel_index(const Layer *order, int count, int x, int y, int mode1) {
+    int i, c;
+    for (i = 0; i < count; i++) {
+        int n = order[i].n;
+        if (order[i].kind == 0) {
+            if (!(hw[0x212C] & 0x10)) continue;
+            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n) return spr_col[y][x];
+        } else {
+            if (!mode1 || !(hw[0x212C] >> n & 1)) continue;
+            c = bg_pixel(n, x, y, order[i].kind == 1);
+            if (c >= 0) return c;
+        }
+    }
+    return 0;
+}
+
+static uint32_t crc_table[256];
+
+static uint32_t crc32_update(uint32_t crc, const uint8_t *p, size_t n) {
+    size_t i;
+    if (!crc_table[1]) {
+        uint32_t k, j, c;
+        for (k = 0; k < 256; k++) {
+            c = k;
+            for (j = 0; j < 8; j++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            crc_table[k] = c;
+        }
+    }
+    crc = ~crc;
+    for (i = 0; i < n; i++) crc = crc_table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
+static void put32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
+static void write_chunk(FILE *f, const char *type, const uint8_t *data, uint32_t n) {
+    uint8_t b[4];
+    uint32_t crc;
+    put32(b, n);
+    fwrite(b, 1, 4, f);
+    fwrite(type, 1, 4, f);
+    if (n) fwrite(data, 1, n, f);
+    crc = crc32_update(0, (const uint8_t *)type, 4);
+    crc = crc32_update(crc, data, n);
+    put32(b, crc);
+    fwrite(b, 1, 4, f);
+}
+
+/* RGB image as a PNG whose zlib stream has only stored (uncompressed) blocks. */
+static int write_png(const char *path, const uint8_t *rgb, uint32_t w, uint32_t h) {
+    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    size_t row = 1 + (size_t)w * 3, raw = row * h, blocks = (raw + 65534) / 65535, z = 2 + raw + blocks * 5 + 4, pos = 2, off = 0, y;
+    uint8_t *zbuf = (uint8_t *)malloc(z), *line = (uint8_t *)malloc(raw), ihdr[13];
+    uint32_t a = 1, b = 0;
+    FILE *f;
+    if (!zbuf || !line) { free(zbuf); free(line); return 0; }
+    for (y = 0; y < h; y++) {
+        line[y * row] = 0; /* filter: none */
+        memcpy(line + y * row + 1, rgb + y * w * 3, (size_t)w * 3);
+    }
+    zbuf[0] = 0x78; zbuf[1] = 0x01;
+    while (off < raw) {
+        size_t n = raw - off > 65535 ? 65535 : raw - off, i;
+        zbuf[pos++] = off + n == raw;
+        zbuf[pos++] = (uint8_t)n; zbuf[pos++] = (uint8_t)(n >> 8);
+        zbuf[pos++] = (uint8_t)~n; zbuf[pos++] = (uint8_t)(~n >> 8);
+        memcpy(zbuf + pos, line + off, n);
+        for (i = 0; i < n; i++) { a = (a + line[off + i]) % 65521; b = (b + a) % 65521; }
+        pos += n;
+        off += n;
+    }
+    put32(zbuf + pos, (b << 16) | a);
+    pos += 4;
+    put32(ihdr, w); put32(ihdr + 4, h);
+    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    f = fopen(path, "wb");
+    if (f) {
+        fwrite(sig, 1, 8, f);
+        write_chunk(f, "IHDR", ihdr, 13);
+        write_chunk(f, "IDAT", zbuf, (uint32_t)pos);
+        write_chunk(f, "IEND", NULL, 0);
+        fclose(f);
+    }
+    free(zbuf);
+    free(line);
+    return f != NULL;
+}
+
+static const char *shot_path;
+
+static void screenshot(void) {
+    static const Layer front_bg3_low[10] = {{0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {1, 2}, {0, 0}, {2, 2}};
+    static const Layer front_bg3_high[10] = {{1, 2}, {0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {0, 0}, {2, 2}};
+    const Layer *order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
+    int mode = hw[0x2105] & 7, bright = hw[0x2100] & 15, blank = hw[0x2100] >> 7 & 1, x, y;
+    uint8_t *rgb = (uint8_t *)malloc((size_t)SCREEN_W * SCREEN_H * 3);
+    if (mode != 1) printf("warning: graphics mode %d is not drawn\n", mode);
+    if (hw[0x212E] | hw[0x212F]) printf("warning: windows are not applied\n");
+    if (hw[0x2106] & 0x0F) printf("warning: mosaic is not applied\n");
+    if (hw[0x2131] & 0x3F) printf("warning: colour math is not applied\n");
+    if (!rgb) return;
+    draw_sprites();
+    for (y = 0; y < SCREEN_H; y++) {
+        for (x = 0; x < SCREEN_W; x++) {
+            int idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1);
+            uint8_t *p = rgb + ((size_t)y * SCREEN_W + (size_t)x) * 3;
+            int c = idx < 0 ? 0 : cgram[idx * 2] | cgram[idx * 2 + 1] << 8, k;
+            for (k = 0; k < 3; k++) {
+                int c5 = c >> (5 * k) & 31, c8 = (c5 << 3) | (c5 >> 2);
+                p[k] = (uint8_t)(idx < 0 ? 0 : c8 * bright / 15);
+            }
+        }
+    }
+    if (!write_png(shot_path, rgb, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", shot_path);
+    free(rgb);
+}
 
 static void dump_file(const char *name, const uint8_t *data, size_t n) {
     char path[1024];
@@ -301,6 +519,7 @@ static void report(const char *cause) {
     if (!any) printf("dma: none\n");
     if (vram_translate) printf("warning: VRAM address translation ($2115=%02X) is not modelled\n", vram_translate);
     if (dump_dir) dump_memories();
+    if (shot_path) screenshot();
 }
 
 static void stop(int code, const char *cause) {
@@ -416,6 +635,8 @@ int main(int argc, char **argv) {
             max_frames = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (!strcmp(argv[i], "--frame-blocks") && i + 1 < argc) {
             frame_len = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) {
+            shot_path = argv[++i];
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -426,7 +647,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!path || max_frames == 0 || frame_len == 0) {
-        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR]\n", argv[0]);
+        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
