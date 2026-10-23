@@ -5,7 +5,11 @@
  * the generated C, defining SNES_RT_TICK (and SNES_RT_CHECKS to find width mismatches):
  *
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png]
- *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]...
+ *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]... [--press BUTTONS@A-B]...
+ *
+ * --press holds buttons of joypad 1 down during frames A to B (BUTTONS: B Y SELECT START UP DOWN LEFT RIGHT A X L R
+ * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
+ * serial read ($4016). With no --press nothing is held.
  *
  * The ROM is read from the file at run time and is never part of the generated sources.
  * Time is not cycle accurate: a frame is a fixed number of executed blocks.
@@ -80,6 +84,73 @@ static int irq_flag;    /* $4211 bit 7: the IRQ line is asserted until $4211 is 
 static int irq_fired;   /* the IRQ of this frame has been raised */
 static uint32_t irqs;
 static unsigned ctx_switches;
+
+/* ---- Joypad 1 ---- */
+
+/* Buttons in the layout of $4219:$4218: B Y Select Start Up Down Left Right A X L R from bit 15 to bit 4. */
+#define JOY_NAMES 12
+static const char *const joy_name[JOY_NAMES] = {"B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "X", "L", "R"};
+#define MAX_PRESS 32
+static struct { uint16_t mask; uint32_t lo, hi; } press[MAX_PRESS];
+static int npress;
+static int joy_read_done; /* the auto-read of this frame has been done */
+static int joy_latched;   /* $4016 bit 0 is 1 */
+static uint16_t joy_cap;  /* buttons captured by the last latch */
+static int joy_count;     /* bits of joy_cap already read through $4016 */
+
+/* The buttons held down during the current frame. */
+static uint16_t joy_now(void) {
+    uint16_t m = 0;
+    int i;
+    for (i = 0; i < npress; i++) if (frames >= press[i].lo && frames <= press[i].hi) m |= press[i].mask;
+    return m;
+}
+
+/* Parses BUTTONS@A-B, BUTTONS being names joined by '+'; returns 0 when it is malformed. */
+static int parse_press(const char *arg) {
+    char buf[128], *at, *end, *tok, *next;
+    uint16_t mask = 0;
+    unsigned long lo, hi;
+    if (npress == MAX_PRESS || strlen(arg) >= sizeof buf) return 0;
+    strcpy(buf, arg);
+    at = strchr(buf, '@');
+    if (!at) return 0;
+    *at++ = 0;
+    for (tok = buf; tok; tok = next) {
+        int i, found = 0;
+        next = strchr(tok, '+');
+        if (next) *next++ = 0;
+        for (i = 0; i < JOY_NAMES; i++) {
+            if (!strcmp(tok, joy_name[i])) { mask |= (uint16_t)(0x8000 >> i); found = 1; }
+        }
+        if (!found) return 0;
+    }
+    lo = strtoul(at, &end, 10);
+    if (end == at || *end != '-') return 0;
+    at = end + 1;
+    hi = strtoul(at, &end, 10);
+    if (end == at || *end || hi < lo) return 0;
+    press[npress].mask = mask;
+    press[npress].lo = (uint32_t)lo;
+    press[npress].hi = (uint32_t)hi;
+    npress++;
+    return 1;
+}
+
+/* At the start of vblank the console reads the pads on its own when $4200 bit 0 asks for it. */
+static void joy_auto_read(void) {
+    uint16_t m = joy_now();
+    if (!(hw[0x4200] & 1)) return;
+    hw[0x4218] = (uint8_t)m;
+    hw[0x4219] = (uint8_t)(m >> 8);
+    hw[0x421A] = hw[0x421B] = 0;
+}
+
+/* $4212 bit 0: the auto-read takes the first 3 of 262 lines of vblank. */
+static int joy_busy(void) {
+    uint64_t start = (uint64_t)frame_len * 9 / 10, len = (uint64_t)frame_len * 3 / 262;
+    return tick_in_frame >= start && tick_in_frame < start + (len ? len : 1);
+}
 
 static void report(const char *cause);
 static void write_scroll(uint32_t off, uint8_t v);
@@ -182,6 +253,9 @@ static uint8_t bus_read8_raw(uint32_t a) {
                 return apu_port[off - 0x2140];
             case 0x2180:
                 return wram[wram_port++ & 0x1FFFF];
+            case 0x4016:
+                if (joy_latched) return (uint8_t)(joy_cap >> 15 & 1);
+                return (uint8_t)(joy_count < 16 ? joy_cap >> (15 - joy_count++) & 1 : 1);
             case 0x4210:
                 v = (uint8_t)((nmi_flag ? 0x80 : 0) | 0x02);
                 nmi_flag = 0;
@@ -195,6 +269,7 @@ static uint8_t bus_read8_raw(uint32_t a) {
                  * each of the 262 lines of the frame; auto joypad read never busy. */
                 v = (uint8_t)((uint64_t)tick_in_frame * 10 >= (uint64_t)frame_len * 9 ? 0x80 : 0);
                 if ((uint64_t)tick_in_frame * 262 % frame_len * 5 >= (uint64_t)frame_len * 4) v |= 0x40;
+                if (joy_busy()) v |= 0x01;
                 return v;
             default:
                 return hw[off];
@@ -338,6 +413,13 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
             case 0x2119: vram_write(1, v); break;
             case 0x2121: cg_index = v; cg_write_half = 0; cg_read_half = 0; break;
             case 0x2122: cgram_write(v); break;
+            case 0x4016:
+                /* Latch: while the bit is 1 the pad's shift register follows the buttons; when it goes back to 0
+                 * the buttons of that moment are what the serial reads return. */
+                joy_cap = joy_now();
+                joy_count = 0;
+                joy_latched = v & 1;
+                break;
             case 0x2132:
                 for (i = 0; i < 3; i++) if (v >> (5 + i) & 1) fixed_col[i] = v & 31;
                 break;
@@ -860,8 +942,13 @@ static int irq_due(void) {
 
 void rt_poll(Cpu *c) {
     blocks++;
+    if (!joy_read_done && (uint64_t)(tick_in_frame + 1) * 10 >= (uint64_t)frame_len * 9) {
+        joy_read_done = 1;
+        joy_auto_read();
+    }
     if (++tick_in_frame >= frame_len) {
         tick_in_frame = 0;
+        joy_read_done = 0;
         frames++;
         nmi_flag = 1;
         irq_fired = 0;
@@ -929,6 +1016,8 @@ int main(int argc, char **argv) {
             trace_hi = (uint32_t)strtoul(end + 1, &end, 10);
             if (*end || trace_hi < trace_lo) { path = NULL; break; }
             trace_window = 1;
+        } else if (!strcmp(argv[i], "--press") && i + 1 < argc) {
+            if (!parse_press(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--trace-reads")) {
             trace_reads_on = 1;
         } else if (!strcmp(argv[i], "--watch") && i + 1 < argc) {
@@ -956,7 +1045,8 @@ int main(int argc, char **argv) {
     }
     if (!path || max_frames == 0 || frame_len == 0) {
         fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE]\n"
-                        "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n", argv[0]);
+                        "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
+                        "       [--press BUTTONS@A-B]...\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;

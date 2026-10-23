@@ -15,6 +15,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 # Ejecutar la ROM completa sin vídeo ni audio (con Visual Studio: desde "x64 Native Tools" o tras vcvars64.bat):
 #   cl /MP /TC /std:c11 /DSNES_RT_TICK /DSNES_RT_CHECKS out\rom\*.c /Fe:out\headless.exe /Fo:out\rom\
 #   out\headless.exe roms\alttp_usa.sfc --frames 120 [--frame-blocks 20000] [--dump out\dump] [--screenshot out\shot.png]   # informe de registros, DMA y causa de parada; --dump (carpeta existente) escribe vram.bin, cgram.bin, oam.bin y ppu_regs.bin; --screenshot dibuja el estado final de la PPU (modo 1, sprites y color math con color fijo o subpantalla; sin ventanas, HDMA ni mosaico) en un PNG de 256x224
+#   Mando 1: --press BOTONES@A-B (repetible; B Y SELECT START UP DOWN LEFT RIGHT A X L R unidos con +; fotogramas A a B desde 0) simula lectura automática ($4218-$4219 con $4200 bit 0) y serie ($4016); p. ej. --press START@1100-1110 lleva ALttP a PLAYER SELECT
 #   Trazas (compilar además con /DSNES_RT_TRACE): --trace-frames A-B abre la ventana de fotogramas (desde 0); dentro de ella, --trace-reads imprime las lecturas de $2100-$43FF con el bloque que las hace y --watch ADDR (repetible: 0000-1FFF, 7E:xxxx, 7F:xxxx u offset de 17 bits) los cambios de ese byte de WRAM
 #   out\headless.exe roms\alttp_usa.sfc --frames 100 --trace-frames 90-91 --trace-reads --watch 11
 ```
