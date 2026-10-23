@@ -143,7 +143,7 @@ fn build_block(d: &Discovery, start: u32, leaders: &BTreeSet<u32>, diags: &mut V
                 EdgeKind::Dispatch => b.succs.push((e.to, SuccKind::Dispatch)),
             }
         }
-        b.ret |= flow == Flow::Return;
+        b.ret |= flow == Flow::Return && b.succs.iter().all(|s| s.1 != SuccKind::Dispatch);
         let Some(next) = fall else { break };
         if !d.instrs.contains_key(&next) {
             diags.push(Diagnostic::MissingTarget { from: start, to: next });
