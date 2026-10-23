@@ -147,6 +147,14 @@ static void joy_auto_read(void) {
 }
 
 /* $4212 bit 0: the auto-read takes the first 3 of 262 lines of vblank. */
+/* H/V counter latch ($2137): $213C/$213D give the low byte then bit 0 of each counter. */
+static uint16_t hv_h, hv_v;
+static int hv_latched, hv_read[2];
+static uint8_t hv_get(int vertical) {
+    uint16_t c = vertical ? hv_v : hv_h;
+    return hv_read[vertical]++ & 1 ? (uint8_t)(c >> 8 & 1) : (uint8_t)c;
+}
+
 static int joy_busy(void) {
     uint64_t start = (uint64_t)frame_len * 9 / 10, len = (uint64_t)frame_len * 3 / 262;
     return tick_in_frame >= start && tick_in_frame < start + (len ? len : 1);
@@ -246,8 +254,19 @@ static uint8_t bus_read8_raw(uint32_t a) {
             case 0x2139: return vram_read(0);
             case 0x213A: return vram_read(1);
             case 0x213B: return cgram_read();
-            case 0x213C: case 0x213D: case 0x213E: case 0x213F:
-            case 0x2137:
+            case 0x2137: /* latch the counters; the value read is open bus */
+                hv_v = (uint16_t)((uint64_t)tick_in_frame * 262 / frame_len);
+                hv_h = (uint16_t)((uint64_t)tick_in_frame * 262 % frame_len * 340 / frame_len);
+                hv_latched = 1;
+                return hw[off];
+            case 0x213C: case 0x213D:
+                v = hv_get(off == 0x213D);
+                return v;
+            case 0x213F:
+                v = (uint8_t)(hv_latched ? 0x40 : 0) | 0x03;
+                hv_latched = 0; hv_read[0] = hv_read[1] = 0;
+                return v;
+            case 0x213E:
                 return hw[off];
             case 0x2140: case 0x2141: case 0x2142: case 0x2143:
                 return apu_port[off - 0x2140];
@@ -836,6 +855,9 @@ static void switch_to(Cpu *c, int to) {
 /* An RTS/RTL returned to an address no active call expects and the return climbed out of the generated code. */
 void rt_lost_return(Cpu *c) {
     printf("LOST_RETURN to %04X with S=%04X\n", (unsigned)c->ret, (unsigned)c->s);
+#ifdef SNES_RT_TRACE
+    printf("last block %06X A=%04X X=%04X Y=%04X DB=%02X\n", (unsigned)rt_block, c->a, c->x, c->y, c->db);
+#endif
     stop(14, "return to an address no call expects");
 }
 

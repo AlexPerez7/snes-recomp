@@ -301,8 +301,29 @@ pub struct Emitter<'a> {
 struct Body {
     entry: u32,
     blocks: BTreeSet<u32>,
-    used_labels: BTreeSet<u32>,
+    used_labels: BTreeSet<String>,
     refs: BTreeSet<u32>,
+    /// Set when blocks are emitted once per combination of widths they are reached with.
+    var: Option<Variants>,
+}
+
+/// The copies of a function's blocks, one per `(start, widths)`.
+struct Variants {
+    all: BTreeSet<(u32, Flags)>,
+    /// Starts with more than one copy: only these get the widths in their label.
+    multi: BTreeSet<u32>,
+    /// Last instruction (and its widths) of the block being emitted.
+    cur: (u32, Flags),
+}
+
+impl Variants {
+    fn label(&self, start: u32, f: Flags) -> String {
+        if self.multi.contains(&start) {
+            format!("{}_m{}x{}", label(start), if f.m { 8 } else { 16 }, if f.x { 8 } else { 16 })
+        } else {
+            label(start)
+        }
+    }
 }
 
 impl<'a> Emitter<'a> {
@@ -362,11 +383,69 @@ impl<'a> Emitter<'a> {
 ")) }
     }
 
+    /// Widths before each instruction of `block` when it starts with `f`.
+    fn chain(&self, block: &Block, f: Flags) -> Result<Vec<Flags>, String> {
+        let mut out = vec![f];
+        for pair in block.instrs.windows(2) {
+            let key = (pair[0], *out.last().expect("not empty"));
+            let mut next = self.d.transitions.get(&key).into_iter().flatten().filter(|t| t.0 == pair[1]);
+            match (next.next(), next.next()) {
+                (Some(t), None) => out.push(t.1),
+                _ => return Err(format!("{} is reached with different register widths and the widths after it are not known", fmt_addr(pair[0]))),
+            }
+        }
+        Ok(out)
+    }
+
+    /// The widths a function is entered with: all those it is called with, the first one found first.
+    fn entry_widths(&self, entry: u32) -> Result<Vec<Flags>, String> {
+        let first = *self.d.flags.get(&entry).ok_or_else(|| format!("{} has no widths", fmt_addr(entry)))?;
+        let mut out = vec![first];
+        out.extend(self.d.flag_conflicts.get(&entry).into_iter().flatten().copied().filter(|&f| f != first));
+        Ok(out)
+    }
+
+    /// Every `(start, widths)` copy of the blocks of a function reachable from its entry.
+    fn variants(&self, entry: u32, blocks: &BTreeSet<u32>) -> Result<BTreeSet<(u32, Flags)>, String> {
+        let mut all = BTreeSet::new();
+        let mut queue: Vec<(u32, Flags)> = self.entry_widths(entry)?.into_iter().map(|f| (entry, f)).collect();
+        while let Some((start, f)) = queue.pop() {
+            if !all.insert((start, f)) {
+                continue;
+            }
+            let block = &self.g.blocks[&start];
+            let last = (block.end(), *self.chain(block, f)?.last().expect("not empty"));
+            for &(to, nf) in self.d.transitions.get(&last).into_iter().flatten() {
+                if blocks.contains(&to) {
+                    queue.push((to, nf));
+                }
+            }
+        }
+        Ok(all)
+    }
+
+    /// The C label of the block at `to` that control reaches from the block being emitted.
+    fn target_label(&self, body: &Body, to: u32) -> Result<String, String> {
+        let Some(v) = &body.var else { return Ok(label(to)) };
+        let mut ways = self.d.transitions.get(&v.cur).into_iter().flatten().filter(|t| t.0 == to);
+        match (ways.next(), ways.next()) {
+            (Some(t), None) => Ok(v.label(to, t.1)),
+            _ => {
+                let mut copies = v.all.iter().filter(|c| c.0 == to);
+                match (copies.next(), copies.next()) {
+                    (Some(c), None) => Ok(v.label(to, c.1)),
+                    _ => Err(format!("{} is reached with different register widths and the copy to jump to is not known", fmt_addr(to))),
+                }
+            }
+        }
+    }
+
     /// Transfers control to `target`: a `goto` inside the function, or a tail call.
     fn jump(&self, body: &mut Body, target: u32) -> Result<String, String> {
         if body.blocks.contains(&target) {
-            body.used_labels.insert(target);
-            Ok(format!("goto {};", label(target)))
+            let l = self.target_label(body, target)?;
+            body.used_labels.insert(l.clone());
+            Ok(format!("goto {l};"))
         } else if self.g.functions.contains_key(&target) {
             body.refs.insert(target);
             Ok(format!("{}(c); return;", func_name(target)))
@@ -375,13 +454,20 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn block_lines(&self, body: &mut Body, block: &Block, next: Option<u32>) -> Result<Vec<String>, String> {
-        let flags = self.d.flags[&block.start];
-        // A width that differs among the ways the block is entered (2) is not checked.
+    fn block_lines(&self, body: &mut Body, block: &Block, next: Option<&str>, copy: Option<Flags>) -> Result<Vec<String>, String> {
+        let flags = copy.unwrap_or(self.d.flags[&block.start]);
+        // A width that differs among the ways the block is entered (2) is not checked; a copy has one.
         let varies = |pick: fn(&Flags) -> bool| {
-            self.d.flag_conflicts.get(&block.start).is_some_and(|s| s.iter().any(|f| pick(f) != pick(&flags)))
+            copy.is_none() && self.d.flag_conflicts.get(&block.start).is_some_and(|s| s.iter().any(|f| pick(f) != pick(&flags)))
         };
         let (m, x) = (if varies(|f| f.m) { 2 } else { flags.m as u8 }, if varies(|f| f.x) { 2 } else { flags.x as u8 });
+        let widths: Vec<Flags> = match copy {
+            Some(f0) => self.chain(block, f0)?,
+            None => block.instrs.iter().map(|a| self.d.flags[a]).collect(),
+        };
+        if let Some(v) = &mut body.var {
+            v.cur = (block.end(), *widths.last().expect("a block has at least one instruction"));
+        }
         let mut out = vec!["rt_tick(c);".to_string(), format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
         let dispatch: Vec<u32> = block
             .succs
@@ -393,7 +479,7 @@ impl<'a> Emitter<'a> {
         let mut ends = false;
         for (i, &a) in block.instrs.iter().enumerate() {
             let ins = &self.d.instrs[&a];
-            let f = self.d.flags[&a];
+            let f = widths[i];
             out.push(format!("// {} {}", fmt_addr(a), ins.text()));
             let lines = match ins.flow() {
                 Flow::Call(t) => {
@@ -451,7 +537,7 @@ impl<'a> Emitter<'a> {
         }
         if !ends {
             match block.succs.iter().find(|s| s.1 == SuccKind::Fall) {
-                Some(&(to, _)) if Some(to) == next && body.blocks.contains(&to) => {}
+                Some(&(to, _)) if body.blocks.contains(&to) && Some(self.target_label(body, to)?.as_str()) == next => {}
                 Some(&(to, _)) => out.push(self.jump(body, to)?),
                 None => out.push("return;".into()),
             }
@@ -465,23 +551,64 @@ impl<'a> Emitter<'a> {
             return Err(format!("{} is not the entry of a function", fmt_addr(entry)));
         }
         let blocks = self.reachable_blocks(entry);
-        self.check_widths(&blocks)?;
-        let mut body = Body { entry, blocks: blocks.clone(), used_labels: BTreeSet::new(), refs: BTreeSet::new() };
-        let order: Vec<u32> = blocks.iter().copied().collect();
+        match self.check_widths(&blocks) {
+            Ok(()) => self.function_text(entry, blocks, None),
+            // The C depends on widths that differ: one copy of the blocks per combination of widths,
+            // or the original error if they cannot be told apart.
+            Err(e) => {
+                let all = self.variants(entry, &blocks).map_err(|_| e.clone())?;
+                self.function_text(entry, blocks, Some(all)).map_err(|inner| if inner.contains("different register widths") { e } else { inner })
+            }
+        }
+    }
+
+    fn function_text(&self, entry: u32, blocks: BTreeSet<u32>, all: Option<BTreeSet<(u32, Flags)>>) -> Result<(String, BTreeSet<u32>), String> {
+        let var = all.map(|all| {
+            let mut multi = BTreeSet::new();
+            let mut seen = BTreeSet::new();
+            for &(start, _) in &all {
+                if !seen.insert(start) {
+                    multi.insert(start);
+                }
+            }
+            Variants { all, multi, cur: (entry, Flags { m: true, x: true }) }
+        });
+        // (start, widths of the copy, label) in layout order.
+        let order: Vec<(u32, Option<Flags>, String)> = match &var {
+            None => blocks.iter().map(|&b| (b, None, label(b))).collect(),
+            Some(v) => v.all.iter().map(|&(b, f)| (b, Some(f), v.label(b, f))).collect(),
+        };
+        let entry_label = match &var {
+            None => label(entry),
+            Some(v) => v.label(entry, self.d.flags[&entry]),
+        };
+        let mut body = Body { entry, blocks: blocks.clone(), used_labels: BTreeSet::new(), refs: BTreeSet::new(), var };
         let mut chunks = Vec::new();
-        for (i, &start) in order.iter().enumerate() {
-            let lines = self.block_lines(&mut body, &self.g.blocks[&start], order.get(i + 1).copied())?;
-            chunks.push((start, lines));
+        for (i, (start, copy, name)) in order.iter().enumerate() {
+            let next = order.get(i + 1).map(|o| o.2.as_str());
+            let lines = self.block_lines(&mut body, &self.g.blocks[start], next, *copy)?;
+            chunks.push((name.clone(), lines));
         }
         let mut text = format!("void {}(Cpu *c) {{\n", func_name(entry));
         // Blocks are laid out by address, so an entry that is not the lowest block needs a jump.
-        if order.first() != Some(&entry) {
-            body.used_labels.insert(entry);
-            text.push_str(&format!("    goto {};\n", label(entry)));
+        let mut entries = Vec::new();
+        if let Some(v) = &body.var {
+            // Entered with several widths: pick the copy that matches the CPU, the first found by default.
+            for f in self.entry_widths(entry)?.into_iter().skip(1) {
+                entries.push((f, v.label(entry, f)));
+            }
         }
-        for (start, lines) in chunks {
-            if body.used_labels.contains(&start) {
-                text.push_str(&format!("{}:\n", label(start)));
+        for (f, name) in &entries {
+            body.used_labels.insert(name.clone());
+            text.push_str(&format!("    if (c->m == {} && c->xf == {}) goto {name};\n", f.m as u8, f.x as u8));
+        }
+        if !entries.is_empty() || order.first().map(|o| &o.2) != Some(&entry_label) {
+            body.used_labels.insert(entry_label.clone());
+            text.push_str(&format!("    goto {entry_label};\n"));
+        }
+        for (name, lines) in chunks {
+            if body.used_labels.contains(&name) {
+                text.push_str(&format!("{name}:\n"));
             }
             for l in lines {
                 text.push_str(&format!("    {l}\n"));
@@ -1238,6 +1365,48 @@ exit=\"00:820F\"";
         let rom = [(0x8000, &[0xF0, 0x02, 0xC2, 0x20, 0xA9, 0x12, 0x00, 0x60][..])];
         let err = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap_err();
         assert!(err.contains("00:8004") && err.contains("M=8") && err.contains("M=16"), "{err}");
+    }
+
+    #[test]
+    fn a_block_reached_with_two_widths_is_emitted_once_per_width() {
+        // 8000: SEP #$20 ; 8002: BEQ $8006 ; 8004: REP #$20 ; 8006: INC $0200 (M=8 or M=16) ; 8009: RTS
+        let rom = [(0x8000, &[0xE2, 0x20, 0xF0, 0x02, 0xC2, 0x20, 0xEE, 0x00, 0x02, 0x60][..])];
+        let out = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert!(b.contains(&"L_00_8006_m8x8:".to_string()), "{b:?}");
+        // The 16-bit copy follows REP directly, so it needs no label.
+        assert!(b.contains(&"rt_check_flags(c, 0x008006, 1, 1);".to_string()), "{b:?}");
+        assert!(b.contains(&"rt_check_flags(c, 0x008006, 0, 1);".to_string()), "{b:?}");
+        // The branch goes to the 8-bit copy; REP falls into the 16-bit one.
+        assert!(b.iter().any(|l| l.contains("goto L_00_8006_m8x8;")), "{b:?}");
+        // Blocks that are reached with one width keep their plain labels.
+        assert!(!out.contains("L_00_8004_m"), "{out}");
+    }
+
+    #[test]
+    fn the_copies_of_a_block_run_with_their_own_width() {
+        // Same program: with Z set the branch skips REP and INC is 8-bit; without it INC is 16-bit.
+        let rom = [(0x8000, &[0xE2, 0x20, 0xF0, 0x02, 0xC2, 0x20, 0xEE, 0x00, 0x02, 0x60][..])];
+        let report = r#"//report
+            printf("%02X%02X m=%d\n", bus_read8(0x201), bus_read8(0x200), c.m);"#;
+        let Some(out) = exec("copies-8", &rom, "", &[0x8000], &format!("c.z = 1; bus_write8(0x200, 0xFF);{report}")) else { return };
+        assert_eq!(out, "0000 m=1\n");
+        let Some(out) = exec("copies-16", &rom, "", &[0x8000], &format!("c.z = 0; bus_write8(0x200, 0xFF);{report}")) else { return };
+        assert_eq!(out, "0100 m=0\n");
+    }
+
+    #[test]
+    fn a_function_entered_with_two_widths_picks_the_copy_of_the_cpu() {
+        // 8000: JSR $8010 ; JSR $8020 ... 8010: SEP #$20 ; RTS ; entry 8030: INC $0200 ; RTS reached by two callers
+        // 8000: SEP #$20 ; JSR $8030 ; REP #$20 ; JSR $8030 ; RTS      8030: INC $0200 ; RTS
+        let rom = [
+            (0x8000, &[0xE2, 0x20, 0x20, 0x30, 0x80, 0xC2, 0x20, 0x20, 0x30, 0x80, 0x60][..]),
+            (0x8030, &[0xEE, 0x00, 0x02, 0x60][..]),
+        ];
+        let Some(out) = exec("entry-copies", &rom, "", &[0x8000], r#"bus_write8(0x200, 0xFF);//report
+            printf("%02X%02X\n", bus_read8(0x201), bus_read8(0x200));"#) else { return };
+        // 8-bit INC: FF -> 00 with no carry; then 16-bit INC: 0000 -> 0001.
+        assert_eq!(out, "0001\n");
     }
 
     #[test]
