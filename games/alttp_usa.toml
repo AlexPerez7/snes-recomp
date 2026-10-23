@@ -17,6 +17,12 @@ name = "nmi"
 addr = "00:82D8"
 name = "irq"
 
+# Hilo de la intro: el NMI y el IRQ de 00:82C7/00:831F cambian a el con una trama RTI que el juego
+# prepara en la ROM (09:F818: P=30, PC=F81D, PBR=09), asi que ninguna llamada lo alcanza.
+[[entry]]
+addr = "09:F81D"
+name = "intro_thread"
+
 # Module dispatcher: LDY $10, then the target is built from three parallel
 # byte arrays (low at $8061, high at $807D, bank at $8099) and taken with JML [$03].
 [[table]]
