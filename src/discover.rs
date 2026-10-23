@@ -5,9 +5,28 @@ use crate::disasm::{decode, Flags, Flow, Instr};
 use crate::rom::Rom;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EdgeKind {
+    Branch,
+    Jump,
+    Call,
+    /// Target of a jump table or inline helper table.
+    Dispatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Edge {
+    pub to: u32,
+    pub kind: EdgeKind,
+}
+
 #[derive(Debug, Default)]
 pub struct Discovery {
     pub instrs: BTreeMap<u32, Instr>,
+    /// Control transfers out of each instruction, except the fall-through.
+    pub edges: BTreeMap<u32, BTreeSet<Edge>>,
+    /// Where execution continues after an instruction, when discovery went on past it.
+    pub fallthrough: BTreeMap<u32, u32>,
     /// Indirect jumps/calls reached with no table configured: candidates for the config.
     pub unresolved: BTreeSet<u32>,
 }
@@ -92,6 +111,13 @@ fn inline_helper_targets(rom: &Rom, start: u32, size: u8) -> Vec<u32> {
     out
 }
 
+fn add_edge(out: &mut Discovery, cfg: &Config, from: u32, to: u32, kind: EdgeKind) {
+    // Data that a table points at is not decoded, so it is not a graph node either.
+    if !cfg.not_code.contains(&to) {
+        out.edges.entry(from).or_default().insert(Edge { to, kind });
+    }
+}
+
 pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
     let mut out = Discovery::default();
     let mut seen: HashSet<(u32, Flags)> = HashSet::new();
@@ -118,12 +144,17 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             let mut stop = false;
             match flow {
                 Flow::Next | Flow::IndirectCall | Flow::IndirectJump => {}
-                Flow::Branch(t) => work.push((t, nf)),
+                Flow::Branch(t) => {
+                    add_edge(&mut out, cfg, addr, t, EdgeKind::Branch);
+                    work.push((t, nf));
+                }
                 Flow::Call(t) => {
+                    add_edge(&mut out, cfg, addr, t, EdgeKind::Call);
                     work.push((t, nf));
                     stop = cfg.no_return.contains(&t);
                 }
                 Flow::Jump(t) => {
+                    add_edge(&mut out, cfg, addr, t, EdgeKind::Jump);
                     work.push((t, nf));
                     stop = true;
                 }
@@ -133,6 +164,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             if let (None, Flow::Call(t)) = (table, flow) {
                 if let Some(h) = cfg.inline_helpers.get(&t) {
                     for target in inline_helper_targets(rom, after, h.size) {
+                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
                         work.push((target, nf));
                     }
                     stop = true;
@@ -142,6 +174,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             match (table, flow) {
                 (Some(t), _) if t.kind == TableKind::Inline => {
                     for target in table_targets(rom, addr & 0xFF_0000, after, t) {
+                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
                         work.push((target, nf));
                     }
                     stop = stop || !t.falls_through;
@@ -152,6 +185,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                         _ => table_targets(rom, addr & 0xFF_0000, t.at.expect("validated by Config::parse"), t),
                     };
                     for target in targets {
+                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
                         work.push((target, nf));
                     }
                     stop = stop || flow == Flow::IndirectJump;
@@ -172,12 +206,14 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                 break;
             }
             // An inline table sits between the call and the next instruction.
-            addr = match table {
+            let next = match table {
                 Some(t) if t.kind == TableKind::Inline => {
                     (after & 0xFF_0000) | ((after + (t.count * t.size as usize) as u32) & 0xFFFF)
                 }
                 _ => after,
             };
+            out.fallthrough.insert(addr, next);
+            addr = next;
             f = nf;
         }
     }
@@ -191,6 +227,58 @@ mod tests {
 
     fn addrs(d: &Discovery) -> Vec<u32> {
         d.instrs.keys().copied().collect()
+    }
+
+    fn edges_of(d: &Discovery, site: u32) -> Vec<(u32, EdgeKind)> {
+        d.edges.get(&site).map_or(vec![], |e| e.iter().map(|e| (e.to, e.kind)).collect())
+    }
+
+    #[test]
+    fn records_branch_jump_and_call_edges() {
+        // 8000: BNE $8004 ; 8002: JSR $8010 ; 8005: JMP $8020  ...
+        let rom = test_rom(&[
+            (0x8000, &[0xD0, 0x02, 0x20, 0x10, 0x80, 0x4C, 0x20, 0x80]),
+            (0x8010, &[0x60]),
+            (0x8020, &[0x60]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(edges_of(&d, 0x8000), [(0x8004, EdgeKind::Branch)]);
+        assert_eq!(edges_of(&d, 0x8002), [(0x8010, EdgeKind::Call)]);
+        assert_eq!(edges_of(&d, 0x8005), [(0x8020, EdgeKind::Jump)]);
+        assert_eq!(d.fallthrough.get(&0x8000), Some(&0x8002));
+        assert_eq!(d.fallthrough.get(&0x8002), Some(&0x8005));
+        assert!(!d.fallthrough.contains_key(&0x8005));
+        assert!(!d.fallthrough.contains_key(&0x8010));
+    }
+
+    #[test]
+    fn records_dispatch_edges_and_skips_inline_table() {
+        let rom = test_rom(&[
+            (0x8000, &[0x7C, 0x00, 0x81]),
+            (0x8100, &[0x10, 0x80, 0x20, 0x80]),
+            (0x8010, &[0x60]),
+            (0x8020, &[0x60]),
+            (0x9000, &[0x20, 0x00, 0x82, 0x10, 0x80, 0x60]),
+            (0x8200, &[0x60]),
+        ]);
+        let cfg = Config::parse(
+            "[[table]]
+kind=\"indirect\"
+site=\"00:8000\"
+at=\"00:8100\"
+count=2
+             [[table]]
+kind=\"inline\"
+site=\"00:9000\"
+count=1
+falls_through=true",
+        )
+        .unwrap();
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET), (0x9000, Flags::RESET)]);
+        assert_eq!(edges_of(&d, 0x8000), [(0x8010, EdgeKind::Dispatch), (0x8020, EdgeKind::Dispatch)]);
+        assert!(!d.fallthrough.contains_key(&0x8000));
+        assert_eq!(edges_of(&d, 0x9000), [(0x8010, EdgeKind::Dispatch), (0x8200, EdgeKind::Call)]);
+        assert_eq!(d.fallthrough.get(&0x9000), Some(&0x9005));
     }
 
     #[test]

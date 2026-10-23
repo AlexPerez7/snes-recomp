@@ -14,7 +14,7 @@ License: not chosen yet (add a `LICENSE` before publishing).
 - [x] Linear disassembler
 - [x] Recursive-descent code discovery (direct jumps, branches, calls)
 - [x] Indirect jump / jump-table resolution (per-game config; ALttP: 0 unresolved, 82,108 instructions reachable from 16,577)
-- [ ] Function and basic-block graph
+- [x] Function and basic-block graph (ALttP: 2,488 functions, 16,030 blocks, 1,485 tail calls, 0 missing targets, 440 shared blocks reported)
 - [ ] C code generator
 - [ ] Runtime: bus, DMA/HDMA, PPU, APU, input
 
@@ -24,6 +24,8 @@ License: not chosen yet (add a `LICENSE` before publishing).
 cargo run --release -- info roms/game.sfc
 cargo run --release -- disasm roms/game.sfc 00:8000 40
 cargo run --release -- discover roms/game.sfc
+cargo run --release -- graph roms/game.sfc            # totals and diagnostics
+cargo run --release -- graph roms/game.sfc 00:8000    # blocks of the function containing the address
 cargo test
 ```
 

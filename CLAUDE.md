@@ -9,6 +9,7 @@ cargo test                                          # tests unitarios
 cargo run --release -- info roms/alttp_usa.sfc      # cabecera, CRC y vectores
 cargo run --release -- disasm roms/alttp_usa.sfc 00:8000 40
 cargo run --release -- discover roms/alttp_usa.sfc  # añade --unresolved para ver saltos indirectos sin tabla
+cargo run --release -- graph roms/alttp_usa.sfc [00:8000]  # resumen, o detalle de la función que contiene la dirección
 ```
 
 ## Estructura
@@ -16,6 +17,7 @@ cargo run --release -- discover roms/alttp_usa.sfc  # añade --unresolved para v
 - `src/rom.rs`: carga de ROM, mapeo LoROM, cabecera y vectores.
 - `src/opcodes.rs`, `src/disasm.rs`: tabla de opcodes y decodificador, con seguimiento de los anchos M/X.
 - `src/discover.rs`: descubrimiento de código por descenso recursivo, guiado por la configuración.
+- `src/graph.rs`: bloques básicos y funciones a partir del descubrimiento (aristas, tail calls, diagnósticos).
 - `src/config.rs`: formato de `games/<id>.toml` (documentado al inicio del fichero).
 - `src/games.rs`: identificación de ROMs conocidas por CRC32.
 - `games/alttp_usa.toml`: entradas y tablas de saltos de A Link to the Past.
