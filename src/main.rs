@@ -3,6 +3,7 @@ mod crc32;
 mod disasm;
 mod discover;
 mod games;
+mod graph;
 mod opcodes;
 mod rom;
 
@@ -17,11 +18,13 @@ usage:
   snes-recomp info <rom>
   snes-recomp disasm <rom> <addr> [count] [--m16] [--x16]
   snes-recomp discover <rom> [addr] [--config <file>] [--unresolved]
+  snes-recomp graph <rom> [addr] [--config <file>]
 
 <addr> is hex, as BB:AAAA or BBAAAA.
 discover loads games/<id>.toml for known ROMs (override with --config). Without an <addr> it
 starts from the config's entries, or the reset vector if there are none.
---unresolved lists indirect jumps/calls that still need a table in the config.";
+--unresolved lists indirect jumps/calls that still need a table in the config.
+graph prints totals for functions and basic blocks; with <addr> it details the function containing it.";
 
 fn flags_from(args: &[String]) -> Flags {
     Flags { m: !args.iter().any(|a| a == "--m16"), x: !args.iter().any(|a| a == "--x16") }
@@ -74,20 +77,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         "discover" => {
-            let cfg = match config_path {
-                Some(p) => Config::load(p)?,
-                None => match games::identify(rom.crc32()) {
-                    Some(g) => {
-                        let p = PathBuf::from("games").join(format!("{}.toml", g.id));
-                        if p.exists() { Config::load(p)? } else { Config::default() }
-                    }
-                    None => Config::default(),
-                },
-            };
+            let cfg = load_config(&rom, config_path)?;
             let roots: Vec<(u32, Flags)> = match rest.first() {
                 Some(s) => vec![(parse_addr(s)?, flags_from(&args))],
-                None if !cfg.entries.is_empty() => cfg.entries.iter().map(|e| (e.addr, e.flags)).collect(),
-                None => vec![(rom.vectors().emu_reset as u32, Flags::RESET)],
+                None => default_roots(&rom, &cfg),
             };
             let d = discover::discover(&rom, &cfg, &roots);
             if args.iter().any(|a| a == "--unresolved") {
@@ -108,8 +101,88 @@ fn run(args: Vec<String>) -> Result<(), String> {
             );
             Ok(())
         }
+        "graph" => {
+            let cfg = load_config(&rom, config_path)?;
+            let roots = default_roots(&rom, &cfg);
+            let d = discover::discover(&rom, &cfg, &roots);
+            let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
+            let g = graph::Graph::build(&d, &root_addrs);
+            match rest.first() {
+                Some(s) => print_function(&g, parse_addr(s)?),
+                None => {
+                    print_graph_summary(&d, &g);
+                    Ok(())
+                }
+            }
+        }
         _ => Err(USAGE.to_string()),
     }
+}
+
+/// Config from `--config`, else the bundled one for a known ROM, else an empty one.
+fn load_config(rom: &Rom, path: Option<String>) -> Result<Config, String> {
+    match path {
+        Some(p) => Config::load(p),
+        None => match games::identify(rom.crc32()) {
+            Some(g) => {
+                let p = PathBuf::from("games").join(format!("{}.toml", g.id));
+                if p.exists() { Config::load(p) } else { Ok(Config::default()) }
+            }
+            None => Ok(Config::default()),
+        },
+    }
+}
+
+/// The config's entries, or the reset vector if there are none.
+fn default_roots(rom: &Rom, cfg: &Config) -> Vec<(u32, Flags)> {
+    if cfg.entries.is_empty() {
+        vec![(rom.vectors().emu_reset as u32, Flags::RESET)]
+    } else {
+        cfg.entries.iter().map(|e| (e.addr, e.flags)).collect()
+    }
+}
+
+fn print_graph_summary(d: &discover::Discovery, g: &graph::Graph) {
+    let tail_calls: usize = g.functions.values().map(|f| f.tail_calls.len()).sum();
+    let shared = g.diagnostics.iter().filter(|x| matches!(x, graph::Diagnostic::SharedBlock { .. })).count();
+    let missing = g.diagnostics.len() - shared;
+    println!("functions:   {}", g.functions.len());
+    println!("blocks:      {}", g.blocks.len());
+    println!("instrs:      {}", d.instrs.len());
+    println!("tail calls:  {tail_calls}");
+    println!("diagnostics: {} missing targets, {} shared blocks", missing, shared);
+    for x in &g.diagnostics {
+        match x {
+            graph::Diagnostic::MissingTarget { from, to } => {
+                println!("  missing target {} from block {}", fmt_addr(*to), fmt_addr(*from))
+            }
+            graph::Diagnostic::SharedBlock { block, owner, other } => println!(
+                "  block {} owned by {} is also reachable from {}",
+                fmt_addr(*block),
+                fmt_addr(*owner),
+                fmt_addr(*other)
+            ),
+        }
+    }
+}
+
+fn print_function(g: &graph::Graph, addr: u32) -> Result<(), String> {
+    let f = g.function_at(addr).ok_or_else(|| format!("{} is not in any function", fmt_addr(addr)))?;
+    let list = |v: &std::collections::BTreeSet<u32>| v.iter().map(|a| fmt_addr(*a)).collect::<Vec<_>>().join(", ");
+    println!("function {}: {} blocks, {} returns", fmt_addr(f.entry), f.blocks.len(), f.returns);
+    if !f.calls.is_empty() {
+        println!("  calls:      {}", list(&f.calls));
+    }
+    if !f.tail_calls.is_empty() {
+        println!("  tail calls: {}", list(&f.tail_calls));
+    }
+    for start in &f.blocks {
+        let b = &g.blocks[start];
+        let succs: Vec<String> = b.succs.iter().map(|(a, k)| format!("{} ({:?})", fmt_addr(*a), k)).collect();
+        let tail = if b.ret { "return".to_string() } else { succs.join(", ") };
+        println!("  block {}..{}  -> {}", fmt_addr(b.start), fmt_addr(b.end()), tail);
+    }
+    Ok(())
 }
 
 fn print_instr(rom: &Rom, ins: &disasm::Instr) {
