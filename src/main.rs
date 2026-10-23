@@ -1,3 +1,6 @@
+mod codegen;
+#[cfg(test)]
+mod cctest;
 mod config;
 mod crc32;
 mod disasm;
@@ -19,12 +22,15 @@ usage:
   snes-recomp disasm <rom> <addr> [count] [--m16] [--x16]
   snes-recomp discover <rom> [addr] [--config <file>] [--unresolved]
   snes-recomp graph <rom> [addr] [--config <file>]
+  snes-recomp codegen <rom> <addr> [--depth N] [-o <file.c>] [--config <file>]
 
 <addr> is hex, as BB:AAAA or BBAAAA.
 discover loads games/<id>.toml for known ROMs (override with --config). Without an <addr> it
 starts from the config's entries, or the reset vector if there are none.
 --unresolved lists indirect jumps/calls that still need a table in the config.
-graph prints totals for functions and basic blocks; with <addr> it details the function containing it.";
+graph prints totals for functions and basic blocks; with <addr> it details the function containing it.
+codegen emits C for the function at <addr> and, up to --depth levels (default 1), the functions it calls.
+With -o it also writes snes_rt.h next to the file. The output derives from the ROM: keep it under out/.";
 
 fn flags_from(args: &[String]) -> Flags {
     Flags { m: !args.iter().any(|a| a == "--m16"), x: !args.iter().any(|a| a == "--x16") }
@@ -43,7 +49,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let mut rest: Vec<String> = Vec::new();
     let mut it = args[3..].iter();
     while let Some(a) = it.next() {
-        if a == "--config" {
+        if a == "--config" || a == "--depth" || a == "-o" {
             it.next();
         } else if !a.starts_with("--") {
             rest.push(a.clone());
@@ -115,6 +121,32 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 }
             }
         }
+        "codegen" => {
+            let cfg = load_config(&rom, config_path)?;
+            let roots = default_roots(&rom, &cfg);
+            let d = discover::discover(&rom, &cfg, &roots);
+            let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
+            let g = graph::Graph::build(&d, &root_addrs);
+            let addr = parse_addr(rest.first().ok_or(USAGE)?)?;
+            let depth = option_value(&args, "--depth")
+                .map(|s| s.parse::<usize>().map_err(|_| format!("bad depth: {s}")))
+                .transpose()?
+                .unwrap_or(1);
+            let text = codegen::Emitter::new(&d, &g).generate(addr, depth)?;
+            match option_value(&args, "-o") {
+                Some(path) => {
+                    let path = PathBuf::from(path);
+                    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+                    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                    std::fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+                    let header = dir.join("snes_rt.h");
+                    std::fs::write(&header, codegen::RUNTIME_HEADER).map_err(|e| format!("{}: {e}", header.display()))?;
+                    eprintln!("wrote {} and {}", path.display(), header.display());
+                }
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
         _ => Err(USAGE.to_string()),
     }
 }
@@ -150,6 +182,7 @@ fn print_graph_summary(d: &discover::Discovery, g: &graph::Graph) {
     println!("blocks:      {}", g.blocks.len());
     println!("instrs:      {}", d.instrs.len());
     println!("tail calls:  {tail_calls}");
+    println!("M/X conflicts: {} addresses reached with different register widths", d.flag_conflicts.len());
     println!("diagnostics: {} missing targets, {} shared blocks", missing, shared);
     for x in &g.diagnostics {
         match x {

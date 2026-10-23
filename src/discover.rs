@@ -27,6 +27,10 @@ pub struct Discovery {
     pub edges: BTreeMap<u32, BTreeSet<Edge>>,
     /// Where execution continues after an instruction, when discovery went on past it.
     pub fallthrough: BTreeMap<u32, u32>,
+    /// Register widths in effect before each instruction (the first combination found).
+    pub flags: BTreeMap<u32, Flags>,
+    /// Addresses reached with more than one combination of widths, with all of them.
+    pub flag_conflicts: BTreeMap<u32, BTreeSet<Flags>>,
     /// Indirect jumps/calls reached with no table configured: candidates for the config.
     pub unresolved: BTreeSet<u32>,
 }
@@ -121,6 +125,7 @@ fn add_edge(out: &mut Discovery, cfg: &Config, from: u32, to: u32, kind: EdgeKin
 pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
     let mut out = Discovery::default();
     let mut seen: HashSet<(u32, Flags)> = HashSet::new();
+    let mut all_flags: BTreeMap<u32, BTreeSet<Flags>> = BTreeMap::new();
     let mut work: Vec<(u32, Flags)> = roots.to_vec();
 
     while let Some((mut addr, mut f)) = work.pop() {
@@ -134,6 +139,8 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             if !seen.insert((addr, f)) {
                 break;
             }
+            out.flags.entry(addr).or_insert(f);
+            all_flags.entry(addr).or_default().insert(f);
             let Some(ins) = decode(rom, addr, f) else { break };
             let after = next_addr(addr, ins.len);
             let nf = ins.next_flags(f);
@@ -217,6 +224,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             f = nf;
         }
     }
+    out.flag_conflicts = all_flags.into_iter().filter(|(_, v)| v.len() > 1).collect();
     out
 }
 
@@ -279,6 +287,32 @@ falls_through=true",
         assert!(!d.fallthrough.contains_key(&0x8000));
         assert_eq!(edges_of(&d, 0x9000), [(0x8010, EdgeKind::Dispatch), (0x8200, EdgeKind::Call)]);
         assert_eq!(d.fallthrough.get(&0x9000), Some(&0x9005));
+    }
+
+    #[test]
+    fn records_register_widths_per_instruction() {
+        // 8000: REP #$20 ; 8002: LDA #$1234 ; 8005: SEP #$20 ; 8007: LDA #$12 ; 8009: RTS
+        let rom = test_rom(&[(
+            0x8000,
+            &[0xC2, 0x20, 0xA9, 0x34, 0x12, 0xE2, 0x20, 0xA9, 0x12, 0x60],
+        )]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8000], Flags { m: true, x: true });
+        assert_eq!(d.flags[&0x8002], Flags { m: false, x: true });
+        assert_eq!(d.flags[&0x8007], Flags { m: true, x: true });
+        assert!(d.flag_conflicts.is_empty());
+    }
+
+    #[test]
+    fn reports_addresses_reached_with_different_widths() {
+        // 8000: BEQ $8004 ; 8002: REP #$20 ; 8004: NOP (reached with M=1 and M=0) ; 8005: RTS
+        let rom = test_rom(&[(0x8000, &[0xF0, 0x02, 0xC2, 0x20, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(
+            d.flag_conflicts[&0x8004],
+            BTreeSet::from([Flags { m: false, x: true }, Flags { m: true, x: true }])
+        );
+        assert!(!d.flag_conflicts.contains_key(&0x8000));
     }
 
     #[test]

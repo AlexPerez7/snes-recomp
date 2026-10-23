@@ -4,7 +4,7 @@ use crate::opcodes::{Mode, OPCODES};
 use crate::rom::Rom;
 
 /// Register widths. `true` means 8-bit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Flags {
     pub m: bool,
     pub x: bool,
@@ -69,7 +69,7 @@ impl Instr {
     }
 
     /// Destination of a relative branch.
-    fn rel_target(&self) -> u32 {
+    pub fn rel_target(&self) -> u32 {
         let disp = match self.mode {
             Mode::Rel8 => self.operand as u8 as i8 as i32,
             _ => self.operand as u16 as i16 as i32,
