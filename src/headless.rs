@@ -1131,6 +1131,77 @@ fn sprites_mix_with_the_backgrounds_by_priority() {
     assert_eq!(c, rgb(BLUE), "priority 2 is in front of low priority BG1");
 }
 
+/// BG1 with a single pixel at (0,0) of colour `c`, BG3 (palette 2) with one of colour `c3` in the same place, and `extra`.
+fn math_case(name: &str, main: u8, c: u16, c3: u16, extra: Vec<Vec<u8>>) -> Option<Img> {
+    let code = prog(&[
+        ppu_base(main),
+        vram_words(16, &tile4(&[(0, 0, 1)])),
+        vram_words(0x2000 + 8, &tile2(&[(0, 0, 1)])),
+        vram_words(0x1000, &[0x0001]),
+        vram_words(0x1800, &[0x0801]),
+        cgram_set(0, &[0x0000, c]),
+        cgram_set(2 * 4 + 1, &[c3]),
+        extra.concat(),
+    ]);
+    let (r, img) = shot(&format!("rd-math-{name}"), &code)?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    img
+}
+
+#[test]
+fn colour_math_adds_subtracts_and_halves_the_fixed_colour() {
+    let fixed_red = st(0x20 | 31, 0x2132);
+    // Green plus red is yellow; the backdrop, which is not chosen, is untouched.
+    let Some(img) = math_case("add", 0x01, GREEN, 0, vec![st(0x01, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(YELLOW));
+    assert_eq!(img.rgb(5, 5), rgb(0));
+
+    // White minus red keeps green and blue.
+    let Some(img) = math_case("sub", 0x01, 0x7FFF, 0, vec![st(0xA1, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(0x7FE0));
+
+    // Half of the sum, per channel.
+    let Some(img) = math_case("half", 0x01, GREEN, 0, vec![st(0x61, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(15 | 15 << 5));
+
+    // The sum saturates.
+    let Some(img) = math_case("sat", 0x01, YELLOW, 0, vec![st(0x21, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(YELLOW));
+
+    // The fixed colour is built from several writes, each choosing its channels.
+    let both = [st(0x20 | 31, 0x2132), st(0x40 | 7, 0x2132)].concat();
+    let Some(img) = math_case("fixed-parts", 0x01, 0, 0, vec![st(0x21, 0x2131), both]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(31 | 7 << 5));
+}
+
+#[test]
+fn colour_math_only_touches_the_chosen_layers_and_regions() {
+    let fixed_red = st(0x20 | 31, 0x2132);
+    // BG2 is chosen, BG1 is not.
+    let Some(img) = math_case("other-layer", 0x01, GREEN, 0, vec![st(0x22, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(GREEN));
+    // The backdrop bit mixes the backdrop.
+    let Some(img) = math_case("backdrop", 0x01, GREEN, 0, vec![st(0x20, 0x2131), fixed_red.clone()]) else { return };
+    assert_eq!(img.rgb(5, 5), rgb(RED));
+    assert_eq!(img.rgb(0, 0), rgb(GREEN));
+    // Bits 4-5 of $2130 set to 3 prevent the maths everywhere.
+    let Some(img) = math_case("never", 0x01, GREEN, 0, vec![st(0x21, 0x2131), st(0x30, 0x2130), fixed_red]) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(GREEN));
+}
+
+#[test]
+fn colour_math_can_use_the_subscreen() {
+    let fixed_red = st(0x20 | 31, 0x2132);
+    // BG3 is only on the subscreen: green plus blue is cyan where BG3 has a pixel...
+    let extra = vec![st(0x04, 0x212D), st(0x02, 0x2130), st(0x21, 0x2131), fixed_red.clone()];
+    let Some(img) = math_case("sub", 0x01, GREEN, BLUE, extra.clone()) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(0x7FE0));
+    // ...and the fixed colour stands in, not halved, when nothing is on the subscreen.
+    let extra = vec![st(0x00, 0x212D), st(0x02, 0x2130), st(0x61, 0x2131), fixed_red];
+    let Some(img) = math_case("sub-empty", 0x01, GREEN, BLUE, extra) else { return };
+    assert_eq!(img.rgb(0, 0), rgb(YELLOW));
+}
+
 #[test]
 fn what_is_not_drawn_is_reported() {
     let code = prog(&[st(0x0F, 0x2100), st(0x07, 0x2105), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
@@ -1140,9 +1211,13 @@ fn what_is_not_drawn_is_reported() {
 
     let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x01, 0x212E), st(0x10, 0x2106)]);
     let Some((r, _)) = shot("rd-math", &code) else { return };
-    assert!(r.out.contains("warning: colour math is not applied"), "{}", r.out);
+    assert!(!r.out.contains("colour math"), "{}", r.out);
     assert!(r.out.contains("warning: windows are not applied"), "{}", r.out);
     assert!(!r.out.contains("graphics mode"), "{}", r.out);
+
+    let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x10, 0x2130)]);
+    let Some((r, _)) = shot("rd-math-window", &code) else { return };
+    assert!(r.out.contains("warning: colour math inside or outside the colour window is not applied"), "{}", r.out);
 }
 
 // ---- Execution trace ----
