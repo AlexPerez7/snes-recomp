@@ -23,6 +23,7 @@ usage:
   snes-recomp discover <rom> [addr] [--config <file>] [--unresolved] [--widths]
   snes-recomp graph <rom> [addr] [--config <file>]
   snes-recomp codegen <rom> <addr> [--depth N] [-o <file.c>] [--config <file>]
+  snes-recomp codegen <rom> --all -o <dir> [--config <file>]
 
 <addr> is hex, as BB:AAAA or BBAAAA.
 discover loads games/<id>.toml for known ROMs (override with --config). Without an <addr> it
@@ -31,7 +32,9 @@ starts from the config's entries, or the reset vector if there are none.
 --widths lists M/X conflicts, unpaired PLPs and calls whose callee never returns.
 graph prints totals for functions and basic blocks; with <addr> it details the function containing it.
 codegen emits C for the function at <addr> and, up to --depth levels (default 1), the functions it calls.
-With -o it also writes snes_rt.h next to the file. The output derives from the ROM: keep it under out/.";
+With -o it also writes snes_rt.h next to the file. The output derives from the ROM: keep it under out/.
+codegen --all emits every function into <dir>: rom_BB.c per bank, snes_funcs.h and snes_rt.h. Functions that
+cannot be translated become stubs that call rt_unsupported, and are listed on stderr with their cause.";
 
 fn flags_from(args: &[String]) -> Flags {
     Flags { m: !args.iter().any(|a| a == "--m16"), x: !args.iter().any(|a| a == "--x16") }
@@ -130,6 +133,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
             let g = graph::Graph::build(&d, &root_addrs);
+            if args.iter().any(|a| a == "--all") {
+                let dir = option_value(&args, "-o").ok_or("codegen --all needs -o <dir>")?;
+                return write_full_rom(&codegen::Emitter::new(&d, &g).generate_all(), &PathBuf::from(dir));
+            }
             let addr = parse_addr(rest.first().ok_or(USAGE)?)?;
             let depth = option_value(&args, "--depth")
                 .map(|s| s.parse::<usize>().map_err(|_| format!("bad depth: {s}")))
@@ -152,6 +159,36 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         _ => Err(USAGE.to_string()),
     }
+}
+
+/// Writes `rom_BB.c` per bank, `snes_funcs.h` and `snes_rt.h` into `dir`, and summarises on stderr.
+fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let write = |name: String, text: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    };
+    write("snes_rt.h".into(), codegen::RUNTIME_HEADER)?;
+    write("snes_funcs.h".into(), &out.header)?;
+    let mut lines = out.header.lines().count();
+    for (bank, text) in &out.banks {
+        write(format!("rom_{bank:02X}.c"), text)?;
+        lines += text.lines().count();
+    }
+    let stubs = out.unsupported.len();
+    eprintln!("functions: {} ({} generated, {} stubs)", out.functions, out.functions - stubs, stubs);
+    let mut by_cause: std::collections::BTreeMap<codegen::Cause, usize> = Default::default();
+    for u in &out.unsupported {
+        *by_cause.entry(u.cause).or_default() += 1;
+    }
+    for (cause, n) in &by_cause {
+        eprintln!("  {n} stubs: {}", cause.describe());
+    }
+    for u in &out.unsupported {
+        eprintln!("  stub {}: {}", fmt_addr(u.entry), u.message.lines().next().unwrap_or(""));
+    }
+    eprintln!("wrote {} lines of C in {} files to {}", lines, out.banks.len() + 2, dir.display());
+    Ok(())
 }
 
 /// Config from `--config`, else the bundled one for a known ROM, else an empty one.

@@ -97,7 +97,7 @@ impl Compiler {
         let defs: String = defines.iter().map(|d| format!(" /D{d}")).collect();
         let bat = format!(
             "@echo off\r\ncall \"{}\" >nul 2>nul || exit /b 1\r\ncd /d \"{}\"\r\n\
-             cl /nologo /W3 /TC /std:c11{} /Fe:prog.exe {} >build.log 2>&1\r\n\
+             cl /nologo /MP /W3 /TC /std:c11{} /Fe:prog.exe {} >build.log 2>&1\r\n\
              if errorlevel 1 (type build.log & exit /b 1)\r\n.\\prog.exe\r\n",
             vcvars.display(),
             dir.display(),
@@ -134,6 +134,7 @@ void rt_unresolved(Cpu *c, uint32_t site, uint32_t target) {
     printf("UNRESOLVED site=%06X target=%06X\n", (unsigned)site, (unsigned)target);
 }
 void rt_flag_mismatch(Cpu *c, uint32_t addr) { (void)c; printf("FLAG_MISMATCH %06X\n", (unsigned)addr); }
+void rt_unsupported(Cpu *c, uint32_t entry) { (void)c; printf("UNSUPPORTED %06X\n", (unsigned)entry); }
 void rt_wai(Cpu *c) { (void)c; printf("WAI\n"); }
 void rt_stp(Cpu *c) { (void)c; printf("STP\n"); }
 void rt_brk(Cpu *c) { (void)c; printf("BRK\n"); }

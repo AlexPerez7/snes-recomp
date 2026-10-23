@@ -31,6 +31,8 @@ void bus_write8(uint32_t addr, uint8_t value);
 void rt_unresolved(Cpu *c, uint32_t site, uint32_t target);
 /* A block was entered with M/X different from what the recompiler assumed. */
 void rt_flag_mismatch(Cpu *c, uint32_t addr);
+/* A function the recompiler could not translate was called; `entry` is its address. */
+void rt_unsupported(Cpu *c, uint32_t entry);
 void rt_wai(Cpu *c);
 void rt_stp(Cpu *c);
 void rt_brk(Cpu *c);
