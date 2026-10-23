@@ -307,9 +307,23 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
 
                 match (table, flow) {
                     (Some(t), _) if t.kind == TableKind::Inline => {
-                        for target in table_targets(rom, addr & 0xFF_0000, after, t) {
+                        let targets = table_targets(rom, addr & 0xFF_0000, after, t);
+                        let helper = match flow {
+                            Flow::Call(h) => cfg.inline_helpers.get(&h).filter(|i| i.exit.is_some()).map(|_| h),
+                            _ => None,
+                        };
+                        for &target in &targets {
                             add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
-                            work.push(here(target, &stack));
+                            if helper.is_none() {
+                                work.push(here(target, &stack));
+                            }
+                        }
+                        if let Some(helper) = helper {
+                            // A table of fixed length for a helper call: same as an unmeasured one, the
+                            // targets run with the widths at the helper's exit and the exit can reach them.
+                            deferred.push(Deferred { helper, targets, f: nf, stack: stack.clone(), ctx });
+                            called.clear();
+                            stop = true;
                         }
                         stop = stop || !t.falls_through;
                         if stop {
@@ -701,6 +715,29 @@ exit=\"00:8202\"");
         assert_eq!(d.instrs[&0x8010].len, 2);
         assert!(!d.flag_conflicts.contains_key(&0x8010));
         assert_eq!(edges_of(&d, 0x8202), [(0x8010, EdgeKind::Dispatch)]);
+    }
+
+    #[test]
+    fn a_configured_table_after_a_helper_call_feeds_the_exit() {
+        // 8000: JSR $8200 ; inline table of one entry ($8010)   8300: JSR $8200 ; entry $8020 (auto)
+        // The first table is fixed by hand; the helper's exit must reach both targets.
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x00, 0x82, 0x10, 0x80, 0x60]),
+            (0x8300, &[0x20, 0x00, 0x82, 0x20, 0x80, 0x60]),
+            (0x8200, &[0xE2, 0x30, 0xDC, 0x00, 0x00]),
+            (0x8010, &[0xA9, 0x12, 0x60]),
+            (0x8020, &[0xA9, 0x34, 0x60]),
+        ]);
+        let cfg = width_test_cfg("[[inline_helper]]
+addr=\"00:8200\"
+exit=\"00:8202\"
+[[table]]
+kind=\"inline\"
+site=\"00:8000\"
+count=1");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET), (0x8300, Flags::RESET)]);
+        assert_eq!(edges_of(&d, 0x8202), [(0x8010, EdgeKind::Dispatch), (0x8020, EdgeKind::Dispatch)]);
+        assert_eq!(d.flags[&0x8010], Flags { m: true, x: true });
     }
 
     #[test]
