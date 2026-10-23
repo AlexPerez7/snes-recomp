@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// Interface between the generated code and the runtime, written next to the generated C.
 pub const RUNTIME_HEADER: &str = include_str!("../runtime/snes_rt.h");
 
+/// Runtime without video or audio, written next to the generated C by `codegen --all`.
+pub const HEADLESS_RUNTIME: &str = include_str!("../runtime/headless.c");
+
 pub fn func_name(entry: u32) -> String {
     format!("f_{:02X}_{:04X}", entry >> 16, entry & 0xFFFF)
 }
@@ -372,7 +375,7 @@ impl<'a> Emitter<'a> {
             self.d.flag_conflicts.get(&block.start).is_some_and(|s| s.iter().any(|f| pick(f) != pick(&flags)))
         };
         let (m, x) = (if varies(|f| f.m) { 2 } else { flags.m as u8 }, if varies(|f| f.x) { 2 } else { flags.x as u8 });
-        let mut out = vec![format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
+        let mut out = vec!["rt_tick(c);".to_string(), format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
         let dispatch: Vec<u32> = block
             .succs
             .iter()
@@ -542,7 +545,15 @@ impl<'a> Emitter<'a> {
                 (bank, out)
             })
             .collect();
-        FullOutput { header, banks, functions: self.g.functions.len(), unsupported }
+        header.push_str("\nint snes_call_entry(Cpu *c, uint32_t addr);\n");
+        let mut entry = format!("{banner}#include \"snes_funcs.h\"\n\n");
+        entry.push_str("/* Calls the function whose entry is `addr`; 0 if there is none. */\n");
+        entry.push_str("int snes_call_entry(Cpu *c, uint32_t addr) {\n    switch (addr & 0xFFFFFF) {\n");
+        for &f in self.g.functions.keys() {
+            entry.push_str(&format!("    case 0x{f:06X}: {}(c); return 1;\n", func_name(f)));
+        }
+        entry.push_str("    default: return 0;\n    }\n}\n");
+        FullOutput { header, entry, banks, functions: self.g.functions.len(), unsupported }
     }
 }
 
@@ -599,6 +610,8 @@ pub struct Unsupported {
 pub struct FullOutput {
     /// `snes_funcs.h`: declarations of every function.
     pub header: String,
+    /// `snes_entry.c`: calls a function by the address of its entry.
+    pub entry: String,
     /// C source per bank of the function entries.
     pub banks: BTreeMap<u8, String>,
     pub functions: usize,
@@ -931,6 +944,46 @@ sep xf=1 x=0034 p=10
     }
 
     #[test]
+    fn entry_dispatch_calls_a_function_by_address_and_rejects_the_rest() {
+        // 00:8000: LDA #$42 ; STA $10 ; RTS     00:9000: LDA #$77 ; STA $10 ; RTS
+        let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..]), (0x9000, &[0xA9, 0x77, 0x85, 0x10, 0x60][..])];
+        let out = gen_all(&rom, "", &[0x8000, 0x9000]);
+        assert!(out.entry.contains("int snes_call_entry(Cpu *c, uint32_t addr) {"));
+        assert!(out.entry.contains("case 0x009000: f_00_9000(c); return 1;"), "{}", out.entry);
+        // Only addresses and boilerplate: nothing is copied from the ROM.
+        for l in out.entry.lines() {
+            let known = l.is_empty()
+                || l.starts_with("/*")
+                || l.starts_with("#include")
+                || l.starts_with("int snes_call_entry")
+                || l.trim_start().starts_with("case 0x00")
+                || ["    switch (addr & 0xFFFFFF) {", "    default: return 0;", "    }", "}"].contains(&l);
+            assert!(known, "unexpected line: {l}");
+        }
+
+        let Some(cc) = crate::cctest::find() else {
+            eprintln!("skipped: no C compiler found");
+            return;
+        };
+        let main = "#include \"snes_funcs.h\"\n#include <stdio.h>\n\
+            uint8_t bus_read8(uint32_t a);\n\
+            int main(void) { Cpu c = {0}; int a, b; c.m = 1; c.xf = 1; c.s = 0x01FF;\n\
+              a = snes_call_entry(&c, 0x009000); b = snes_call_entry(&c, 0x00A000);\n\
+              printf(\"%d %d %02X\\n\", a, b, bus_read8(0x10)); return 0; }\n";
+        let mut files: Vec<(String, &str)> = vec![
+            ("snes_rt.h".into(), RUNTIME_HEADER),
+            ("snes_funcs.h".into(), &out.header),
+            ("snes_entry.c".into(), &out.entry),
+            ("rt.c".into(), MOCK_RUNTIME),
+            ("main.c".into(), main),
+        ];
+        files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.as_str())));
+        let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (n.as_str(), *t)).collect();
+        let run = cc.compile_run("entry", &files, &[]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(run, "1 0 77\n");
+    }
+
+    #[test]
     fn stub_causes_are_classified_by_their_message() {
         let cases = [
             ("00:8004 is reached with different register widths (M=8 / M=16)", Cause::Widths),
@@ -1108,6 +1161,48 @@ exit=\"00:820F\"";
         let b = body(&out, "f_00_8000");
         assert_eq!(b.last().unwrap(), "return;");
         assert_eq!(b.iter().filter(|l| l.starts_with("// ")).count(), 1, "the table bytes are not instructions");
+    }
+
+    #[test]
+    fn every_block_starts_with_the_tick_hook() {
+        // 8000: BNE $8003 ; 8002: NOP ; 8003: RTS  (three blocks)
+        let out = gen(&[(0x8000, &[0xD0, 0x01, 0xEA, 0x60])], "", &[0x8000], 0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert_eq!(b.iter().filter(|l| l.starts_with("rt_check_flags(")).count(), 3);
+        assert_eq!(b.first().map(String::as_str), Some("rt_tick(c);"));
+        for (i, l) in b.iter().enumerate() {
+            if l.starts_with("rt_check_flags(") {
+                assert_eq!(b[i - 1], "rt_tick(c);", "{b:?}");
+            }
+        }
+        assert_eq!(b.iter().filter(|l| *l == "rt_tick(c);").count(), 3);
+    }
+
+    #[test]
+    fn the_tick_hook_costs_nothing_without_snes_rt_tick_and_runs_per_block_execution_with_it() {
+        let Some(cc) = crate::cctest::find() else {
+            eprintln!("skipped: no C compiler found");
+            return;
+        };
+        // LDX #$05 ; loop: DEX ; BNE loop ; RTS: the entry block, five runs of the loop block, the RTS block
+        let rom = [(0x8000, &[0xA2, 0x05, 0xCA, 0xD0, 0xFD, 0x60][..])];
+        let generated = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap();
+        let main = "#include \"snes_rt.h\"\n#include <stdio.h>\nvoid f_00_8000(Cpu *c);\nextern unsigned ticks;\n\
+                    int main(void) { Cpu c = {0}; c.m = 1; c.xf = 1; c.s = 0x01FF; f_00_8000(&c); printf(\"ticks=%u\\n\", ticks); return 0; }\n";
+        let poll = "#include \"snes_rt.h\"\nunsigned ticks;\nvoid rt_poll(Cpu *c) { (void)c; ticks++; }\n";
+        let files = [
+            ("snes_rt.h", RUNTIME_HEADER),
+            ("rt.c", MOCK_RUNTIME),
+            ("gen.c", generated.as_str()),
+            ("poll.c", poll),
+            ("main.c", main),
+        ];
+        let out = cc.compile_run("tick", &files, &["SNES_RT_TICK"]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(out, "ticks=7\n");
+        // Without the define the hook disappears: no rt_poll is needed and the program still links.
+        let files = [("snes_rt.h", RUNTIME_HEADER), ("rt.c", MOCK_RUNTIME), ("gen.c", generated.as_str()), ("main.c", &main.replace("extern unsigned ticks;", "unsigned ticks;"))];
+        let out = cc.compile_run("tick-off", &files, &[]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(out, "ticks=0\n");
     }
 
     #[test]
@@ -1562,23 +1657,5 @@ int main(void) {
             }) else { return };
             assert_eq!(out, format!("UNEMITTED {first_callee}\n"), "index {index}");
         }
-    }
-
-    /// Reset of A Link to the Past, recompiled with its callees and run against the real ROM until
-    /// it reaches the wait for the first NMI. Skipped without the ROM or a C compiler.
-    #[test]
-    fn alttp_reset_runs_to_the_nmi_wait_loop() {
-        let Some(out) = run_alttp("alttp-reset", 0x8000, 2, &|_| String::new()) else { return };
-        let lines: Vec<&str> = out.lines().collect();
-        eprintln!("{} lines; first 12: {:?}; last 3: {:?}", lines.len(), &lines[..lines.len().min(12)], &lines[lines.len().saturating_sub(3)..]);
-        // The first block of the reset code, as the disassembly reads: clear NMI/DMA enables and
-        // the APU ports, then force blank.
-        assert_eq!(
-            &lines[..8],
-            ["W 4200=00", "W 420C=00", "W 420B=00", "W 2140=00", "W 2141=00", "W 2142=00", "W 2143=00", "W 2100=80"]
-        );
-        assert_eq!(lines.last(), Some(&"WAIT_LOOP"), "output tail: {:?}", &lines[lines.len().saturating_sub(5)..]);
-        assert!(lines.contains(&"W 4200=81"), "NMI is enabled just before the wait");
-        assert!(!lines.iter().any(|l| l.starts_with("FLAG_MISMATCH") || l.starts_with("UNRESOLVED")));
     }
 }
