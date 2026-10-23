@@ -67,7 +67,7 @@ fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen:
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
     files.extend(rom.map(|bytes| ("rom.sfc".to_string(), bytes)));
     let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
-    match cc.compile_run_with(name, &files, &["SNES_RT_TICK", "SNES_RT_CHECKS"], args) {
+    match cc.compile_run_with(name, &files, &["SNES_RT_TICK", "SNES_RT_CHECKS", "SNES_RT_TRACE"], args) {
         Ok(out) => Run { code: 0, out },
         Err(e) => {
             // The error reads "exit Some(N)", a newline, then the output.
@@ -1030,4 +1030,100 @@ fn what_is_not_drawn_is_reported() {
     assert!(r.out.contains("warning: colour math is not applied"), "{}", r.out);
     assert!(r.out.contains("warning: windows are not applied"), "{}", r.out);
     assert!(!r.out.contains("graphics mode"), "{}", r.out);
+}
+
+// ---- Execution trace ----
+
+/// The lines of the run that start with `trace `.
+fn trace_lines(r: &Run) -> Vec<&str> {
+    r.out.lines().filter(|l| l.starts_with("trace ")).collect()
+}
+
+#[test]
+fn trace_reads_names_the_block_register_and_value() {
+    let code = prog(&[st(0x33, 0x2105), mv(0x2105, 0x2120)]);
+    let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50", "--trace-frames", "0-1", "--trace-reads"];
+    let Some(r) = run("hl-trace-read", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(trace_lines(&r), ["trace read frame 0 block 00:8000 reg $2105 = 33 x1"], "{}", r.out);
+}
+
+#[test]
+fn trace_only_prints_inside_the_window_and_groups_repeats() {
+    // LDA $2105 ; BRA back: the same block reads the same value over and over.
+    let code: &[u8] = &[0xAD, 0x05, 0x21, 0x80, 0xFB];
+    let args = ["rom.sfc", "--frames", "5", "--frame-blocks", "50", "--trace-frames", "2-3", "--trace-reads"];
+    let Some(r) = run("hl-trace-window", &[(0x8000, code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let lines = trace_lines(&r);
+    assert_eq!(lines.len(), 2, "{}", r.out);
+    for (line, frame) in lines.iter().zip([2, 3]) {
+        assert!(line.starts_with(&format!("trace read frame {frame} block 00:8000 reg $2105 = 00 x")), "{line}");
+        let n: u32 = line.rsplit('x').next().unwrap().parse().unwrap();
+        assert!(n >= 10, "{line}");
+    }
+
+    // Without a window nothing is printed.
+    let args = ["rom.sfc", "--frames", "5", "--frame-blocks", "50", "--trace-reads"];
+    let Some(r) = run("hl-trace-nowin", &[(0x8000, code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(trace_lines(&r).is_empty(), "{}", r.out);
+}
+
+#[test]
+fn trace_does_not_attribute_dma_reads_to_the_block() {
+    // A channel from the B bus to WRAM reads $2105 itself.
+    let code = prog(&[channel(0, 0x80, 0x05, 0x0100, 4), st(0x01, 0x420B)]);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "50", "--trace-frames", "0-0", "--trace-reads"];
+    let Some(r) = run("hl-trace-dma", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x420B).is_some() && trace_lines(&r).is_empty(), "{}", r.out);
+}
+
+#[test]
+fn watch_reports_changes_of_a_wram_byte_and_its_mirror() {
+    let code = prog(&[
+        st(0x02, 0x0011),
+        st(0x03, 0x0011),
+        st(0x03, 0x0011), // same value: not reported
+        vec![0xA9, 0x05, 0x8F, 0x11, 0x00, 0x7E], // LDA #$05 ; STA $7E0011
+    ]);
+    for addr in ["0011", "7E:0011", "00011"] {
+        let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "50", "--trace-frames", "0-0", "--watch", addr];
+        let Some(r) = run("hl-watch", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        let want = [
+            "trace write frame 0 block 00:8000 wram 00011: 00 -> 02",
+            "trace write frame 0 block 00:8000 wram 00011: 02 -> 03",
+            "trace write frame 0 block 00:8000 wram 00011: 03 -> 05",
+        ];
+        assert_eq!(trace_lines(&r), want, "--watch {addr}
+{}", r.out);
+    }
+}
+
+#[test]
+fn watch_sees_dma_writes_with_the_block_that_started_them() {
+    let code = prog(&[
+        st(0x11, 0x2181),
+        st(0x00, 0x2182),
+        st(0x00, 0x2183), // port at $000011
+        channel(0, 0x00, 0x80, 0x8100, 1),
+        st(0x01, 0x420B),
+    ]);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "50", "--trace-frames", "0-0", "--watch", "11"];
+    let Some(r) = run("hl-watch-dma", &[(0x8000, &code), (0x8100, &DATA)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(trace_lines(&r), ["trace write frame 0 block 00:8000 wram 00011: 00 -> 11"], "{}", r.out);
+}
+
+#[test]
+fn trace_options_are_validated() {
+    let code: &[u8] = &[0x80, 0xFE];
+    for bad in [["--trace-frames", "5"], ["--trace-frames", "5-2"], ["--watch", "20000"], ["--watch", "7D:0011"]] {
+        let args = ["rom.sfc", bad[0], bad[1]];
+        let Some(r) = run("hl-trace-bad", &[(0x8000, code)], &[0x8000], None, &args) else { return };
+        assert_eq!(r.code, 2, "{bad:?}
+{}", r.out);
+    }
 }

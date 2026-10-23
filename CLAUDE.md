@@ -15,6 +15,8 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 # Ejecutar la ROM completa sin vídeo ni audio (con Visual Studio: desde "x64 Native Tools" o tras vcvars64.bat):
 #   cl /MP /TC /std:c11 /DSNES_RT_TICK /DSNES_RT_CHECKS out\rom\*.c /Fe:out\headless.exe /Fo:out\rom\
 #   out\headless.exe roms\alttp_usa.sfc --frames 120 [--frame-blocks 20000] [--dump out\dump] [--screenshot out\shot.png]   # informe de registros, DMA y causa de parada; --dump (carpeta existente) escribe vram.bin, cgram.bin, oam.bin y ppu_regs.bin; --screenshot dibuja el estado final de la PPU (modo 1 y sprites) en un PNG de 256x224
+#   Trazas (compilar además con /DSNES_RT_TRACE): --trace-frames A-B abre la ventana de fotogramas (desde 0); dentro de ella, --trace-reads imprime las lecturas de $2100-$43FF con el bloque que las hace y --watch ADDR (repetible: 0000-1FFF, 7E:xxxx, 7F:xxxx u offset de 17 bits) los cambios de ese byte de WRAM
+#   out\headless.exe roms\alttp_usa.sfc --frames 100 --trace-frames 90-91 --trace-reads --watch 11
 ```
 
 ## Estructura
@@ -25,7 +27,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 - `src/graph.rs`: bloques básicos y funciones a partir del descubrimiento (aristas, tail calls, diagnósticos).
 - `src/codegen.rs`: generador de C (una función por función del grafo, una etiqueta por bloque) y pruebas que compilan y ejecutan el C. Solo rechaza conflictos de anchos M/X que cambian el C o la longitud de la instrucción. `generate_all` emite todas las funciones y deja las que no puede traducir como stub.
 - `runtime/snes_rt.h`: interfaz del C generado con el runtime (estado de la CPU, bus, ganchos, aritmética). Se incrusta en el binario.
-- `runtime/headless.c`: runtime sin vídeo ni audio (bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, captura `--screenshot` del modo 1 y los sprites, fotogramas por bloques, NMI, informe). `codegen --all` lo escribe como `snes_headless.c`, junto a `snes_entry.c`; la ROM se lee del disco, nunca se incrusta. Tests en `src/headless.rs`.
+- `runtime/headless.c`: runtime sin vídeo ni audio (bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, captura `--screenshot` del modo 1 y los sprites, trazas `--trace-frames`/`--trace-reads`/`--watch`, fotogramas por bloques, NMI, informe). `codegen --all` lo escribe como `snes_headless.c`, junto a `snes_entry.c`; la ROM se lee del disco, nunca se incrusta. Tests en `src/headless.rs`.
 - `src/cctest.rs`: solo para tests; busca `CC`/gcc/clang/cc o Visual Studio y compila C.
 - `src/config.rs`: formato de `games/<id>.toml` (documentado al inicio del fichero).
 - `src/games.rs`: identificación de ROMs conocidas por CRC32.
