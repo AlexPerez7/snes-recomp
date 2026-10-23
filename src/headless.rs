@@ -297,16 +297,348 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = Graph::build(&d, &addrs);
     let out = Emitter::new(&d, &g).generate_all();
-    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "30".into());
+    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "120".into());
     let blocks = std::env::var("ALTTP_FRAME_BLOCKS").unwrap_or_else(|_| "20000".into());
-    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks]);
+    let dump = std::env::temp_dir().join(format!("snes-recomp-alttp-dump-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dump);
+    std::fs::create_dir_all(&dump).unwrap();
+    let dump_arg = dump.to_string_lossy().into_owned();
+    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg]);
     eprintln!("exit code {}\n{}", r.code, r.out);
+    let read = |f: &str| std::fs::read(dump.join(f)).unwrap_or_default();
+    let (vram, cgram, oam) = (read("vram.bin"), read("cgram.bin"), read("oam.bin"));
+    let _ = std::fs::remove_dir_all(&dump);
+    let filled = |b: &[u8]| b.iter().filter(|&&x| x != 0).count();
+    // The game has uploaded graphics, a palette and sprites by now.
+    assert!(filled(&vram) > 1000 && filled(&cgram) > 8 && filled(&oam) > 16, "vram {} cgram {} oam {}", filled(&vram), filled(&cgram), filled(&oam));
+    assert!(!r.out.contains("warning: VRAM address translation"), "{}", r.out);
     assert!(r.out.contains("== report =="), "{}", r.out);
     // The reset code forces blank, the audio upload goes through the handshake, and NMI gets enabled.
     assert!(r.reg(0x2100).is_some(), "{}", r.out);
     assert!(r.reg(0x2140).is_some_and(|l| l.contains("reads=") && !l.contains("reads=0 ")), "{}", r.out);
-    assert!(r.reg(0x4200).is_some_and(|l| l.ends_with("last=81")), "{}", r.out);
+    // The game keeps NMI on, and later adds the auto joypad read and the IRQ bits.
+    let nmi_on = r.reg(0x4200).and_then(|l| l.rsplit("last=").next()).and_then(|v| u8::from_str_radix(v, 16).ok()).is_some_and(|v| v & 0x81 == 0x81);
+    assert!(nmi_on, "{}", r.out);
     let nmis: u32 = r.out.lines().find_map(|l| l.strip_prefix("nmis: ")).and_then(|n| n.parse().ok()).expect("nmis in the report");
     assert!(nmis >= 10, "only {nmis} NMIs\n{}", r.out);
     assert!(r.reg(0x420B).is_some(), "the NMI handler starts DMA\n{}", r.out);
+}
+
+// ---- DMA and PPU memories ----
+
+/// `LDA #v ; STA addr`.
+fn st(v: u8, addr: u16) -> Vec<u8> {
+    vec![0xA9, v, 0x8D, addr as u8, (addr >> 8) as u8]
+}
+
+/// `LDA from ; STA to`.
+fn mv(from: u16, to: u16) -> Vec<u8> {
+    vec![0xAD, from as u8, (from >> 8) as u8, 0x8D, to as u8, (to >> 8) as u8]
+}
+
+/// Channel `ch` set up with control `ctl`, B-bus register `$21<b>`, A address `00:a` and `count`.
+fn channel(ch: u16, ctl: u8, b: u8, a: u16, count: u16) -> Vec<u8> {
+    let base = 0x4300 + ch * 16;
+    [st(ctl, base), st(b, base + 1), st(a as u8, base + 2), st((a >> 8) as u8, base + 3), st(0, base + 4), st(count as u8, base + 5), st((count >> 8) as u8, base + 6)].concat()
+}
+
+/// The program `parts` followed by a loop.
+fn prog(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut code = parts.concat();
+    code.extend([0x80, 0xFE]);
+    code
+}
+
+#[derive(Default)]
+struct Mem {
+    vram: Vec<u8>,
+    cgram: Vec<u8>,
+    oam: Vec<u8>,
+    regs: Vec<u8>,
+}
+
+/// Run `code` at 00:8000 (with `data` in the ROM) for one short frame and read the dumped memories.
+fn run_dump(name: &str, code: &[u8], data: &[(u32, &[u8])], dump: bool) -> Option<(Run, Mem, std::path::PathBuf)> {
+    let dir = std::env::temp_dir().join(format!("snes-recomp-dump-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.to_string_lossy().into_owned();
+    let mut args = vec!["rom.sfc", "--frames", "1", "--frame-blocks", "20"];
+    if dump {
+        args.extend(["--dump", &path]);
+    }
+    let mut segments = vec![(0x8000, code)];
+    segments.extend_from_slice(data);
+    let r = run(name, &segments, &[0x8000], None, &args);
+    let read = |f: &str| std::fs::read(dir.join(f)).unwrap_or_default();
+    let mem = Mem { vram: read("vram.bin"), cgram: read("cgram.bin"), oam: read("oam.bin"), regs: read("ppu_regs.bin") };
+    r.map(|r| (r, mem, dir))
+}
+
+const DATA: [u8; 16] = [0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20];
+
+#[test]
+fn dma_copies_to_vram_cgram_and_the_registers_with_each_pattern() {
+    let code = prog(&[
+        st(0x80, 0x2115),
+        // mode 1 to VRAM word 0: 16 bytes
+        channel(0, 0x01, 0x18, 0x8100, 16),
+        st(0x01, 0x420B),
+        mv(0x4305, 0x2110), // the counter is back to 0
+        mv(0x4302, 0x2111), // the A address moved on by 16
+        // mode 3 to VRAM word $0100: b0,b1 -> $2118 ; b2,b3 -> $2119
+        st(0x00, 0x2116),
+        st(0x01, 0x2117),
+        channel(0, 0x03, 0x18, 0x8100, 4),
+        st(0x01, 0x420B),
+        // mode 0 and mode 2 to CGRAM
+        st(0x00, 0x2121),
+        channel(1, 0x00, 0x22, 0x8100, 4),
+        st(0x02, 0x420B),
+        channel(1, 0x02, 0x22, 0x8104, 4),
+        st(0x02, 0x420B),
+        // mode 4 to $2105-$2108
+        channel(2, 0x04, 0x05, 0x8108, 4),
+        st(0x04, 0x420B),
+    ]);
+    let Some((r, m, dir)) = run_dump("hl-dma-modes", &code, &[(0x8100, &DATA)], true) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(&m.vram[0..16], &DATA, "mode 1");
+    assert_eq!(&m.vram[0x200..0x204], &[0x12, 0x13, 0x00, 0x14], "mode 3");
+    assert_eq!(&m.cgram[0..8], &[0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18], "modes 0 and 2");
+    for (reg, want) in [(0x2105, "19"), (0x2106, "1A"), (0x2107, "1B"), (0x2108, "1C")] {
+        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}\n{}", r.out);
+    }
+    assert!(r.reg(0x2110).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+    assert!(r.reg(0x2111).is_some_and(|l| l.ends_with("last=10")), "{}", r.out);
+    assert!(r.has("dma ch0: 2") && r.has("dma ch0 bytes: 20"), "{}", r.out);
+}
+
+#[test]
+fn dma_runs_channels_in_order_and_fills_wram_through_the_port() {
+    let code = prog(&[
+        st(0x00, 0x2181),
+        st(0x01, 0x2182),
+        st(0x00, 0x2183), // port at $000100
+        channel(0, 0x00, 0x80, 0x8100, 2),
+        channel(2, 0x00, 0x80, 0x8104, 2),
+        st(0x05, 0x420B), // channels 0 then 2
+        mv(0x0100, 0x2110),
+        mv(0x0101, 0x2111),
+        mv(0x0102, 0x2112),
+        mv(0x0103, 0x2113),
+        // a zero count moves 65536 bytes (the whole of WRAM bank 7E from $0000)
+        st(0x00, 0x2181),
+        st(0x00, 0x2182),
+        channel(3, 0x00, 0x80, 0x8000, 0),
+        st(0x08, 0x420B),
+    ]);
+    let Some((r, _, dir)) = run_dump("hl-dma-wram", &code, &[(0x8100, &DATA)], false) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    for (reg, want) in [(0x2110, "11"), (0x2111, "12"), (0x2112, "15"), (0x2113, "16")] {
+        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}\n{}", r.out);
+    }
+    assert!(r.has("dma ch3 bytes: 65536"), "{}", r.out);
+}
+
+#[test]
+fn dma_address_modes_directions_and_bank_wrap() {
+    let code = prog(&[
+        // decrement from $8103: reads $8103, $8102, $8101 and ends at $8100
+        channel(0, 0x10, 0x05, 0x8103, 3),
+        st(0x01, 0x420B),
+        mv(0x4302, 0x2110),
+        mv(0x4303, 0x2111),
+        // fixed: four reads of $8102
+        channel(1, 0x08, 0x06, 0x8102, 4),
+        st(0x02, 0x420B),
+        // B to A: two VRAM bytes read through $2139/$213A into WRAM $0200
+        st(0x80, 0x2115),
+        st(0x00, 0x2116),
+        st(0x00, 0x2117),
+        st(0xC1, 0x2118),
+        st(0xC2, 0x2119),
+        st(0x00, 0x2116), // back to word 0
+        channel(2, 0x81, 0x39, 0x0200, 2),
+        st(0x04, 0x420B),
+        mv(0x0200, 0x2112),
+        mv(0x0201, 0x2113),
+        // the A address wraps inside the bank: $FFFF then $0000 (WRAM $0000 holds $77)
+        st(0x77, 0x0000),
+        channel(3, 0x00, 0x07, 0xFFFF, 2),
+        st(0x08, 0x420B),
+        mv(0x4332, 0x2114),
+        mv(0x4333, 0x2116),
+    ]);
+    let Some((r, _, dir)) = run_dump("hl-dma-addr", &code, &[(0x8100, &DATA)], false) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    let last = |reg: u32, want: &str| assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X} want {want}\n{}", r.out);
+    last(0x2105, "12"); // third byte read going down is $8101
+    last(0x2110, "00");
+    last(0x2111, "81"); // the address stopped at $8100
+    last(0x2106, "13"); // fixed on $8102
+    last(0x2112, "C1");
+    last(0x2113, "C2");
+    last(0x2107, "77"); // $0000 of the same bank
+    last(0x2114, "01");
+    last(0x2116, "00");
+}
+
+#[test]
+fn dma_bytes_are_added_per_channel() {
+    let code = prog(&[
+        channel(1, 0x00, 0x05, 0x8100, 64),
+        st(0x02, 0x420B),
+        channel(1, 0x00, 0x05, 0x8100, 64),
+        st(0x02, 0x420B),
+    ]);
+    let Some((r, _, dir)) = run_dump("hl-dma-bytes", &code, &[(0x8100, &DATA)], false) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(r.has("dma ch1: 2") && r.has("dma ch1 bytes: 128"), "{}", r.out);
+}
+
+#[test]
+fn vram_ports_follow_the_increment_mode() {
+    let code = prog(&[
+        // increment after the high byte: words $1000 and $1001
+        st(0x80, 0x2115),
+        st(0x00, 0x2116),
+        st(0x10, 0x2117),
+        st(0xA1, 0x2118),
+        st(0xA2, 0x2119),
+        st(0xB1, 0x2118),
+        st(0xB2, 0x2119),
+        // increment after the low byte: the high bytes stay as they were
+        st(0x00, 0x2115),
+        st(0x00, 0x2116),
+        st(0x00, 0x2117),
+        st(0xC1, 0x2118),
+        st(0xC2, 0x2118),
+        // step of 32 words
+        st(0x81, 0x2115),
+        st(0x00, 0x2116),
+        st(0x20, 0x2117),
+        st(0xD1, 0x2118),
+        st(0xD2, 0x2119),
+        st(0xE1, 0x2118),
+        st(0xE2, 0x2119),
+    ]);
+    let Some((r, m, dir)) = run_dump("hl-vram", &code, &[], true) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(&m.vram[0x2000..0x2004], &[0xA1, 0xA2, 0xB1, 0xB2]);
+    assert_eq!(&m.vram[0..4], &[0xC1, 0x00, 0xC2, 0x00]);
+    assert_eq!(&m.vram[0x4000..0x4002], &[0xD1, 0xD2]);
+    assert_eq!(&m.vram[0x4040..0x4042], &[0xE1, 0xE2]);
+}
+
+#[test]
+fn vram_reads_come_from_the_prefetch() {
+    let code = prog(&[
+        st(0x80, 0x2115),
+        st(0x00, 0x2116),
+        st(0x00, 0x2117),
+        st(0x11, 0x2118),
+        st(0x22, 0x2119),
+        st(0x33, 0x2118),
+        st(0x44, 0x2119),
+        st(0x00, 0x2116),
+        st(0x00, 0x2117), // prefetches word 0
+        mv(0x2139, 0x2110),
+        mv(0x213A, 0x2111),
+        mv(0x2139, 0x2112),
+        mv(0x213A, 0x2113),
+    ]);
+    let Some((r, _, dir)) = run_dump("hl-vram-read", &code, &[], false) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    for (reg, want) in [(0x2110, "11"), (0x2111, "22"), (0x2112, "33"), (0x2113, "44")] {
+        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}\n{}", r.out);
+    }
+}
+
+#[test]
+fn cgram_takes_two_bytes_per_colour_and_drops_a_half_colour() {
+    let code = prog(&[
+        st(0x00, 0x2121),
+        st(0x01, 0x2122),
+        st(0x02, 0x2122),
+        st(0x03, 0x2122),
+        st(0x04, 0x2122),
+        st(0x05, 0x2122),
+        st(0x06, 0x2122),
+        st(0x07, 0x2122),
+        st(0xFF, 0x2122), // the top bit of the high byte is dropped
+        st(0xAA, 0x2122), // half a colour...
+        st(0x10, 0x2121), // ...dropped by setting the index again
+        st(0xBB, 0x2122),
+        st(0xCC, 0x2122),
+        st(0x00, 0x2121),
+        mv(0x213B, 0x2110),
+        mv(0x213B, 0x2111),
+        mv(0x213B, 0x2112),
+        mv(0x213B, 0x2113),
+    ]);
+    let Some((r, m, dir)) = run_dump("hl-cgram", &code, &[], true) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(&m.cgram[0..8], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x7F]);
+    assert_eq!(m.cgram[8], 0);
+    assert_eq!(&m.cgram[0x20..0x22], &[0xBB, 0x4C]); // the top bit of the high byte is dropped
+    for (reg, want) in [(0x2110, "01"), (0x2111, "02"), (0x2112, "03"), (0x2113, "04")] {
+        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}\n{}", r.out);
+    }
+}
+
+#[test]
+fn oam_has_a_paired_low_table_and_a_direct_high_table() {
+    let code = prog(&[
+        st(0x00, 0x2102),
+        st(0x00, 0x2103),
+        st(0x01, 0x2104),
+        st(0x02, 0x2104),
+        st(0x03, 0x2104),
+        st(0x04, 0x2104),
+        st(0x00, 0x2102),
+        st(0x01, 0x2103), // word $100: the high table
+        st(0x5A, 0x2104),
+        st(0x00, 0x2102),
+        st(0x00, 0x2103),
+        mv(0x2138, 0x2110),
+        mv(0x2138, 0x2111),
+    ]);
+    let Some((r, m, dir)) = run_dump("hl-oam", &code, &[], true) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(m.oam.len(), 544);
+    assert_eq!(&m.oam[0..4], &[1, 2, 3, 4]);
+    assert_eq!(m.oam[512], 0x5A);
+    assert!(r.reg(0x2110).is_some_and(|l| l.ends_with("last=01")) && r.reg(0x2111).is_some_and(|l| l.ends_with("last=02")), "{}", r.out);
+}
+
+#[test]
+fn dump_writes_the_memories_also_after_a_failure_and_only_when_asked() {
+    // Writes the colour 0 and the register $2105, then jumps through a pointer nothing resolves.
+    let code = [st(0x00, 0x2121), st(0x21, 0x2122), st(0x22, 0x2122), st(0x07, 0x2105), vec![0x6C, 0x00, 0x00]].concat();
+    let Some((r, m, dir)) = run_dump("hl-dump-fail", &code, &[], true) else { return };
+    assert_eq!(r.code, 5, "{}", r.out);
+    assert_eq!((m.vram.len(), m.cgram.len(), m.oam.len(), m.regs.len()), (0x10000, 512, 544, 0x40));
+    assert_eq!(&m.cgram[0..2], &[0x21, 0x22]);
+    assert_eq!(m.regs[5], 0x07);
+    let _ = std::fs::remove_dir_all(dir);
+
+    let Some((r, m, dir)) = run_dump("hl-dump-off", &code, &[], false) else { return };
+    assert_eq!(r.code, 5, "{}", r.out);
+    assert!(m.vram.is_empty() && std::fs::read_dir(&dir).unwrap().next().is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn vram_address_translation_is_reported_when_requested() {
+    let code = prog(&[st(0x84, 0x2115)]);
+    let Some((r, _, dir)) = run_dump("hl-vram-translate", &code, &[], false) else { return };
+    let _ = std::fs::remove_dir_all(dir);
+    assert!(r.out.contains("warning: VRAM address translation ($2115=84) is not modelled"), "{}", r.out);
 }
