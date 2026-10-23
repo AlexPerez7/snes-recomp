@@ -20,7 +20,12 @@ typedef struct Cpu {
     uint8_t e;  /* emulation mode */
     uint8_t m;  /* 1: 8-bit accumulator and memory */
     uint8_t xf; /* 1: 8-bit index registers */
+    /* The address the last RTS/RTL pulled from the stack (16 bits), or RT_NO_RET. Every call compares it and S
+     * with what it expects when the callee returns, so a return that skips frames reaches the right caller. */
+    uint32_t ret;
 } Cpu;
+
+#define RT_NO_RET 0xFFFFFFFFu
 
 /* ---- Provided by the runtime ---- */
 
@@ -36,6 +41,8 @@ void rt_unsupported(Cpu *c, uint32_t entry);
 void rt_wai(Cpu *c);
 /* RTI. The runtime decides whether it returns to the interrupted code or to another context. */
 void rt_rti(Cpu *c);
+/* An RTS/RTL returned to an address no active call expects and the return reached the runtime. */
+void rt_lost_return(Cpu *c);
 void rt_stp(Cpu *c);
 void rt_brk(Cpu *c);
 void rt_cop(Cpu *c);
@@ -140,6 +147,7 @@ static inline void rt_rti_pop(Cpu *c) {
     rt_set_p(c, rt_pull8(c));
     (void)rt_pull16(c);
     if (!c->e) (void)rt_pull8(c);
+    c->ret = RT_NO_RET; /* an RTI is not a return to a call */
 }
 
 /* ---- Loads and logic ---- */

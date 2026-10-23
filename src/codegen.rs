@@ -258,7 +258,9 @@ fn instr_lines(ins: &Instr, f: Flags, targets: &[u32]) -> Result<Vec<String>, St
 /// Pushes the return address the way the CPU does and calls the target function(s).
 fn call_lines(ins: &Instr, targets: &[u32]) -> Result<Vec<String>, String> {
     let ret = after(ins).wrapping_sub(1) & 0xFFFF;
-    let mut push = Vec::new();
+    // A return that does not match the stack and address this call expects belongs to an outer caller.
+    let lost = format!("if (c->s != s0 || c->ret != 0x{ret:04X}) return;");
+    let mut push = vec!["uint16_t s0 = c->s;".to_string()];
     if ins.mnemonic == "JSL" {
         push.push(format!("rt_push8(c, 0x{:02X});", ins.addr >> 16));
     }
@@ -266,7 +268,11 @@ fn call_lines(ins: &Instr, targets: &[u32]) -> Result<Vec<String>, String> {
     match ins.flow() {
         Flow::Call(t) => {
             push.push(format!("{}(c);", func_name(t)));
-            Ok(push)
+            push.push(lost);
+            let mut out = vec!["{".to_string()];
+            out.extend(push.into_iter().map(|l| format!("    {l}")));
+            out.push("}".into());
+            Ok(out)
         }
         Flow::IndirectCall => {
             let mut out = vec!["{".to_string(), format!("    uint32_t t = {};", indirect_target(ins)?)];
@@ -277,6 +283,7 @@ fn call_lines(ins: &Instr, targets: &[u32]) -> Result<Vec<String>, String> {
             }
             out.push(format!("    default: rt_unresolved(c, 0x{:06X}, t); break;", ins.addr));
             out.push("    }".into());
+            out.push(format!("    {lost}"));
             out.push("}".into());
             Ok(out)
         }
@@ -429,8 +436,8 @@ impl<'a> Emitter<'a> {
                 Flow::Return => {
                     ends = true;
                     match ins.mnemonic {
-                        "RTS" => vec!["(void)rt_pull16(c);".into(), "return;".into()],
-                        "RTL" => vec!["(void)rt_pull16(c);".into(), "(void)rt_pull8(c);".into(), "return;".into()],
+                        "RTS" => vec!["c->ret = rt_pull16(c);".into(), "return;".into()],
+                        "RTL" => vec!["c->ret = rt_pull16(c);".into(), "(void)rt_pull8(c);".into(), "return;".into()],
                         _ => vec!["rt_rti(c);".into(), "return;".into()],
                     }
                 }
@@ -1033,7 +1040,7 @@ sep xf=1 x=0034 p=10
         assert!(b.contains(&"if (!c->z) { goto L_00_8003; }".to_string()), "{b:?}");
         assert!(b.contains(&"L_00_8003:".to_string()));
         assert!(!b.contains(&"L_00_8002:".to_string()), "nothing jumps to the fall-through block");
-        assert!(b.contains(&"(void)rt_pull16(c);".to_string()));
+        assert!(b.contains(&"c->ret = rt_pull16(c);".to_string()), "RTS leaves the address it pulled in c->ret");
         assert_eq!(b.last().unwrap(), "return;");
     }
 
@@ -1045,13 +1052,17 @@ sep xf=1 x=0034 p=10
         let b = body(&out, "f_00_8000");
         let at = b.iter().position(|l| l == "rt_push16(c, 0x8002);").expect("return address minus one");
         assert_eq!(b[at + 1], "f_00_8010(c);");
+        assert_eq!(b[at + 2], "if (c->s != s0 || c->ret != 0x8002) return;", "the call checks that the return is the one it expects");
+        assert_eq!(b[at - 1], "uint16_t s0 = c->s;", "S is kept before the return address is pushed");
         // JSL also pushes the program bank first.
         let rom = [(0x8000, &[0x22, 0x10, 0x80, 0x01, 0x60][..]), (0x1_8010, &[0x6B][..])];
         let out = gen(&rom, "", &[0x8000], 0x8000, 1).unwrap();
         let b = body(&out, "f_00_8000");
         let at = b.iter().position(|l| l == "rt_push8(c, 0x00);").unwrap();
         assert_eq!(&b[at + 1..at + 3], ["rt_push16(c, 0x8003);", "f_01_8010(c);"]);
-        assert_eq!(body(&out, "f_01_8010").iter().filter(|l| l.starts_with("(void)rt_pull")).count(), 2);
+        let callee = body(&out, "f_01_8010");
+        assert_eq!(callee.iter().filter(|l| *l == "c->ret = rt_pull16(c);").count(), 1);
+        assert_eq!(callee.iter().filter(|l| *l == "(void)rt_pull8(c);").count(), 1, "RTL also drops the bank");
     }
 
     #[test]
@@ -1126,7 +1137,8 @@ sep xf=1 x=0034 p=10
         let b = body(&out, "f_00_8000");
         assert!(b.contains(&"case 0x008010: f_00_8010(c); break;".to_string()), "{b:?}");
         assert!(b.contains(&"rt_push16(c, 0x8002);".to_string()));
-        assert_eq!(b.iter().filter(|l| l.starts_with("(void)rt_pull16")).count(), 1, "execution goes on to the RTS");
+        assert_eq!(b.iter().filter(|l| l.starts_with("c->ret = rt_pull16")).count(), 1, "execution goes on to the RTS");
+        assert!(b.contains(&"if (c->s != s0 || c->ret != 0x8002) return;".to_string()), "{b:?}");
     }
 
     /// A caller (REP #$30 ; JSR $8200 ; table $8010, $8020) and a helper that pops the return address,
@@ -1358,6 +1370,48 @@ int main(void) {{
     }
 
     #[test]
+    fn rts_and_rtl_leave_the_address_they_pulled_in_ret() {
+        // RTS with $1234 on top of the stack, and RTL with $1234 and a bank below it.
+        let Some(out) = exec("ret-rts", &[(0x8000, &[0x60][..])], "", &[0x8000], r#"load(0x200, (const uint8_t[]){0x34, 0x12}, 2);
+            //report
+            printf("ret=%04X s=%04X\n", (unsigned)c.ret, c.s);"#) else { return };
+        assert_eq!(out, "ret=1234 s=0201\n");
+        let Some(out) = exec("ret-rtl", &[(0x8000, &[0x6B][..])], "", &[0x8000], r#"load(0x200, (const uint8_t[]){0x34, 0x12, 0x05}, 3);
+            //report
+            printf("ret=%04X s=%04X\n", (unsigned)c.ret, c.s);"#) else { return };
+        assert_eq!(out, "ret=1234 s=0202\n");
+    }
+
+    /// 8000: JSR $8010 ; LDA #$11 ; STA $10 ; RTS     8010: JSR $8020 ; LDA #$22 ; STA $11 ; RTS
+    /// 8020: PLA ; PLA ; RTS (drops its own return address, so the RTS goes back to the caller of $8010)
+    const DROPS_A_RETURN: [(u32, &[u8]); 3] = [
+        (0x8000, &[0x20, 0x10, 0x80, 0xA9, 0x11, 0x85, 0x10, 0x60]),
+        (0x8010, &[0x20, 0x20, 0x80, 0xA9, 0x22, 0x85, 0x11, 0x60]),
+        (0x8020, &[0x68, 0x68, 0x60]),
+    ];
+
+    #[test]
+    fn a_return_that_drops_an_address_reaches_the_outer_caller() {
+        let Some(out) = exec("drop-return", &DROPS_A_RETURN, "", &[0x8000], r#"//report
+            printf("m10=%02X m11=%02X s=%04X\n", bus_read8(0x10), bus_read8(0x11), c.s);"#) else { return };
+        // Only the outer caller goes on: the middle function does not run what follows its call, and the
+        // stack ends where the CPU would leave it.
+        assert_eq!(out, "m10=11 m11=00 s=0201\n");
+    }
+
+    #[test]
+    fn a_return_to_another_address_with_the_same_stack_is_not_taken_as_the_expected_one() {
+        // 8000: JSR $8010 ; LDA #$11 ; STA $10 ; RTS     8010: PLA ; PLA ; PEA $8FFF ; RTS (returns to $9000)
+        let rom = [
+            (0x8000, &[0x20, 0x10, 0x80, 0xA9, 0x11, 0x85, 0x10, 0x60][..]),
+            (0x8010, &[0x68, 0x68, 0xF4, 0xFF, 0x8F, 0x60][..]),
+        ];
+        let Some(out) = exec("other-address", &rom, "", &[0x8000], r#"//report
+            printf("m10=%02X ret=%04X s=%04X\n", bus_read8(0x10), (unsigned)c.ret, c.s);"#) else { return };
+        assert_eq!(out, "m10=00 ret=8FFF s=01FF\n");
+    }
+
+    #[test]
     fn runs_an_indirect_jump_through_a_table() {
         // 8000: LDX #$02 ; JMP ($8100,X)    table: $8010, $8020    8020: LDA #$77 ; STA $10 ; RTS
         let rom = [
@@ -1533,6 +1587,7 @@ void rt_unresolved(Cpu *c, uint32_t site, uint32_t target) {
 void rt_flag_mismatch(Cpu *c, uint32_t addr) { (void)c; printf("FLAG_MISMATCH %06X\n", (unsigned)addr); exit(6); }
 void rt_wai(Cpu *c) { (void)c; printf("WAI\n"); }
 void rt_rti(Cpu *c) { rt_rti_pop(c); }
+void rt_lost_return(Cpu *c) { (void)c; printf("LOST_RETURN\n"); exit(8); }
 void rt_stp(Cpu *c) { (void)c; printf("STP\n"); exit(7); }
 void rt_brk(Cpu *c) { (void)c; printf("BRK\n"); exit(7); }
 void rt_cop(Cpu *c) { (void)c; printf("COP\n"); exit(7); }

@@ -370,8 +370,9 @@ fn a_context_cannot_start_where_there_is_no_function_or_return() {
     assert!(r.out.contains("context entry 00B000 is not the entry of a function"), "{}", r.out);
 
     let Some(r) = run_swap("hl-swap-ret", 0xA000, Some(&[0x60])) else { return };
-    assert_eq!(r.code, 12, "{}", r.out);
-    assert!(r.out.contains("the context started at 00A000 returned"), "{}", r.out);
+    // Its RTS goes to an address no call expects.
+    assert_eq!(r.code, 14, "{}", r.out);
+    assert!(r.out.contains("LOST_RETURN to"), "{}", r.out);
 }
 
 #[test]
@@ -392,10 +393,11 @@ fn failures_stop_the_run_with_the_cause_and_a_distinct_exit_code() {
     assert_eq!(r.code, 7, "{}", r.out);
     assert!(r.out.contains("stop: STP"), "{}", r.out);
 
-    // A reset that returns
+    // A reset that returns with RTS: nothing accepts that return, and the report says where it went.
     let Some(r) = run("hl-returns", &[(0x8000, &[0x60])], &[0x8000], None, &["rom.sfc"]) else { return };
-    assert_eq!(r.code, 11, "{}", r.out);
-    assert!(r.out.contains("stop: reset returned"), "{}", r.out);
+    assert_eq!(r.code, 14, "{}", r.out);
+    assert!(r.out.contains("LOST_RETURN to 0000 with S=0201"), "{}", r.out);
+    assert!(r.out.contains("stop: return to an address no call expects"), "{}", r.out);
 }
 
 /// A Link to the Past, recompiled whole and run with the real ROM through its boot (the audio upload
