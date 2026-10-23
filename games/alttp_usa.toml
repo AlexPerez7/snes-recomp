@@ -582,3 +582,12 @@ addr = "0E:FB64"
 addr = "02:87AF"
 m = 8
 x = 8
+
+# Despacho de sprites por PHA/RTS: LDA $0E20,X (tipo) -> word de 06:9283 -> DEC A -> PHA -> RTS, o sea que el
+# destino es el word tal cual (bias 0). 243 tipos ($00-$F2); los huecos ($0000) no son código y se descartan.
+[[table]]
+kind = "indirect"
+site = "06:9282"
+at = "06:9283"
+count = 243
+size = 2

@@ -519,6 +519,18 @@ impl<'a> Emitter<'a> {
                     v.push("}".into());
                     v
                 }
+                Flow::Return if !dispatch.is_empty() => {
+                    // PHA/RTS dispatch: jump to the pushed address + 1, in the site's bank.
+                    ends = true;
+                    let mut v = vec!["{".to_string(), format!("    uint32_t t = 0x{:06X} | (uint16_t)(rt_pull16(c) + 1);", a & 0xFF_0000), "    switch (t) {".into()];
+                    for &t in &dispatch {
+                        v.push(format!("    case 0x{t:06X}: {}", self.jump(body, t)?));
+                    }
+                    v.push(format!("    default: rt_unresolved(c, 0x{a:06X}, t); return;"));
+                    v.push("    }".into());
+                    v.push("}".into());
+                    v
+                }
                 Flow::Return => {
                     ends = true;
                     match ins.mnemonic {
@@ -629,7 +641,12 @@ impl<'a> Emitter<'a> {
             if !emitted.insert(at) {
                 continue;
             }
-            let (text, refs) = self.function(at)?;
+            // Only the entry has to translate; a callee that cannot is left out like one past the depth.
+            let (text, refs) = match self.function(at) {
+                Ok(f) => f,
+                Err(e) if level == 0 => return Err(e),
+                Err(_) => continue,
+            };
             bodies.push((at, text));
             referenced.extend(&refs);
             if level < depth {

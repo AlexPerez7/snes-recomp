@@ -56,7 +56,8 @@ fn table_targets(rom: &Rom, bank: u32, at: u32, table: &Table) -> Vec<u32> {
             let p = (at & 0xFF_0000) | ((at + i * size) & 0xFFFF);
             let lo = rom.read16(p)? as u32;
             if size == 2 {
-                Some(bank | ((lo as i32 + table.bias) as u32 & 0xFFFF))
+                // Entries below $8000 are unused slots (e.g. $0000 + 1 in a PHA/RTS table), not code.
+                Some(bank | ((lo as i32 + table.bias) as u32 & 0xFFFF)).filter(|t| t & 0x8000 != 0)
             } else {
                 let hi = rom.read8((p & 0xFF_0000) | ((p + 2) & 0xFFFF))? as u32;
                 Some(((lo | hi << 16) as i32 + table.bias) as u32 & 0xFF_FFFF)
@@ -291,11 +292,12 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                         work.push(here(t, &stack));
                         stop = true;
                     }
-                    Flow::Return => {
+                    // An RTS with a table is a PHA/RTS dispatch: it jumps to the pushed address + 1.
+                    Flow::Return if table.is_none() => {
                         calls.add_return(ctx, nf, &mut work);
                         stop = true;
                     }
-                    Flow::Stop => stop = true,
+                    Flow::Return | Flow::Stop => stop = true,
                 }
 
                 if let (None, Flow::Call(t)) = (table, flow) {
@@ -339,7 +341,7 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                             called.clear();
                         }
                     }
-                    (Some(t), Flow::IndirectJump | Flow::IndirectCall) => {
+                    (Some(t), Flow::IndirectJump | Flow::IndirectCall | Flow::Return) => {
                         let targets = match t.kind {
                             TableKind::Split => split_targets(rom, addr & 0xFF_0000, t),
                             _ => table_targets(rom, addr & 0xFF_0000, t.at.expect("validated by Config::parse"), t),
