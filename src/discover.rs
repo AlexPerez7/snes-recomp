@@ -33,6 +33,12 @@ pub struct Discovery {
     pub flag_conflicts: BTreeMap<u32, BTreeSet<Flags>>,
     /// Indirect jumps/calls reached with no table configured: candidates for the config.
     pub unresolved: BTreeSet<u32>,
+    /// Calls (by address) whose callee never returns in the analysis and is not declared `no_return`.
+    pub calls_without_return: BTreeSet<u32>,
+    /// `PLP` instructions that pop something other than a `PHP` from the same path.
+    pub untracked_plp: BTreeSet<u32>,
+    /// Deepest abstract stack reached, before the limit is applied.
+    pub max_stack: usize,
 }
 
 fn next_addr(addr: u32, len: u8) -> u32 {
@@ -122,106 +128,247 @@ fn add_edge(out: &mut Discovery, cfg: &Config, from: u32, to: u32, kind: EdgeKin
     }
 }
 
+/// A function being analysed: its entry and the widths it was entered with.
+type Ctx = (u32, Flags);
+
+/// One entry of the abstract stack that pairs `PHP` with `PLP`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Item {
+    Flags(Flags),
+    Other,
+}
+
+/// Entries kept in the abstract stack; the oldest is dropped past this, so the state space is finite.
+const MAX_STACK: usize = 16;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct Path {
+    addr: u32,
+    f: Flags,
+    stack: Vec<Item>,
+    ctx: Ctx,
+}
+
+/// What a caller does once the callee returns: continue at `ret` with the widths the callee left.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Cont {
+    site: u32,
+    before: Flags,
+    ret: u32,
+    stack: Vec<Item>,
+    ctx: Ctx,
+}
+
+impl Cont {
+    fn resume(&self, f: Flags) -> Path {
+        Path { addr: self.ret, f, stack: self.stack.clone(), ctx: self.ctx }
+    }
+}
+
+/// Return summaries per function context and the continuations waiting on them.
+#[derive(Default)]
+struct Calls {
+    returns: BTreeMap<Ctx, BTreeSet<Flags>>,
+    conts: BTreeMap<Ctx, BTreeSet<Cont>>,
+}
+
+impl Calls {
+    fn add_return(&mut self, ctx: Ctx, f: Flags, work: &mut Vec<Path>) {
+        if self.returns.entry(ctx).or_default().insert(f) {
+            for c in self.conts.get(&ctx).into_iter().flatten() {
+                work.push(c.resume(f));
+            }
+        }
+    }
+
+    fn subscribe(&mut self, callee: Ctx, c: Cont, work: &mut Vec<Path>) {
+        if self.conts.entry(callee).or_default().insert(c.clone()) {
+            for &f in self.returns.get(&callee).into_iter().flatten() {
+                work.push(c.resume(f));
+            }
+        }
+    }
+
+    fn returns_nothing(&self, ctx: &Ctx) -> bool {
+        self.returns.get(ctx).map_or(true, |r| r.is_empty())
+    }
+}
+
 pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
     let mut out = Discovery::default();
-    let mut seen: HashSet<(u32, Flags)> = HashSet::new();
+    let mut seen: HashSet<Path> = HashSet::new();
     let mut all_flags: BTreeMap<u32, BTreeSet<Flags>> = BTreeMap::new();
-    let mut work: Vec<(u32, Flags)> = roots.to_vec();
+    let mut calls = Calls::default();
+    let mut resolved: BTreeSet<(Ctx, Cont)> = BTreeSet::new();
+    let mut work: Vec<Path> = roots
+        .iter()
+        .map(|&(a, f)| Path { addr: a, f, stack: Vec::new(), ctx: (a, f) })
+        .collect();
 
-    while let Some((mut addr, mut f)) = work.pop() {
-        loop {
-            if cfg.not_code.contains(&addr) {
-                break;
-            }
-            if let Some(&forced) = cfg.assume.get(&addr) {
-                f = forced;
-            }
-            if !seen.insert((addr, f)) {
-                break;
-            }
-            out.flags.entry(addr).or_insert(f);
-            all_flags.entry(addr).or_default().insert(f);
-            let Some(ins) = decode(rom, addr, f) else { break };
-            let after = next_addr(addr, ins.len);
-            let nf = ins.next_flags(f);
-            let flow = ins.flow();
-            let table = cfg.tables.get(&addr);
-            out.instrs.entry(addr).or_insert(ins);
-
-            let mut stop = false;
-            match flow {
-                Flow::Next | Flow::IndirectCall | Flow::IndirectJump => {}
-                Flow::Branch(t) => {
-                    add_edge(&mut out, cfg, addr, t, EdgeKind::Branch);
-                    work.push((t, nf));
+    loop {
+        while let Some(Path { mut addr, mut f, mut stack, ctx }) = work.pop() {
+            loop {
+                if cfg.not_code.contains(&addr) {
+                    break;
                 }
-                Flow::Call(t) => {
-                    add_edge(&mut out, cfg, addr, t, EdgeKind::Call);
-                    work.push((t, nf));
-                    stop = cfg.no_return.contains(&t);
+                if let Some(&forced) = cfg.assume.get(&addr) {
+                    f = forced;
                 }
-                Flow::Jump(t) => {
-                    add_edge(&mut out, cfg, addr, t, EdgeKind::Jump);
-                    work.push((t, nf));
-                    stop = true;
+                if !seen.insert(Path { addr, f, stack: stack.clone(), ctx }) {
+                    break;
                 }
-                Flow::Return | Flow::Stop => stop = true,
-            }
-
-            if let (None, Flow::Call(t)) = (table, flow) {
-                if let Some(h) = cfg.inline_helpers.get(&t) {
-                    for target in inline_helper_targets(rom, after, h.size) {
-                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
-                        work.push((target, nf));
+                out.flags.entry(addr).or_insert(f);
+                all_flags.entry(addr).or_default().insert(f);
+                let Some(ins) = decode(rom, addr, f) else { break };
+                let after = next_addr(addr, ins.len);
+                let mut nf = ins.next_flags(f);
+                match ins.mnemonic {
+                    "PHP" | "PHA" | "PHX" | "PHY" | "PHB" | "PHD" | "PHK" | "PEA" | "PEI" | "PER" => {
+                        stack.push(if ins.mnemonic == "PHP" { Item::Flags(f) } else { Item::Other });
+                        out.max_stack = out.max_stack.max(stack.len());
+                        if stack.len() > MAX_STACK {
+                            stack.remove(0);
+                        }
                     }
-                    stop = true;
+                    "PLP" => match stack.pop() {
+                        Some(Item::Flags(saved)) => nf = saved,
+                        _ => {
+                            out.untracked_plp.insert(addr);
+                        }
+                    },
+                    "PLA" | "PLX" | "PLY" | "PLB" | "PLD" => {
+                        stack.pop();
+                    }
+                    _ => {}
                 }
-            }
+                let flow = ins.flow();
+                let table = cfg.tables.get(&addr);
+                out.instrs.entry(addr).or_insert(ins);
+                let here = |a: u32, stack: &[Item]| Path { addr: a, f: nf, stack: stack.to_vec(), ctx };
+                let callee = |t: u32| Path { addr: t, f: nf, stack: Vec::new(), ctx: (t, nf) };
 
-            match (table, flow) {
-                (Some(t), _) if t.kind == TableKind::Inline => {
-                    for target in table_targets(rom, addr & 0xFF_0000, after, t) {
-                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
-                        work.push((target, nf));
+                let mut stop = false;
+                // Functions this instruction calls; the code after it resumes when they return.
+                let mut called: Vec<u32> = Vec::new();
+                match flow {
+                    Flow::Next | Flow::IndirectCall | Flow::IndirectJump => {}
+                    Flow::Branch(t) => {
+                        add_edge(&mut out, cfg, addr, t, EdgeKind::Branch);
+                        work.push(here(t, &stack));
                     }
-                    stop = stop || !t.falls_through;
-                }
-                (Some(t), Flow::IndirectJump | Flow::IndirectCall) => {
-                    let targets = match t.kind {
-                        TableKind::Split => split_targets(rom, addr & 0xFF_0000, t),
-                        _ => table_targets(rom, addr & 0xFF_0000, t.at.expect("validated by Config::parse"), t),
-                    };
-                    for target in targets {
-                        add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
-                        work.push((target, nf));
+                    Flow::Call(t) => {
+                        add_edge(&mut out, cfg, addr, t, EdgeKind::Call);
+                        work.push(callee(t));
+                        stop = cfg.no_return.contains(&t);
+                        if !stop {
+                            called.push(t);
+                        }
                     }
-                    stop = stop || flow == Flow::IndirectJump;
+                    Flow::Jump(t) => {
+                        add_edge(&mut out, cfg, addr, t, EdgeKind::Jump);
+                        work.push(here(t, &stack));
+                        stop = true;
+                    }
+                    Flow::Return => {
+                        calls.add_return(ctx, nf, &mut work);
+                        stop = true;
+                    }
+                    Flow::Stop => stop = true,
                 }
-                (None, Flow::IndirectJump) => {
-                    if !cfg.helper_exits.contains(&addr) {
+
+                if let (None, Flow::Call(t)) = (table, flow) {
+                    if let Some(h) = cfg.inline_helpers.get(&t) {
+                        for target in inline_helper_targets(rom, after, h.size) {
+                            add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
+                            work.push(here(target, &stack));
+                        }
+                        called.clear();
+                        stop = true;
+                    }
+                }
+
+                match (table, flow) {
+                    (Some(t), _) if t.kind == TableKind::Inline => {
+                        for target in table_targets(rom, addr & 0xFF_0000, after, t) {
+                            add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
+                            work.push(here(target, &stack));
+                        }
+                        stop = stop || !t.falls_through;
+                        if stop {
+                            called.clear();
+                        }
+                    }
+                    (Some(t), Flow::IndirectJump | Flow::IndirectCall) => {
+                        let targets = match t.kind {
+                            TableKind::Split => split_targets(rom, addr & 0xFF_0000, t),
+                            _ => table_targets(rom, addr & 0xFF_0000, t.at.expect("validated by Config::parse"), t),
+                        };
+                        for target in targets {
+                            add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
+                            if flow == Flow::IndirectCall {
+                                work.push(callee(target));
+                                if !cfg.no_return.contains(&target) {
+                                    called.push(target);
+                                }
+                            } else {
+                                work.push(here(target, &stack));
+                            }
+                        }
+                        stop = stop || flow == Flow::IndirectJump;
+                    }
+                    (None, Flow::IndirectJump) => {
+                        if !cfg.helper_exits.contains(&addr) {
+                            out.unresolved.insert(addr);
+                        }
+                        stop = true;
+                    }
+                    (None, Flow::IndirectCall) => {
                         out.unresolved.insert(addr);
                     }
-                    stop = true;
+                    _ => {}
                 }
-                (None, Flow::IndirectCall) => {
-                    out.unresolved.insert(addr);
-                }
-                _ => {}
-            }
 
-            if stop {
-                break;
-            }
-            // An inline table sits between the call and the next instruction.
-            let next = match table {
-                Some(t) if t.kind == TableKind::Inline => {
-                    (after & 0xFF_0000) | ((after + (t.count * t.size as usize) as u32) & 0xFFFF)
+                if stop {
+                    break;
                 }
-                _ => after,
-            };
-            out.fallthrough.insert(addr, next);
-            addr = next;
-            f = nf;
+                // An inline table sits between the call and the next instruction.
+                let next = match table {
+                    Some(t) if t.kind == TableKind::Inline => {
+                        (after & 0xFF_0000) | ((after + (t.count * t.size as usize) as u32) & 0xFFFF)
+                    }
+                    _ => after,
+                };
+                out.fallthrough.insert(addr, next);
+                if !called.is_empty() {
+                    for t in called {
+                        let c = Cont { site: addr, before: nf, ret: next, stack: stack.clone(), ctx };
+                        calls.subscribe((t, nf), c, &mut work);
+                    }
+                    break;
+                }
+                addr = next;
+                f = nf;
+            }
+        }
+
+        // Calls whose callee never returned: go on with the widths from before the call.
+        let mut pending: Vec<(Ctx, Cont)> = Vec::new();
+        for (callee, cs) in &calls.conts {
+            if calls.returns_nothing(callee) {
+                for c in cs {
+                    if !resolved.contains(&(*callee, c.clone())) {
+                        pending.push((*callee, c.clone()));
+                    }
+                }
+            }
+        }
+        if pending.is_empty() {
+            break;
+        }
+        for (callee, c) in pending {
+            out.calls_without_return.insert(c.site);
+            work.push(c.resume(c.before));
+            resolved.insert((callee, c));
         }
     }
     out.flag_conflicts = all_flags.into_iter().filter(|(_, v)| v.len() > 1).collect();
@@ -477,5 +624,184 @@ addr=\"00:8010\"").unwrap();
         let cfg = Config::parse("[[no_return]]\naddr=\"00:8100\"").unwrap();
         let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
         assert_eq!(addrs(&d), [0x8000, 0x8100]);
+    }
+
+    const M16X16: Flags = Flags { m: false, x: false };
+
+    fn width_test_cfg(extra: &str) -> Config {
+        Config::parse(extra).unwrap()
+    }
+
+    #[test]
+    fn call_continues_with_the_widths_the_callee_returns() {
+        // 8000: JSR $8010 ; 8003: LDA #$80 (M=8 after the call) ; 8005: RTS   8010: SEP #$20 ; RTS
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x10, 0x80, 0xA9, 0x80, 0x60]),
+            (0x8010, &[0xE2, 0x20, 0x60]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8003], Flags { m: true, x: false });
+        assert_eq!(d.instrs[&0x8003].len, 2);
+        assert!(d.instrs.contains_key(&0x8005));
+        assert!(d.flag_conflicts.is_empty());
+        assert!(d.calls_without_return.is_empty());
+    }
+
+    #[test]
+    fn call_keeps_widths_when_callee_preserves_them() {
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x10, 0x80, 0xEA, 0x60]),
+            (0x8010, &[0xEA, 0x60]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8003], M16X16);
+    }
+
+    #[test]
+    fn each_call_gets_the_returns_of_its_own_context() {
+        // 8000: SEP #$20 ; JSR $8020 ; 8005: REP #$20 ; 8007: JSR $8020 ; 800A: RTS   8020: NOP ; RTS
+        let rom = test_rom(&[
+            (0x8000, &[0xE2, 0x20, 0x20, 0x20, 0x80, 0xC2, 0x20, 0x20, 0x20, 0x80, 0x60]),
+            (0x8020, &[0xEA, 0x60]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8005].m, true);
+        assert_eq!(d.flags[&0x800A].m, false);
+        // Only the callee, entered both ways, is reached with two widths.
+        assert_eq!(d.flag_conflicts.keys().copied().collect::<Vec<_>>(), [0x8020, 0x8021]);
+    }
+
+    #[test]
+    fn returns_with_different_widths_are_a_conflict_after_the_call() {
+        // 8010: BEQ $8015 ; 8012: SEP #$20 ; 8014: RTS ; 8015: RTS
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x10, 0x80, 0xEA, 0x60]),
+            (0x8010, &[0xF0, 0x03, 0xE2, 0x20, 0x60, 0x60]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, M16X16)]);
+        assert_eq!(
+            d.flag_conflicts[&0x8003],
+            BTreeSet::from([M16X16, Flags { m: true, x: false }])
+        );
+    }
+
+    #[test]
+    fn call_that_never_returns_continues_with_the_previous_widths() {
+        // 8010: BRA $8010
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x10, 0x80, 0xEA, 0x60]),
+            (0x8010, &[0x80, 0xFE]),
+        ]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8003], M16X16);
+        assert_eq!(d.calls_without_return, BTreeSet::from([0x8000]));
+    }
+
+    #[test]
+    fn declared_no_return_is_neither_continued_nor_reported() {
+        let rom = test_rom(&[(0x8000, &[0x20, 0x00, 0x81, 0xEA]), (0x8100, &[0x80, 0xFE])]);
+        let cfg = width_test_cfg("[[no_return]]
+addr=\"00:8100\"");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
+        assert_eq!(addrs(&d), [0x8000, 0x8100]);
+        assert!(d.calls_without_return.is_empty());
+    }
+
+    #[test]
+    fn indirect_call_through_a_table_takes_the_callee_widths() {
+        // 8000: JSR ($8100,X) ; 8003: NOP ; RTS   table: $8010   8010: SEP #$20 ; RTS
+        let rom = test_rom(&[
+            (0x8000, &[0xFC, 0x00, 0x81, 0xEA, 0x60]),
+            (0x8100, &[0x10, 0x80]),
+            (0x8010, &[0xE2, 0x20, 0x60]),
+        ]);
+        let cfg = width_test_cfg("[[table]]
+kind=\"indirect\"
+site=\"00:8000\"
+at=\"00:8100\"
+count=1");
+        let d = discover(&rom, &cfg, &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8003], Flags { m: true, x: false });
+    }
+
+    #[test]
+    fn dispatch_jump_returns_count_for_the_function_that_jumped() {
+        // 8000: JSR $8010 ; 8003: NOP ; RTS   8010: JMP ($8100,X)   table: $8020   8020: SEP #$20 ; RTS
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x10, 0x80, 0xEA, 0x60]),
+            (0x8010, &[0x7C, 0x00, 0x81]),
+            (0x8100, &[0x20, 0x80]),
+            (0x8020, &[0xE2, 0x20, 0x60]),
+        ]);
+        let cfg = width_test_cfg("[[table]]
+kind=\"indirect\"
+site=\"00:8010\"
+at=\"00:8100\"
+count=1");
+        let d = discover(&rom, &cfg, &[(0x8000, M16X16)]);
+        assert_eq!(d.flags[&0x8003], Flags { m: true, x: false });
+        assert!(d.calls_without_return.is_empty());
+    }
+
+    #[test]
+    fn inline_helper_call_is_not_continued_nor_reported() {
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x00, 0x82, 0x05, 0x80, 0xA9, 0x90, 0x60]),
+            (0x8200, &[0x60]),
+        ]);
+        let cfg = width_test_cfg("[[inline_helper]]
+addr=\"00:8200\"");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
+        assert!(!d.fallthrough.contains_key(&0x8000));
+        assert!(d.calls_without_return.is_empty());
+    }
+
+    #[test]
+    fn plp_restores_the_widths_saved_by_php() {
+        // 8000: PHP ; REP #$20 ; 8003: PLP ; 8004: NOP ; RTS
+        let rom = test_rom(&[(0x8000, &[0x08, 0xC2, 0x20, 0x28, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8003], Flags { m: false, x: true });
+        assert_eq!(d.flags[&0x8004], Flags::RESET);
+        assert!(d.untracked_plp.is_empty());
+    }
+
+    #[test]
+    fn nested_php_plp_pairs_restore_in_order() {
+        // PHP ; REP #$20 ; PHP ; SEP #$30 ; PLP ; 8007: NOP ; PLP ; 8009: NOP ; RTS
+        let rom = test_rom(&[(
+            0x8000,
+            &[0x08, 0xC2, 0x20, 0x08, 0xE2, 0x30, 0x28, 0xEA, 0x28, 0xEA, 0x60],
+        )]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8007], Flags { m: false, x: true });
+        assert_eq!(d.flags[&0x8009], Flags::RESET);
+        assert!(d.untracked_plp.is_empty());
+    }
+
+    #[test]
+    fn other_stack_instructions_between_php_and_plp_are_matched() {
+        // PHP ; REP #$20 ; PHA ; PLA ; PLP ; 8006: NOP ; RTS
+        let rom = test_rom(&[(0x8000, &[0x08, 0xC2, 0x20, 0x48, 0x68, 0x28, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8006], Flags::RESET);
+        assert!(d.untracked_plp.is_empty());
+    }
+
+    #[test]
+    fn unpaired_plp_keeps_widths_and_can_be_corrected_with_assume() {
+        // 8000: REP #$20 ; 8002: PLP ; 8003: NOP ; RTS
+        let rom = test_rom(&[(0x8000, &[0xC2, 0x20, 0x28, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8003], Flags { m: false, x: true });
+        assert_eq!(d.untracked_plp, BTreeSet::from([0x8002]));
+
+        let cfg = width_test_cfg("[[assume]]
+addr=\"00:8003\"
+m=8
+x=8");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8003], Flags::RESET);
+        assert_eq!(d.untracked_plp, BTreeSet::from([0x8002]));
     }
 }

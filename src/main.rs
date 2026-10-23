@@ -20,7 +20,7 @@ const USAGE: &str = "\
 usage:
   snes-recomp info <rom>
   snes-recomp disasm <rom> <addr> [count] [--m16] [--x16]
-  snes-recomp discover <rom> [addr] [--config <file>] [--unresolved]
+  snes-recomp discover <rom> [addr] [--config <file>] [--unresolved] [--widths]
   snes-recomp graph <rom> [addr] [--config <file>]
   snes-recomp codegen <rom> <addr> [--depth N] [-o <file.c>] [--config <file>]
 
@@ -28,6 +28,7 @@ usage:
 discover loads games/<id>.toml for known ROMs (override with --config). Without an <addr> it
 starts from the config's entries, or the reset vector if there are none.
 --unresolved lists indirect jumps/calls that still need a table in the config.
+--widths lists M/X conflicts, unpaired PLPs and calls whose callee never returns.
 graph prints totals for functions and basic blocks; with <addr> it details the function containing it.
 codegen emits C for the function at <addr> and, up to --depth levels (default 1), the functions it calls.
 With -o it also writes snes_rt.h next to the file. The output derives from the ROM: keep it under out/.";
@@ -89,7 +90,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 None => default_roots(&rom, &cfg),
             };
             let d = discover::discover(&rom, &cfg, &roots);
-            if args.iter().any(|a| a == "--unresolved") {
+            if args.iter().any(|a| a == "--widths") {
+                print_widths(&d);
+            } else if args.iter().any(|a| a == "--unresolved") {
                 for a in &d.unresolved {
                     println!("unresolved indirect at {}", fmt_addr(*a));
                 }
@@ -172,6 +175,30 @@ fn default_roots(rom: &Rom, cfg: &Config) -> Vec<(u32, Flags)> {
     } else {
         cfg.entries.iter().map(|e| (e.addr, e.flags)).collect()
     }
+}
+
+fn print_widths(d: &discover::Discovery) {
+    for (a, set) in &d.flag_conflicts {
+        let seen: Vec<String> = set.iter().map(|f| fmt_flags(*f)).collect();
+        println!("conflict at {}: {}", fmt_addr(*a), seen.join(" / "));
+    }
+    for a in &d.untracked_plp {
+        println!("unpaired PLP at {}", fmt_addr(*a));
+    }
+    for a in &d.calls_without_return {
+        println!("call without return at {}", fmt_addr(*a));
+    }
+    println!(
+        "{} conflicts, {} unpaired PLP, {} calls without return (max stack depth {})",
+        d.flag_conflicts.len(),
+        d.untracked_plp.len(),
+        d.calls_without_return.len(),
+        d.max_stack
+    );
+}
+
+fn fmt_flags(f: Flags) -> String {
+    format!("M={} X={}", if f.m { 8 } else { 16 }, if f.x { 8 } else { 16 })
 }
 
 fn print_graph_summary(d: &discover::Discovery, g: &graph::Graph) {
