@@ -467,6 +467,11 @@ impl<'a> Emitter<'a> {
             chunks.push((start, lines));
         }
         let mut text = format!("void {}(Cpu *c) {{\n", func_name(entry));
+        // Blocks are laid out by address, so an entry that is not the lowest block needs a jump.
+        if order.first() != Some(&entry) {
+            body.used_labels.insert(entry);
+            text.push_str(&format!("    goto {};\n", label(entry)));
+        }
         for (start, lines) in chunks {
             if body.used_labels.contains(&start) {
                 text.push_str(&format!("{}:\n", label(start)));
@@ -1399,6 +1404,19 @@ int main(void) {{
             printf("mem=%02X\n", bus_read8(0x12));"#;
         let Some(out) = exec("helper_unknown", &rom, HELPER_CFG, &[0x8000], body) else { return };
         assert_eq!(out, "UNRESOLVED site=00820F target=009000\nmem=00\n");
+    }
+
+    #[test]
+    fn starts_at_the_entry_even_when_a_lower_block_belongs_to_the_function() {
+        // The callee at $8010 jumps back to a block at $8000 that only it reaches.
+        let rom = [
+            (0x9000, &[0x20, 0x10, 0x80, 0x60][..]),
+            (0x8010, &[0xA9, 0x01, 0x85, 0x10, 0x4C, 0x00, 0x80][..]),
+            (0x8000, &[0xA9, 0x22, 0x85, 0x11, 0x60][..]),
+        ];
+        let Some(out) = exec("entry_not_lowest", &rom, "", &[0x9000], r#"//report
+            printf("a=%02X b=%02X\n", bus_read8(0x10), bus_read8(0x11));"#) else { return };
+        assert_eq!(out, "a=01 b=22\n");
     }
 
     #[test]
