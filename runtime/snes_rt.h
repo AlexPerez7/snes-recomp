@@ -39,6 +39,15 @@ void rt_brk(Cpu *c);
 void rt_cop(Cpu *c);
 void rt_wdm(Cpu *c);
 
+/* Every block starts with rt_tick: a hook where the runtime can account for time and deliver
+ * interrupts. Without SNES_RT_TICK it costs nothing; with it, the runtime provides rt_poll. */
+#ifdef SNES_RT_TICK
+void rt_poll(Cpu *c);
+#define rt_tick(c) rt_poll(c)
+#else
+#define rt_tick(c) ((void)0)
+#endif
+
 #ifdef SNES_RT_CHECKS
 static inline void rt_check_flags(Cpu *c, uint32_t addr, uint8_t m, uint8_t x) {
     if ((m != 2 && c->m != m) || (x != 2 && c->xf != x)) rt_flag_mismatch(c, addr);

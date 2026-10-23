@@ -6,6 +6,10 @@ addr = "00:8000"
 name = "reset"
 
 [[entry]]
+addr = "00:80C9"
+name = "nmi_native"
+
+[[entry]]
 addr = "00:822C"
 name = "nmi"
 
@@ -25,6 +29,14 @@ count = 28
 name = "module_dispatch"
 
 # --- Tablas de saltos indirectos resueltas (todas con punteros de 16 bits en el banco del sitio) ---
+
+# Subrutina del NMI: JMP ($8C7E,X) con X = $17 * 2 (25 entradas; la tabla acaba en 00:8CB0, donde empieza el código)
+[[table]]
+kind = "indirect"
+site = "00:8C7B"
+at = "00:8C7E"
+count = 25
+size = 2
 
 # JMP ($0E): $0E = word de 01:86F0,X con X = (A & 3) * 2
 [[table]]

@@ -7,6 +7,8 @@ mod disasm;
 mod discover;
 mod games;
 mod graph;
+#[cfg(test)]
+mod headless;
 mod opcodes;
 mod rom;
 
@@ -170,6 +172,8 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
     };
     write("snes_rt.h".into(), codegen::RUNTIME_HEADER)?;
     write("snes_funcs.h".into(), &out.header)?;
+    write("snes_entry.c".into(), &out.entry)?;
+    write("snes_headless.c".into(), codegen::HEADLESS_RUNTIME)?;
     let mut lines = out.header.lines().count();
     for (bank, text) in &out.banks {
         write(format!("rom_{bank:02X}.c"), text)?;
@@ -187,7 +191,7 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
     for u in &out.unsupported {
         eprintln!("  stub {}: {}", fmt_addr(u.entry), u.message.lines().next().unwrap_or(""));
     }
-    eprintln!("wrote {} lines of C in {} files to {}", lines, out.banks.len() + 2, dir.display());
+    eprintln!("wrote {} lines of C in {} files to {}", lines, out.banks.len() + 4, dir.display());
     Ok(())
 }
 

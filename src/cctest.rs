@@ -64,6 +64,13 @@ impl Compiler {
     /// Writes `files` (name, contents) into a fresh directory, compiles every `.c` among them
     /// with the given `-D` names, runs the program and returns its standard output.
     pub fn compile_run(&self, name: &str, files: &[(&str, &str)], defines: &[&str]) -> Result<String, String> {
+        let bytes: Vec<(&str, &[u8])> = files.iter().map(|f| (f.0, f.1.as_bytes())).collect();
+        self.compile_run_with(name, &bytes, defines, &[])
+    }
+
+    /// Like `compile_run`, but the files may be binary and the program gets `args`. The program runs
+    /// in the directory that holds the files, so the arguments can name them.
+    pub fn compile_run_with(&self, name: &str, files: &[(&str, &[u8])], defines: &[&str], args: &[&str]) -> Result<String, String> {
         let dir = std::env::temp_dir().join(format!("snes-recomp-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -72,14 +79,14 @@ impl Compiler {
         }
         let sources: Vec<&str> = files.iter().map(|f| f.0).filter(|f| f.ends_with(".c")).collect();
         let result = match self {
-            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines),
-            Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines),
+            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args),
+            Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines, args),
         };
         let _ = std::fs::remove_dir_all(&dir);
         result
     }
 
-    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str]) -> Result<String, String> {
+    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str]) -> Result<String, String> {
         let mut cmd = Command::new(cc);
         cmd.current_dir(dir).args(["-std=c11", "-Wall", "-O1", "-o", "prog"]);
         for d in defines {
@@ -89,20 +96,21 @@ impl Compiler {
         if !build.status.success() {
             return Err(String::from_utf8_lossy(&build.stderr).into_owned());
         }
-        let run = Command::new(dir.join("prog")).output().map_err(|e| e.to_string())?;
+        let run = Command::new(dir.join("prog")).current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
         finish(run)
     }
 
-    fn run_msvc(&self, vcvars: &Path, dir: &Path, sources: &[&str], defines: &[&str]) -> Result<String, String> {
+    fn run_msvc(&self, vcvars: &Path, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str]) -> Result<String, String> {
         let defs: String = defines.iter().map(|d| format!(" /D{d}")).collect();
         let bat = format!(
             "@echo off\r\ncall \"{}\" >nul 2>nul || exit /b 1\r\ncd /d \"{}\"\r\n\
              cl /nologo /MP /W3 /TC /std:c11{} /Fe:prog.exe {} >build.log 2>&1\r\n\
-             if errorlevel 1 (type build.log & exit /b 1)\r\n.\\prog.exe\r\n",
+             if errorlevel 1 (type build.log & exit /b 1)\r\n.\\prog.exe{}\r\n",
             vcvars.display(),
             dir.display(),
             defs,
-            sources.join(" ")
+            sources.join(" "),
+            args.iter().map(|a| format!(" \"{a}\"")).collect::<String>()
         );
         let script = dir.join("build.bat");
         std::fs::write(&script, bat).map_err(|e| e.to_string())?;
@@ -141,3 +149,27 @@ void rt_brk(Cpu *c) { (void)c; printf("BRK\n"); }
 void rt_cop(Cpu *c) { (void)c; printf("COP\n"); }
 void rt_wdm(Cpu *c) { (void)c; }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_program_gets_binary_files_and_arguments() {
+        let Some(cc) = find() else {
+            eprintln!("skipped: no C compiler found");
+            return;
+        };
+        let main = br#"#include <stdio.h>
+int main(int argc, char **argv) {
+    FILE *f = fopen(argv[1], "rb");
+    int a = fgetc(f), b = fgetc(f), c = fgetc(f);
+    printf("%d %s %02X %02X %02X\n", argc, argv[2], a, b, c);
+    return 0;
+}
+"#;
+        let files: [(&str, &[u8]); 2] = [("main.c", main), ("data.bin", &[0x00, 0xFF, 0x7E])];
+        let out = cc.compile_run_with("cctest-args", &files, &[], &["data.bin", "hello"]).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(out, "3 hello 00 FF 7E\n");
+    }
+}
