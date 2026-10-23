@@ -32,6 +32,12 @@ impl Run {
         self.out.lines().find(|l| l.starts_with(&key)).map(|l| l[key.len()..].trim())
     }
 
+    /// The number in a report line such as `irqs: 5`.
+    fn num(&self, label: &str) -> Option<u32> {
+        let key = format!("{label}: ");
+        self.out.lines().find_map(|l| l.strip_prefix(&key)).and_then(|n| n.trim().parse().ok())
+    }
+
     fn has(&self, line: &str) -> bool {
         self.out.lines().any(|l| l == line)
     }
@@ -241,15 +247,119 @@ fn wai_jumps_to_the_end_of_the_frame() {
     assert!(r.has("frames: 3") && r.has("nmis: 3"), "{}", r.out);
 }
 
+/// IRQ handler at 00:A000 (vectors $FFEE and $FFFE): it reads $4211 to acknowledge the IRQ, counts in
+/// $11 and reports the count in $2163.
+const IRQ_HANDLER: &[u8] = &[0x48, 0xAD, 0x11, 0x42, 0xE6, 0x11, 0xA5, 0x11, 0x8D, 0x63, 0x21, 0x68, 0x40];
+const IRQ_VECTORS: [(u32, &[u8]); 2] = [(0xFFEE, &[0x00, 0xA0]), (0xFFFE, &[0x00, 0xA0])];
+
 #[test]
-fn irq_enable_does_not_deliver_anything_and_is_reported() {
-    // $4200 = $30 (IRQ on H and V): nothing runs, the write shows in the report
-    let main: &[u8] = &[0x18, 0xFB, 0xA9, 0x30, 0x8D, 0x00, 0x42, 0x80, 0xFE];
-    let segs: [(u32, &[u8]); 2] = [(0x8000, main), (0x9000, NMI_HANDLER)];
-    let Some(r) = run("hl-irq", &segs, &[0x8000, 0x9000], None, &["rom.sfc", "--frames", "3", "--frame-blocks", "50"]) else { return };
+fn a_vertical_irq_comes_once_per_frame_after_the_nmi_and_returns() {
+    // NMI and V-IRQ at line 255, interrupts on; the loop keeps A and records the stack pointer
+    let main: &[u8] = &[
+        0x18, 0xFB, // CLC ; XCE
+        0xA9, 0xA1, 0x8D, 0x00, 0x42, // $4200 = $A1
+        0xA9, 0xFF, 0x8D, 0x09, 0x42, // $4209 = $FF
+        0x58, // CLI
+        0xA9, 0x5A, 0x8D, 0x61, 0x21, 0xBA, 0x8E, 0x62, 0x21, 0x80, 0xF7,
+    ];
+    let segs: [(u32, &[u8]); 5] = [(0x8000, main), (0x9000, NMI_HANDLER), (0xA000, IRQ_HANDLER), IRQ_VECTORS[0], IRQ_VECTORS[1]];
+    let Some(r) = run("hl-irq", &segs, &[0x8000, 0x9000, 0xA000], None, &["rom.sfc", "--frames", "5", "--frame-blocks", "100"]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.has("nmis: 0"), "{}", r.out);
-    assert_eq!(r.reg(0x4200), Some("reads=0 writes=1 last=30"), "{}", r.out);
+    assert_eq!((r.num("nmis"), r.num("irqs")), (Some(5), Some(5)), "{}", r.out);
+    assert!(r.reg(0x2163).is_some_and(|l| l.ends_with("last=05")), "{}", r.out);
+    assert!(r.reg(0x2161).is_some_and(|l| l.ends_with("last=5A")), "{}", r.out);
+    assert!(r.reg(0x2162).is_some_and(|l| l.ends_with("last=FF")), "{}", r.out);
+    assert_eq!(r.num("context switches"), Some(0), "{}", r.out);
+}
+
+#[test]
+fn no_irq_comes_when_it_is_not_enabled() {
+    let main = nmi_program(true); // $4200 = $81: NMI only
+    let segs: [(u32, &[u8]); 5] = [(0x8000, &main), (0x9000, NMI_HANDLER), (0xA000, IRQ_HANDLER), IRQ_VECTORS[0], IRQ_VECTORS[1]];
+    let Some(r) = run("hl-noirq", &segs, &[0x8000, 0x9000, 0xA000], None, &["rom.sfc", "--frames", "4", "--frame-blocks", "100"]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!((r.num("nmis"), r.num("irqs")), (Some(4), Some(0)), "{}", r.out);
+}
+
+#[test]
+fn timeup_is_read_once_and_a_masked_irq_waits_for_the_flag() {
+    // Reset state: I = 1. Wait for the IRQ flag in $4211, record it, read again.
+    let flag: &[u8] = &[
+        0xA9, 0x20, 0x8D, 0x00, 0x42, 0xA9, 0x10, 0x8D, 0x09, 0x42, // V-IRQ at line 16
+        0xAD, 0x11, 0x42, 0xF0, 0xFB, // spin until $4211 is not 0
+        0x8D, 0x65, 0x21, 0xAD, 0x11, 0x42, 0x8D, 0x66, 0x21, 0x80, 0xFE,
+    ];
+    let segs: [(u32, &[u8]); 4] = [(0x8000, flag), (0xA000, IRQ_HANDLER), IRQ_VECTORS[0], IRQ_VECTORS[1]];
+    let Some(r) = run("hl-timeup", &segs, &[0x8000, 0xA000], None, &["rom.sfc", "--frames", "1", "--frame-blocks", "100"]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2165).is_some_and(|l| l.ends_with("last=80")), "{}", r.out);
+    assert!(r.reg(0x2166).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+    assert_eq!(r.num("irqs"), Some(0), "masked by I\n{}", r.out);
+
+    // The same IRQ, held back by I = 1 for a few hundred blocks, arrives as soon as I is cleared.
+    // The handler reports $12 on its first run: 0 would mean it came early.
+    let late: &[u8] = &[
+        0xA9, 0x20, 0x8D, 0x00, 0x42, 0xA9, 0x10, 0x8D, 0x09, 0x42,
+        0xA2, 0xFF, 0xCA, 0xD0, 0xFD, // wait about 255 blocks
+        0xA9, 0x01, 0x85, 0x12, 0x58, // $12 = 1 ; CLI
+        0x80, 0xFE,
+    ];
+    let first: &[u8] = &[0xAD, 0x11, 0x42, 0xA5, 0x13, 0xD0, 0x07, 0xA5, 0x12, 0x8D, 0x63, 0x21, 0xE6, 0x13, 0x40];
+    let segs: [(u32, &[u8]); 4] = [(0x8000, late), (0xA000, first), IRQ_VECTORS[0], IRQ_VECTORS[1]];
+    let Some(r) = run("hl-irq-late", &segs, &[0x8000, 0xA000], None, &["rom.sfc", "--frames", "3", "--frame-blocks", "100"]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.num("irqs").is_some_and(|n| n >= 1), "{}", r.out);
+    assert!(r.reg(0x2163).is_some_and(|l| l.ends_with("writes=1 last=01")), "{}", r.out);
+}
+
+/// Two contexts that take turns the way the ALttP intro does: NMI and IRQ share a handler that swaps
+/// the stack with the one saved in $20 and returns into it. Context 2 starts from a frame built by
+/// hand (at $01D5, with X = $5678 and A = $1234 under it) that points at `pc`.
+fn swap_program(pc: u16) -> Vec<Vec<u8>> {
+    let w = |v: u16, a: u16| vec![0xA9, v as u8, (v >> 8) as u8, 0x8D, a as u8, (a >> 8) as u8];
+    let mut main = vec![0x18, 0xFB, 0xC2, 0x30, 0xA9, 0xD0, 0x01, 0x85, 0x20]; // CLC ; XCE ; REP #$30 ; $20 = $01D0
+    main.extend(w(0x5678, 0x01D1)); // X
+    main.extend(w(0x1234, 0x01D3)); // A
+    main.extend(w(0x0030, 0x01D5)); // P = 8-bit registers, I = 0 ; PC low = 0
+    main.extend(w(pc >> 8, 0x01D7)); // PC high ; bank 0
+    main.extend([0xE2, 0x30, 0xA9, 0xA1, 0x8D, 0x00, 0x42, 0xA9, 0xFF, 0x8D, 0x09, 0x42, 0x58]);
+    main.extend([0xE6, 0x30, 0xA5, 0x30, 0x8D, 0x70, 0x21, 0x80, 0xF7]); // context 1: count in $2170
+    // PHA ... : REP #$30 ; PHA ; PHX ; TSC ; TAX ; LDA $20 ; TCS ; STX $20 ; PLX ; PLA ; RTI
+    let swap = vec![0xC2, 0x30, 0x48, 0xDA, 0x3B, 0xAA, 0xA5, 0x20, 0x1B, 0x86, 0x20, 0xFA, 0x68, 0x40];
+    // Context 2: report A and X, then count in $2171
+    let two = vec![0x8D, 0x72, 0x21, 0x8E, 0x73, 0x21, 0xE6, 0x31, 0xA5, 0x31, 0x8D, 0x71, 0x21, 0x80, 0xF7];
+    vec![main, swap, two]
+}
+
+fn run_swap(name: &str, pc: u16, two: Option<&[u8]>) -> Option<Run> {
+    let p = swap_program(pc);
+    let two = two.unwrap_or(&p[2]);
+    let segs: [(u32, &[u8]); 4] = [(0x8000, &p[0]), (0x9000, &p[1]), (0xA000, two), (0xFFEE, &[0x00, 0x90])];
+    run(name, &segs, &[0x8000, 0x9000, 0xA000], None, &["rom.sfc", "--frames", "6", "--frame-blocks", "200"])
+}
+
+#[test]
+fn nmi_and_irq_swap_stacks_and_the_contexts_take_turns() {
+    let Some(r) = run_swap("hl-swap", 0xA000, None) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.num("nmis").is_some_and(|n| n >= 5) && r.num("irqs").is_some_and(|n| n >= 5), "{}", r.out);
+    assert!(r.num("context switches").is_some_and(|n| n >= 8), "{}", r.out);
+    // Both contexts ran, and the second saw the registers of the frame the code built
+    assert!(r.reg(0x2170).is_some(), "context 1 never ran\n{}", r.out);
+    assert!(r.reg(0x2171).is_some(), "context 2 never ran\n{}", r.out);
+    assert!(r.reg(0x2172).is_some_and(|l| l.ends_with("last=34")), "A\n{}", r.out);
+    assert!(r.reg(0x2173).is_some_and(|l| l.ends_with("last=78")), "X\n{}", r.out);
+}
+
+#[test]
+fn a_context_cannot_start_where_there_is_no_function_or_return() {
+    let Some(r) = run_swap("hl-swap-nofn", 0xB000, None) else { return };
+    assert_eq!(r.code, 10, "{}", r.out);
+    assert!(r.out.contains("context entry 00B000 is not the entry of a function"), "{}", r.out);
+
+    let Some(r) = run_swap("hl-swap-ret", 0xA000, Some(&[0x60])) else { return };
+    assert_eq!(r.code, 12, "{}", r.out);
+    assert!(r.out.contains("the context started at 00A000 returned"), "{}", r.out);
 }
 
 #[test]
@@ -297,14 +407,14 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = Graph::build(&d, &addrs);
     let out = Emitter::new(&d, &g).generate_all();
-    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "120".into());
+    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "200".into());
     let blocks = std::env::var("ALTTP_FRAME_BLOCKS").unwrap_or_else(|_| "20000".into());
     let dump = std::env::temp_dir().join(format!("snes-recomp-alttp-dump-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dump);
     std::fs::create_dir_all(&dump).unwrap();
     let dump_arg = dump.to_string_lossy().into_owned();
     let shot_arg = dump.join("shot.png").to_string_lossy().into_owned();
-    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg, "--screenshot", &shot_arg]);
+    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg, "--screenshot", &shot_arg, "--trace-frames", "0-100000", "--watch", "11"]);
     let shot = std::fs::read(dump.join("shot.png")).ok().map(|b| decode_png(&b));
     eprintln!("exit code {}\n{}", r.code, r.out);
     let read = |f: &str| std::fs::read(dump.join(f)).unwrap_or_default();
@@ -328,6 +438,9 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let nmis: u32 = r.out.lines().find_map(|l| l.strip_prefix("nmis: ")).and_then(|n| n.parse().ok()).expect("nmis in the report");
     assert!(nmis >= 10, "only {nmis} NMIs\n{}", r.out);
     assert!(r.reg(0x420B).is_some(), "the NMI handler starts DMA\n{}", r.out);
+    // The intro runs on two contexts that NMI and IRQ swap; submodule 3 (the triforce) gives way to 4.
+    assert!(r.num("irqs").is_some_and(|n| n > 0) && r.num("context switches").is_some_and(|n| n > 0), "{}", r.out);
+    assert!(r.out.contains("wram 00011: 03 -> 04"), "submodule 3 never ends\n{}", r.out);
 }
 
 // ---- DMA and PPU memories ----

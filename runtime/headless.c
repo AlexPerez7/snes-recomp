@@ -9,17 +9,27 @@
  *
  * The ROM is read from the file at run time and is never part of the generated sources.
  * Time is not cycle accurate: a frame is a fixed number of executed blocks.
+ * The IRQ is delivered at the line of $4209/$420A (vertical and combined modes; the horizontal position is
+ * ignored), after the NMI of the frame. Execution contexts: an RTI whose S is not the one its handler started
+ * with returns to another context (a fibre of its own), as the ALttP intro does between NMI and IRQ.
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
  * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin and ppu_regs.bin. --screenshot draws
  * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
- * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned.
+ * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned, 12 an execution context returned,
+ * 13 too many contexts or nested interrupts.
  */
 #include "snes_funcs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <ucontext.h>
+#endif
 
 /* ---- Memory ---- */
 
@@ -65,6 +75,10 @@ static uint64_t blocks;
 static int nmi_flag;    /* $4210 bit 7 */
 static int nmi_pending; /* a frame ended with NMI enabled and it has not been delivered yet */
 static int in_nmi;
+static int irq_flag;    /* $4211 bit 7: the IRQ line is asserted until $4211 is read */
+static int irq_fired;   /* the IRQ of this frame has been raised */
+static uint32_t irqs;
+static unsigned ctx_switches;
 
 static void report(const char *cause);
 static void write_scroll(uint32_t off, uint8_t v);
@@ -172,7 +186,9 @@ static uint8_t bus_read8_raw(uint32_t a) {
                 nmi_flag = 0;
                 return v;
             case 0x4211:
-                return 0;
+                v = (uint8_t)(irq_flag ? 0x80 : 0);
+                irq_flag = 0;
+                return v;
             case 0x4212:
                 /* Vertical blank during the last tenth of the frame; auto joypad read never busy. */
                 return (uint8_t)((uint64_t)tick_in_frame * 10 >= (uint64_t)frame_len * 9 ? 0x80 : 0);
@@ -579,7 +595,8 @@ static void report(const char *cause) {
     int i, any = 0;
     printf("== report ==\n");
     printf("stop: %s\n", cause);
-    printf("frames: %u\nnmis: %u\nblocks: %llu\n", (unsigned)frames, (unsigned)nmis, (unsigned long long)blocks);
+    printf("frames: %u\nnmis: %u\nirqs: %u\ncontext switches: %u\nblocks: %llu\n", (unsigned)frames, (unsigned)nmis,
+           (unsigned)irqs, ctx_switches, (unsigned long long)blocks);
     printf("registers:\n");
     for (a = IO_FIRST; a <= IO_LAST; a++) {
         if (hw_reads[a] || hw_writes[a]) {
@@ -632,15 +649,124 @@ static uint16_t vector(uint32_t addr) {
     return (uint16_t)(rom_byte(addr) | (rom_byte(addr + 1) << 8));
 }
 
-/* Enter the NMI handler as the CPU does: push the (unused) return address and the flags. */
-static void deliver_nmi(Cpu *c) {
-    uint16_t v = vector(c->e ? 0xFFFA : 0xFFEA);
-    in_nmi = 1;
-    nmi_pending = 0;
-    nmis++;
+/* ---- Execution contexts ----
+ * A handler may swap the stack and end in RTI, which returns to another context: the one whose
+ * interrupt frame is on the new stack. Each context runs on a native stack of its own (a fibre), so a
+ * suspended one keeps its pending C calls. An RTI whose S is not the one its handler started with
+ * switches to the suspended context whose handler started with that S or, if there is none, starts a
+ * new context at the address in the frame. */
+
+#define MAX_CTX 5
+#define MAX_REC 4
+#define CTX_STACK (1u << 20)
+
+typedef struct { uint16_t s; int nmi; } Rec; /* a handler running: S right after its frame was pushed */
+typedef struct { void *handle; Rec rec[MAX_REC]; int depth; int used; } Ctx;
+
+static Ctx ctxs[MAX_CTX];
+static int cur_ctx;
+static Cpu *ctx_cpu;
+static uint32_t ctx_entry_addr;
+
+#ifdef _WIN32
+static void *ctx_main_handle(void) { return ConvertThreadToFiber(NULL); }
+static void *ctx_make(void (*fn)(void *)) { return CreateFiber(CTX_STACK, (LPFIBER_START_ROUTINE)fn, NULL); }
+static void ctx_jump(Ctx *from, Ctx *to) { (void)from; SwitchToFiber(to->handle); }
+#else
+static void (*ctx_fn)(void *);
+static void ctx_tramp(void) { ctx_fn(NULL); }
+static void *ctx_main_handle(void) { return calloc(1, sizeof(ucontext_t)); }
+static void *ctx_make(void (*fn)(void *)) {
+    ucontext_t *u = (ucontext_t *)calloc(1, sizeof(ucontext_t));
+    getcontext(u);
+    u->uc_stack.ss_sp = malloc(CTX_STACK);
+    u->uc_stack.ss_size = CTX_STACK;
+    u->uc_link = NULL;
+    ctx_fn = fn;
+    makecontext(u, ctx_tramp, 0);
+    return u;
+}
+static void ctx_jump(Ctx *from, Ctx *to) { swapcontext((ucontext_t *)from->handle, (ucontext_t *)to->handle); }
+#endif
+
+static void ctx_init(void) {
+    memset(ctxs, 0, sizeof ctxs);
+    ctxs[0].used = 1;
+    ctxs[0].handle = ctx_main_handle();
+    cur_ctx = 0;
+}
+
+/* The NMI flag of the running context: it is inside an NMI handler. */
+static void recompute_in_nmi(void) {
+    int i;
+    in_nmi = 0;
+    for (i = 0; i < ctxs[cur_ctx].depth; i++) if (ctxs[cur_ctx].rec[i].nmi) in_nmi = 1;
+}
+
+static void switch_to(Cpu *c, int to) {
+    int from = cur_ctx;
+    ctx_cpu = c;
+    cur_ctx = to;
+    ctx_switches++;
+    recompute_in_nmi();
+    ctx_jump(&ctxs[from], &ctxs[to]);
+}
+
+/* Body of a context started from a frame the code built by hand. */
+static void ctx_body(void *unused) {
+    (void)unused;
+    if (!snes_call_entry(ctx_cpu, ctx_entry_addr)) {
+        printf("context entry %06X is not the entry of a function\n", (unsigned)ctx_entry_addr);
+        stop(10, "context entry is not a function");
+    }
+    printf("the context started at %06X returned\n", (unsigned)ctx_entry_addr);
+    stop(12, "context returned");
+}
+
+void rt_rti(Cpu *c) {
+    Ctx *cx = &ctxs[cur_ctx];
+    int j, k;
+    uint32_t pc, pbr;
+    if (cx->depth && c->s == cx->rec[cx->depth - 1].s) {
+        rt_rti_pop(c);
+        return;
+    }
+    for (j = 0; j < MAX_CTX; j++) {
+        if (j != cur_ctx && ctxs[j].used && ctxs[j].depth && ctxs[j].rec[ctxs[j].depth - 1].s == c->s) {
+            rt_rti_pop(c);
+            switch_to(c, j);
+            return;
+        }
+    }
+    /* A frame built by the code: start a context at its address. */
+    pc = (uint32_t)bus_read8((uint16_t)(c->s + 2)) | (uint32_t)bus_read8((uint16_t)(c->s + 3)) << 8;
+    pbr = c->e ? 0 : bus_read8((uint16_t)(c->s + 4));
+    rt_rti_pop(c);
+    for (k = 0; k < MAX_CTX && ctxs[k].used; k++) {}
+    if (k == MAX_CTX) {
+        printf("more than %d execution contexts\n", MAX_CTX);
+        stop(13, "too many execution contexts");
+    }
+    memset(&ctxs[k], 0, sizeof ctxs[k]);
+    ctxs[k].used = 1;
+    ctxs[k].handle = ctx_make(ctx_body);
+    ctx_entry_addr = pbr << 16 | pc;
+    switch_to(c, k);
+}
+
+/* Enter an interrupt handler as the CPU does: push the (unused) return address and the flags. */
+static void deliver_interrupt(Cpu *c, uint16_t v, int is_nmi) {
+    int me = cur_ctx;
+    Ctx *cx = &ctxs[me];
+    if (cx->depth == MAX_REC) stop(13, "interrupts nested too deep");
+    if (is_nmi) nmis++; else irqs++;
     if (!c->e) rt_push8(c, 0x00);
     rt_push16(c, 0x0000);
     rt_push8(c, rt_get_p(c));
+    cx->rec[cx->depth].s = c->s;
+    cx->rec[cx->depth].nmi = is_nmi;
+    cx->depth++;
+    recompute_in_nmi();
     c->irq = 1;
     c->dec = 0;
     /* The recompiler analyses a handler as entered with 8-bit M and X (its config entry) and the
@@ -649,10 +775,32 @@ static void deliver_nmi(Cpu *c) {
     c->m = 1;
     c->xf = 1;
     if (!snes_call_entry(c, v)) {
-        printf("NMI vector %04X is not the entry of a function\n", (unsigned)v);
+        printf("%s vector %04X is not the entry of a function\n", is_nmi ? "NMI" : "IRQ", (unsigned)v);
         stop(10, "interrupt vector is not a function");
     }
-    in_nmi = 0;
+    /* This context is running again (after a switch away and back, if the handler made one). */
+    ctxs[me].depth--;
+    recompute_in_nmi();
+}
+
+static void deliver_nmi(Cpu *c) {
+    nmi_pending = 0;
+    deliver_interrupt(c, vector(c->e ? 0xFFFA : 0xFFEA), 1);
+}
+
+/* IRQ line: the vertical position is counted from the NMI (line 225), so the IRQ comes after it. */
+static int irq_due(void) {
+    uint8_t mode = hw[0x4200] >> 4 & 3;
+    uint32_t line;
+    if (!mode) { irq_flag = 0; return 0; }
+    if (!irq_fired) {
+        line = mode == 1 ? 0 : (uint32_t)(hw[0x4209] | (hw[0x420A] & 1) << 8);
+        if (line < 262 && tick_in_frame >= (uint64_t)frame_len * ((line + 262 - 225) % 262) / 262) {
+            irq_fired = 1;
+            irq_flag = 1;
+        }
+    }
+    return irq_flag;
 }
 
 void rt_poll(Cpu *c) {
@@ -661,9 +809,11 @@ void rt_poll(Cpu *c) {
         tick_in_frame = 0;
         frames++;
         nmi_flag = 1;
+        irq_fired = 0;
         if (hw[0x4200] & 0x80) nmi_pending = 1;
     }
     if (nmi_pending && !in_nmi) deliver_nmi(c);
+    if (irq_due() && !c->irq) deliver_interrupt(c, vector(c->e ? 0xFFFE : 0xFFEE), 0);
     /* The last NMI runs to its RTI before the run ends. */
     if (frames >= max_frames && !in_nmi) stop(0, "frames reached");
 }
@@ -755,6 +905,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (!load_rom(path)) return 2;
+    ctx_init();
 
     memset(&c, 0, sizeof c);
     c.e = 1; c.m = 1; c.xf = 1; c.s = 0x01FF; c.irq = 1; /* state right after reset */

@@ -1532,6 +1532,7 @@ void rt_unresolved(Cpu *c, uint32_t site, uint32_t target) {
 }
 void rt_flag_mismatch(Cpu *c, uint32_t addr) { (void)c; printf("FLAG_MISMATCH %06X\n", (unsigned)addr); exit(6); }
 void rt_wai(Cpu *c) { (void)c; printf("WAI\n"); }
+void rt_rti(Cpu *c) { rt_rti_pop(c); }
 void rt_stp(Cpu *c) { (void)c; printf("STP\n"); exit(7); }
 void rt_brk(Cpu *c) { (void)c; printf("BRK\n"); exit(7); }
 void rt_cop(Cpu *c) { (void)c; printf("COP\n"); exit(7); }

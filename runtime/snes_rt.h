@@ -34,6 +34,8 @@ void rt_flag_mismatch(Cpu *c, uint32_t addr);
 /* A function the recompiler could not translate was called; `entry` is its address. */
 void rt_unsupported(Cpu *c, uint32_t entry);
 void rt_wai(Cpu *c);
+/* RTI. The runtime decides whether it returns to the interrupted code or to another context. */
+void rt_rti(Cpu *c);
 void rt_stp(Cpu *c);
 void rt_brk(Cpu *c);
 void rt_cop(Cpu *c);
@@ -132,8 +134,9 @@ static inline uint16_t rt_pull16(Cpu *c) {
     uint16_t lo = rt_pull8(c);
     return (uint16_t)(lo | (rt_pull8(c) << 8));
 }
-/* RTI: status, then the return address (and the program bank in native mode). */
-static inline void rt_rti(Cpu *c) {
+/* What RTI takes off the stack: status, then the return address (and the program bank in native
+ * mode). The runtime's rt_rti does this, and may first switch to another execution context. */
+static inline void rt_rti_pop(Cpu *c) {
     rt_set_p(c, rt_pull8(c));
     (void)rt_pull16(c);
     if (!c->e) (void)rt_pull8(c);
