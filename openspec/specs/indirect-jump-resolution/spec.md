@@ -17,7 +17,7 @@ El sistema SHALL resolver los saltos y llamadas indirectas declarados en `games/
 - **THEN** el sistema MUST informar del error con el sitio y la entrada de tabla, sin abortar el resto del análisis
 
 ### Requirement: Helpers de despacho en línea
-El sistema SHALL permitir declarar con `[[inline_helper]]` rutinas que reciben una tabla de punteros inmediatamente después de cada llamada y que nunca vuelven al llamador, y MUST delimitar la tabla de cada llamada sin que la configuración indique su longitud.
+El sistema SHALL permitir declarar con `[[inline_helper]]` rutinas que reciben una tabla de punteros inmediatamente después de cada llamada y que nunca vuelven al llamador, y MUST delimitar la tabla de cada llamada sin que la configuración indique su longitud. Cuando el helper declara `exit`, el sistema MUST tratar esa instrucción como un salto cuyos destinos son la unión de los destinos de las tablas de todas las llamadas al helper.
 
 #### Scenario: Tabla delimitada por el primer destino superior
 - **WHEN** se alcanza una llamada a un helper y alguna entrada apunta al mismo banco por encima de la tabla
@@ -33,7 +33,15 @@ El sistema SHALL permitir declarar con `[[inline_helper]]` rutinas que reciben u
 
 #### Scenario: Salto interno del helper
 - **WHEN** el helper declara `exit` con la dirección de su propio salto indirecto
-- **THEN** ese salto no se informa como sin resolver
+- **THEN** ese salto no se informa como sin resolver y tiene una arista `Dispatch` a cada destino de las tablas de las llamadas al helper
+
+#### Scenario: Varias llamadas al mismo helper
+- **WHEN** dos llamadas al helper tienen tablas distintas
+- **THEN** el `exit` tiene como destinos la unión de ambas
+
+#### Scenario: Anchos de los destinos
+- **WHEN** el `exit` del helper deja M y X en un ancho distinto del que tenía el sitio de la llamada
+- **THEN** los destinos de la tabla se descubren con los anchos vigentes en el `exit`
 
 ### Requirement: Datos que no se decodifican
 El sistema SHALL permitir marcar con `[[not_code]]` direcciones a las que apuntan las tablas pero que contienen relleno o datos, y el descubrimiento MUST NOT decodificarlas.

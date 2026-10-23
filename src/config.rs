@@ -32,7 +32,7 @@
 //! [[inline_helper]]        # dispatch helper: every call is followed by an inline pointer table
 //! addr = "00:8781"         # of unknown length, delimited by the discovery (see discover.rs)
 //! size = 2                 # 2 = 16-bit pointers (caller's bank), 3 = 24-bit; the helper never returns
-//! exit = "00:8799"         # optional: the helper's own indirect jump, resolved per call, not reported
+//! exit = "00:8799"         # optional: the helper's own indirect jump; its targets are the union of those of every call
 //!
 //! [[not_code]]             # padding/data that a table points at: discovery does not decode it
 //! addr = "0E:FB64"
@@ -166,6 +166,8 @@ pub struct Table {
 pub struct InlineHelper {
     pub size: u8,
     pub name: String,
+    /// The helper's own indirect jump, if declared.
+    pub exit: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -249,10 +251,11 @@ impl Config {
             if size != 2 && size != 3 {
                 return Err(format!("inline_helper at {}: size must be 2 or 3, got {size}", h.addr));
             }
-            if let Some(exit) = &h.exit {
-                cfg.helper_exits.insert(parse_addr(exit)?);
+            let exit = h.exit.as_deref().map(parse_addr).transpose()?;
+            if let Some(exit) = exit {
+                cfg.helper_exits.insert(exit);
             }
-            let helper = InlineHelper { size, name: h.name.unwrap_or_default() };
+            let helper = InlineHelper { size, name: h.name.unwrap_or_default(), exit };
             if cfg.inline_helpers.insert(addr, helper).is_some() {
                 return Err(format!("duplicate inline_helper {}", h.addr));
             }
@@ -334,6 +337,8 @@ size=3",
         assert_eq!(cfg.inline_helpers[&0x8781].size, 2);
         assert_eq!(cfg.inline_helpers[&0x879C].size, 3);
         assert!(cfg.helper_exits.contains(&0x8799));
+        assert_eq!(cfg.inline_helpers[&0x8781].exit, Some(0x8799));
+        assert_eq!(cfg.inline_helpers[&0x879C].exit, None);
         assert!(Config::parse("[[inline_helper]]
 addr=\"00:8781\"
 size=4").is_err());

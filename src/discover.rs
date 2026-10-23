@@ -149,6 +149,16 @@ struct Path {
     ctx: Ctx,
 }
 
+/// A call to an inline helper whose targets wait for the widths at the helper's exit.
+struct Deferred {
+    helper: u32,
+    targets: Vec<u32>,
+    /// Widths at the call site, used if the exit is never reached.
+    f: Flags,
+    stack: Vec<Item>,
+    ctx: Ctx,
+}
+
 /// What a caller does once the callee returns: continue at `ret` with the widths the callee left.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct Cont {
@@ -200,6 +210,9 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
     let mut all_flags: BTreeMap<u32, BTreeSet<Flags>> = BTreeMap::new();
     let mut calls = Calls::default();
     let mut resolved: BTreeSet<(Ctx, Cont)> = BTreeSet::new();
+    let mut deferred: Vec<Deferred> = Vec::new();
+    let mut helper_targets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    let mut started: HashSet<(usize, Flags)> = HashSet::new();
     let mut work: Vec<Path> = roots
         .iter()
         .map(|&(a, f)| Path { addr: a, f, stack: Vec::new(), ctx: (a, f) })
@@ -278,9 +291,14 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
 
                 if let (None, Flow::Call(t)) = (table, flow) {
                     if let Some(h) = cfg.inline_helpers.get(&t) {
-                        for target in inline_helper_targets(rom, after, h.size) {
+                        let targets = inline_helper_targets(rom, after, h.size);
+                        for &target in &targets {
                             add_edge(&mut out, cfg, addr, target, EdgeKind::Dispatch);
-                            work.push(here(target, &stack));
+                        }
+                        match h.exit {
+                            // The targets run with the widths the helper leaves at its exit.
+                            Some(_) => deferred.push(Deferred { helper: t, targets, f: nf, stack: stack.clone(), ctx }),
+                            None => work.extend(targets.into_iter().map(|target| here(target, &stack))),
                         }
                         called.clear();
                         stop = true;
@@ -351,6 +369,26 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             }
         }
 
+        // Targets of inline helpers go on with the widths found at the helper's exit.
+        let mut progress = false;
+        for (i, d) in deferred.iter().enumerate() {
+            let exit = cfg.inline_helpers[&d.helper].exit.expect("deferred helpers have an exit");
+            let widths: Vec<Flags> = match all_flags.get(&exit) {
+                Some(w) => w.iter().copied().collect(),
+                None => vec![d.f],
+            };
+            helper_targets.entry(d.helper).or_default().extend(&d.targets);
+            for f in widths {
+                if started.insert((i, f)) {
+                    progress = true;
+                    work.extend(d.targets.iter().map(|&t| Path { addr: t, f, stack: d.stack.clone(), ctx: d.ctx }));
+                }
+            }
+        }
+        if progress {
+            continue;
+        }
+
         // Calls whose callee never returned: go on with the widths from before the call.
         let mut pending: Vec<(Ctx, Cont)> = Vec::new();
         for (callee, cs) in &calls.conts {
@@ -369,6 +407,15 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
             out.calls_without_return.insert(c.site);
             work.push(c.resume(c.before));
             resolved.insert((callee, c));
+        }
+    }
+    // The helper's own jump can reach any target of any of its calls.
+    for (helper, targets) in &helper_targets {
+        let exit = cfg.inline_helpers[helper].exit.expect("deferred helpers have an exit");
+        if out.instrs.contains_key(&exit) {
+            for &t in targets {
+                add_edge(&mut out, cfg, exit, t, EdgeKind::Dispatch);
+            }
         }
     }
     out.flag_conflicts = all_flags.into_iter().filter(|(_, v)| v.len() > 1).collect();
@@ -605,6 +652,55 @@ addr=\"00:8000\"
 exit=\"00:8000\"").unwrap();
         let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
         assert!(d.unresolved.is_empty());
+    }
+
+    #[test]
+    fn helper_exit_dispatches_to_the_union_of_its_calls() {
+        // Two callers of the helper at 8200, each with its own table; 8200: JML [$0000]
+        let rom = test_rom(&[
+            (0x8000, &[0x20, 0x00, 0x82, 0x10, 0x80, 0x60, 0x00]),
+            (0x9000, &[0x20, 0x00, 0x82, 0x20, 0x80, 0x60, 0x00]),
+            (0x8200, &[0xDC, 0x00, 0x00]),
+            (0x8010, &[0x60]),
+            (0x8020, &[0x60]),
+        ]);
+        let cfg = width_test_cfg("[[inline_helper]]
+addr=\"00:8200\"
+exit=\"00:8200\"");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET), (0x9000, Flags::RESET)]);
+        assert_eq!(edges_of(&d, 0x8200), [(0x8010, EdgeKind::Dispatch), (0x8020, EdgeKind::Dispatch)]);
+        assert_eq!(edges_of(&d, 0x8000), [(0x8010, EdgeKind::Dispatch), (0x8200, EdgeKind::Call)]);
+        assert!(d.unresolved.is_empty());
+    }
+
+    #[test]
+    fn helper_exit_without_calls_has_no_targets() {
+        let rom = test_rom(&[(0x8200, &[0xDC, 0x00, 0x00])]);
+        let cfg = width_test_cfg("[[inline_helper]]
+addr=\"00:8200\"
+exit=\"00:8200\"");
+        let d = discover(&rom, &cfg, &[(0x8200, Flags::RESET)]);
+        assert!(edges_of(&d, 0x8200).is_empty());
+        assert!(d.unresolved.is_empty());
+    }
+
+    #[test]
+    fn helper_targets_take_the_widths_at_the_exit() {
+        // 8000: REP #$30 ; JSR $8200 ; inline: $8010   8200: SEP #$30 ; 8202: JML [$0000]
+        // 8010: LDA #$12 (8 bits wide only if the exit's widths apply) ; RTS
+        let rom = test_rom(&[
+            (0x8000, &[0xC2, 0x30, 0x20, 0x00, 0x82, 0x10, 0x80, 0x60, 0x00]),
+            (0x8200, &[0xE2, 0x30, 0xDC, 0x00, 0x00]),
+            (0x8010, &[0xA9, 0x12, 0x60]),
+        ]);
+        let cfg = width_test_cfg("[[inline_helper]]
+addr=\"00:8200\"
+exit=\"00:8202\"");
+        let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8010], Flags { m: true, x: true });
+        assert_eq!(d.instrs[&0x8010].len, 2);
+        assert!(!d.flag_conflicts.contains_key(&0x8010));
+        assert_eq!(edges_of(&d, 0x8202), [(0x8010, EdgeKind::Dispatch)]);
     }
 
     #[test]
