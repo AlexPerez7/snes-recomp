@@ -45,6 +45,7 @@ static uint32_t wram_port; /* $2181-$2183 */
 static uint8_t hw[0x10000];
 static uint32_t hw_reads[IO_LAST + 1], hw_writes[IO_LAST + 1];
 static uint32_t dma_starts[8], hdma_starts[8];
+static uint8_t fixed_col[3]; /* $2132: red, green, blue, each set by writes whose bits 5-7 select it */
 static uint64_t dma_bytes[8];
 
 /* PPU memories and the state of their ports. */
@@ -334,6 +335,9 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
             case 0x2119: vram_write(1, v); break;
             case 0x2121: cg_index = v; cg_write_half = 0; cg_read_half = 0; break;
             case 0x2122: cgram_write(v); break;
+            case 0x2132:
+                for (i = 0; i < 3; i++) if (v >> (5 + i) & 1) fixed_col[i] = v & 31;
+                break;
             case 0x2140: case 0x2141: case 0x2142: case 0x2143:
                 if (off == 0x2140 && v == 0xCC) apu_started = 1;
                 if (apu_started) apu_port[off - 0x2140] = v;
@@ -455,20 +459,47 @@ static void draw_sprites(void) {
 /* Layers front to back: kind 0 = sprites of priority n, 1 = BGn+1 with tile priority 1, 2 = BGn+1 with 0. */
 typedef struct { int kind, n; } Layer;
 
-static int pixel_index(const Layer *order, int count, int x, int y, int mode1) {
+/* Layer ids reported by pixel_index: 0-2 = BG1-3, 4 = sprites, 5 = backdrop. */
+#define LAYER_OBJ 4
+#define LAYER_BACKDROP 5
+
+/* CGRAM index of the front pixel of the layers in `mask` (a $212C/$212D value); `*layer` says which layer gave it. */
+static int pixel_index(const Layer *order, int count, int x, int y, int mode1, uint8_t mask, int *layer) {
     int i, c;
     for (i = 0; i < count; i++) {
         int n = order[i].n;
         if (order[i].kind == 0) {
-            if (!(hw[0x212C] & 0x10)) continue;
-            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n) return spr_col[y][x];
+            if (!(mask & 0x10)) continue;
+            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n) { *layer = LAYER_OBJ; return spr_col[y][x]; }
         } else {
-            if (!mode1 || !(hw[0x212C] >> n & 1)) continue;
+            if (!mode1 || !(mask >> n & 1)) continue;
             c = bg_pixel(n, x, y, order[i].kind == 1);
-            if (c >= 0) return c;
+            if (c >= 0) { *layer = n; return c; }
         }
     }
+    *layer = LAYER_BACKDROP;
     return 0;
+}
+
+static int cgram_color(int idx) { return cgram[idx * 2] | (cgram[idx * 2 + 1] & 0x7F) << 8; }
+
+/* A main screen pixel after colour math, as BGR555; `sub_c` is the subscreen pixel there, if `has_sub`. */
+static int colour_math(int main_c, int layer, int main_idx, int sub_c, int has_sub) {
+    int chosen = layer == LAYER_OBJ ? (main_idx >= 192 && (hw[0x2131] & 0x10)) : (hw[0x2131] >> layer & 1);
+    int half = hw[0x2131] >> 6 & 1, sub = hw[0x2131] >> 7 & 1, k, out = 0;
+    if (!chosen || (hw[0x2130] >> 4 & 3) == 3) return main_c;
+    if (!(hw[0x2130] & 2) || !has_sub) {
+        sub_c = fixed_col[0] | fixed_col[1] << 5 | fixed_col[2] << 10;
+        if (hw[0x2130] & 2) half = 0; /* the fixed colour stands in for an empty subscreen and is not halved */
+    }
+    for (k = 0; k < 3; k++) {
+        int a = main_c >> (5 * k) & 31, b = sub_c >> (5 * k) & 31, r = sub ? a - b : a + b;
+        if (r < 0) r = 0;
+        if (half) r >>= 1;
+        if (r > 31) r = 31;
+        out |= r << (5 * k);
+    }
+    return out;
 }
 
 static uint32_t crc_table[256];
@@ -556,14 +587,19 @@ static void screenshot(void) {
     if (mode != 1) printf("warning: graphics mode %d is not drawn\n", mode);
     if (hw[0x212E] | hw[0x212F]) printf("warning: windows are not applied\n");
     if (hw[0x2106] & 0x0F) printf("warning: mosaic is not applied\n");
-    if (hw[0x2131] & 0x3F) printf("warning: colour math is not applied\n");
+    if ((hw[0x2131] & 0x3F) && ((hw[0x2130] >> 4 & 3) == 1 || (hw[0x2130] >> 4 & 3) == 2))
+        printf("warning: colour math inside or outside the colour window is not applied\n");
     if (!rgb) return;
     draw_sprites();
     for (y = 0; y < SCREEN_H; y++) {
         for (x = 0; x < SCREEN_W; x++) {
-            int idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1);
+            int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1, hw[0x212C], &layer);
             uint8_t *p = rgb + ((size_t)y * SCREEN_W + (size_t)x) * 3;
-            int c = idx < 0 ? 0 : cgram[idx * 2] | cgram[idx * 2 + 1] << 8, k;
+            int c = idx < 0 ? 0 : cgram_color(idx), k;
+            if (idx >= 0 && (hw[0x2131] & 0x3F)) {
+                int sub_idx = pixel_index(order, 10, x, y, mode == 1, hw[0x212D], &sub_layer);
+                c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
+            }
             for (k = 0; k < 3; k++) {
                 int c5 = c >> (5 * k) & 31, c8 = (c5 << 3) | (c5 >> 2);
                 p[k] = (uint8_t)(idx < 0 ? 0 : c8 * bright / 15);
