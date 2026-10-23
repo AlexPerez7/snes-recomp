@@ -90,7 +90,7 @@ static unsigned ctx_switches;
 /* Buttons in the layout of $4219:$4218: B Y Select Start Up Down Left Right A X L R from bit 15 to bit 4. */
 #define JOY_NAMES 12
 static const char *const joy_name[JOY_NAMES] = {"B", "Y", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT", "A", "X", "L", "R"};
-#define MAX_PRESS 32
+#define MAX_PRESS 256
 static struct { uint16_t mask; uint32_t lo, hi; } press[MAX_PRESS];
 static int npress;
 static int joy_read_done; /* the auto-read of this frame has been done */
