@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  Language: Spanish
+  All artifacts must be written in Spanish.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Proyecto: recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero.
+  Primer objetivo: The Legend of Zelda: A Link to the Past (USA, CRC32 777AAC2F).
+  - Código propio (clean-room): no copiar código de otros recompiladores.
+  - El ROM lo aporta el usuario; nunca se incluye ni se sube al repositorio (roms/ está ignorado).
+  - La configuración por juego vive en games/<id>.toml (formato documentado en src/config.rs).
+  - Verificar con `cargo test`; los resultados de análisis sobre el ROM real se contrastan a mano.
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

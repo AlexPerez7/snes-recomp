@@ -1,0 +1,7 @@
+/target
+# Never commit ROMs or anything extracted from them
+*.sfc
+*.smc
+*.srm
+/roms/
+/out/

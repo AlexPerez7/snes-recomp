@@ -1,0 +1,13 @@
+[package]
+name = "snes-recomp"
+version = "0.1.0"
+edition = "2021"
+description = "Static recompiler for SNES (65816) ROMs"
+publish = false
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.8"
+
+[profile.release]
+lto = true
