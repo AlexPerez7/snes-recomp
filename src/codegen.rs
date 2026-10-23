@@ -907,6 +907,31 @@ sep xf=1 x=0034 p=10
         assert_eq!(b.iter().filter(|l| l.starts_with("(void)rt_pull16")).count(), 1, "execution goes on to the RTS");
     }
 
+    /// A caller (REP #$30 ; JSR $8200 ; table $8010, $8020) and a helper that pops the return address,
+    /// reads the table entry selected by the word at $10 and jumps to it with `JML [$0000]` (at 820F).
+    const HELPER_CALLER: &[u8] = &[0xC2, 0x30, 0x20, 0x00, 0x82, 0x10, 0x80, 0x20, 0x80, 0x60, 0x00];
+    const HELPER_BODY: &[u8] = &[
+        0xC2, 0x30, 0x68, 0x1A, 0x85, 0x00, 0xA5, 0x10, 0xA8, 0xB1, 0x00, 0x85, 0x00, 0xE2, 0x30, 0xDC, 0x00, 0x00,
+    ];
+    const HELPER_CFG: &str = "[[inline_helper]]
+addr=\"00:8200\"
+exit=\"00:820F\"";
+
+    #[test]
+    fn inline_helper_exit_has_a_case_per_target_and_reports_the_rest() {
+        let rom = [
+            (0x8000, HELPER_CALLER),
+            (0x8200, HELPER_BODY),
+            (0x8010, &[0x60][..]),
+            (0x8020, &[0x60][..]),
+        ];
+        let out = gen(&rom, HELPER_CFG, &[0x8000], 0x8000, 1).unwrap();
+        let b = body(&out, "f_00_8200");
+        assert!(b.contains(&"case 0x008010: f_00_8010(c); return;".to_string()), "{b:?}");
+        assert!(b.contains(&"case 0x008020: f_00_8020(c); return;".to_string()), "{b:?}");
+        assert!(b.contains(&"default: rt_unresolved(c, 0x00820F, t); return;".to_string()), "{b:?}");
+    }
+
     #[test]
     fn inline_helper_call_does_not_fall_into_its_table() {
         // 8000: JSR $8200 (helper) ; inline pointer $8010
@@ -1092,6 +1117,32 @@ int main(void) {{
     }
 
     #[test]
+    fn runs_the_target_chosen_by_an_inline_helper() {
+        let rom = [
+            (0x8000, HELPER_CALLER),
+            (0x8200, HELPER_BODY),
+            (0x8010, &[0xA9, 0x11, 0x85, 0x12, 0x60][..]),
+            (0x8020, &[0xA9, 0x77, 0x85, 0x12, 0x60][..]),
+        ];
+        // The helper already popped the call's return address, so the target's RTS pops the caller's.
+        for (index, want, name) in [(0u8, "11", "helper_first"), (2u8, "77", "helper_second")] {
+            let body = format!(
+                r#"{{ const uint8_t v[] = {{{index}}}, t[] = {{0x10, 0x80, 0x20, 0x80}}; load(0x10, v, 1); load(0x8005, t, 4); }}
+            //report
+            printf("mem=%02X s=%04X\n", bus_read8(0x12), c.s);"#
+            );
+            let Some(out) = exec(name, &rom, HELPER_CFG, &[0x8000], &body) else { return };
+            assert_eq!(out, format!("mem={want} s=0201\n"));
+        }
+        // A pointer the recompiler never saw is reported at the helper's exit.
+        let body = r#"{ const uint8_t v[] = {2}, t[] = {0x10, 0x80, 0x00, 0x90}; load(0x10, v, 1); load(0x8005, t, 4); }
+            //report
+            printf("mem=%02X\n", bus_read8(0x12));"#;
+        let Some(out) = exec("helper_unknown", &rom, HELPER_CFG, &[0x8000], body) else { return };
+        assert_eq!(out, "UNRESOLVED site=00820F target=009000\nmem=00\n");
+    }
+
+    #[test]
     fn runs_decimal_mode_addition() {
         // SED ; CLC ; LDA #$19 ; ADC #$28 ; STA $10 ; CLD ; RTS
         let rom = [(0x8000, &[0xF8, 0x18, 0xA9, 0x19, 0x69, 0x28, 0x85, 0x10, 0xD8, 0x60][..])];
@@ -1220,24 +1271,25 @@ int main(void) {
 }
 "#;
 
-    /// Reset of A Link to the Past, recompiled with its callees and run against the real ROM until
-    /// it reaches the wait for the first NMI. Skipped without the ROM or a C compiler.
-    #[test]
-    fn alttp_reset_runs_to_the_nmi_wait_loop() {
+    /// Recompile `entry` of A Link to the Past with its callees down to `depth` and run it against the
+    /// real ROM; `setup` is C that runs on the CPU state right after reset, and the result is the output
+    /// of the run. `None` when there is no C compiler or no ROM.
+    fn run_alttp(name: &str, entry: u32, depth: usize, setup: &dyn Fn(Flags) -> String) -> Option<String> {
         let Some(cc) = crate::cctest::find() else {
             eprintln!("skipped: no C compiler found");
-            return;
+            return None;
         };
         let Ok(rom) = crate::rom::Rom::load("roms/alttp_usa.sfc") else {
             eprintln!("skipped: roms/alttp_usa.sfc not found");
-            return;
+            return None;
         };
         let cfg = crate::config::Config::load("games/alttp_usa.toml").unwrap();
         let roots: Vec<(u32, Flags)> = cfg.entries.iter().map(|e| (e.addr, e.flags)).collect();
         let d = crate::discover::discover(&rom, &cfg, &roots);
         let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
         let g = Graph::build(&d, &addrs);
-        let generated = Emitter::new(&d, &g).generate(0x8000, 2).unwrap();
+        let generated = Emitter::new(&d, &g).generate(entry, depth).unwrap();
+        let flags = d.flags[&entry];
 
         let mut image = vec![0u8; 0x20_0000];
         for bank in 0..0x40u32 {
@@ -1261,14 +1313,16 @@ int main(void) {
             "FILE *f = fopen(\"lorom.bin\", \"rb\");\n    if (!f || fread(rom, 1, sizeof rom, f) != sizeof rom) { printf(\"NO ROM\\n\"); exit(4); }\n    fclose(f);",
             "memcpy(rom, rom_image, sizeof rom);",
         )
-        .replace("#include <stdlib.h>", "#include <stdlib.h>\n#include <string.h>\nextern const unsigned char rom_image[];");
+        .replace("#include <stdlib.h>", "#include <stdlib.h>\n#include <string.h>\nextern const unsigned char rom_image[];")
+        .replace("void f_00_8000(Cpu *c);", &format!("void {}(Cpu *c);", func_name(entry)))
+        .replace("    f_00_8000(&c);", &format!("    {}\n    {}(&c);", setup(flags), func_name(entry)));
         // Functions that are only declared get a stub: reaching one means the run left the slice.
         let stubs: String = generated
             .lines()
             .filter_map(|l| l.strip_prefix("void ")?.strip_suffix("(Cpu *c);"))
             .filter(|name| !generated.contains(&format!("void {name}(Cpu *c) {{")))
             .map(|name| {
-                format!("void {name}(Cpu *c) {{ (void)c; printf(\"UNEMITTED {name}\\n\"); exit(8); }}\n")
+                format!("void {name}(Cpu *c) {{ (void)c; printf(\"UNEMITTED {name}\\n\"); exit(0); }}\n")
             })
             .collect();
         let stubs = format!("#include \"snes_rt.h\"
@@ -1277,7 +1331,7 @@ int main(void) {
 {stubs}");
         let out = cc
             .compile_run(
-                "alttp-reset",
+                name,
                 &[
                     ("snes_rt.h", RUNTIME_HEADER),
                     ("gen.c", &generated),
@@ -1288,6 +1342,27 @@ int main(void) {
                 &["SNES_RT_CHECKS"],
             )
             .unwrap_or_else(|e| panic!("{e}"));
+        Some(out)
+    }
+
+    /// 02:8C14 of A Link to the Past calls the inline helper at 00:8781 with the index in $B0. Each index
+    /// has to reach its own target (02:8CA9, 02:8D01, 02:8CE2), which runs until it calls a function the
+    /// slice does not emit; the helper's exit never reports a target as unresolved.
+    #[test]
+    fn alttp_inline_helper_call_reaches_its_target() {
+        for (index, first_callee) in [(0u8, "f_02_8CAC"), (1, "f_00_E914"), (2, "f_02_A2F0")] {
+            let Some(out) = run_alttp("alttp-helper", 0x02_8C14, 2, &|f| {
+                format!("c.e = 0; c.m = {}; c.xf = {}; wram[0xB0] = {index};", f.m as u8, f.x as u8)
+            }) else { return };
+            assert_eq!(out, format!("UNEMITTED {first_callee}\n"), "index {index}");
+        }
+    }
+
+    /// Reset of A Link to the Past, recompiled with its callees and run against the real ROM until
+    /// it reaches the wait for the first NMI. Skipped without the ROM or a C compiler.
+    #[test]
+    fn alttp_reset_runs_to_the_nmi_wait_loop() {
+        let Some(out) = run_alttp("alttp-reset", 0x8000, 2, &|_| String::new()) else { return };
         let lines: Vec<&str> = out.lines().collect();
         eprintln!("{} lines; first 12: {:?}; last 3: {:?}", lines.len(), &lines[..lines.len().min(12)], &lines[lines.len().saturating_sub(3)..]);
         // The first block of the reset code, as the disassembly reads: clear NMI/DMA enables and
