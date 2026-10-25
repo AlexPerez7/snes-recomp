@@ -9,6 +9,8 @@ pub enum Compiler {
     Gnu(String),
     /// MSVC, through the `vcvars64.bat` of a Visual Studio installation.
     Msvc(PathBuf),
+    /// The TinyCC downloaded into the cache (`download::install`); `find` never returns it.
+    Tcc(PathBuf),
 }
 
 pub(crate) fn works(cc: &str) -> bool {

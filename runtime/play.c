@@ -33,8 +33,11 @@
 #include "play_cfg.h"
 #ifdef _WIN32
 #include <windows.h>
+#ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
 #include <commdlg.h>
 #pragma comment(lib, "comdlg32.lib")
+#define HAVE_FILE_DIALOG
+#endif
 #endif
 
 static int opt_no_window, opt_fullscreen, opt_scale;
@@ -931,7 +934,7 @@ static int open_window(void) {
 
 /* Without a ROM argument, asks for one with the system's file dialog (Windows only). */
 static const char *pick_rom(void) {
-#ifdef _WIN32
+#ifdef HAVE_FILE_DIALOG
     static char buf[MAX_PATH];
     OPENFILENAMEA ofn;
     memset(&ofn, 0, sizeof ofn);

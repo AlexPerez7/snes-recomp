@@ -64,7 +64,24 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom   # C de toda
 cargo test
 ```
 
-### Jugar
+### Jugar con `snes-port` (lo más simple)
+
+`snes-port` construye el juego en tu máquina a partir de **tu** ROM y lo arranca. No se distribuye ningún juego: el ejecutable se genera aquí, la primera vez (unas decenas de segundos con MSVC; algo más con gcc), y las siguientes arranca al instante.
+
+```
+snes-port roms\alttp_usa.sfc                       # construye (si hace falta) y juega; también vale arrastrar la ROM sobre snes-port.exe
+snes-port roms\alttp_usa.sfc -- --scale 3 --mute   # lo que va tras -- se pasa al juego
+snes-port roms\alttp_usa.sfc --no-launch           # solo construye
+snes-port clean [roms\alttp_usa.sfc]               # borra la caché de esa ROM (o toda); nunca toca ROMs ni partidas
+```
+
+- **Qué se queda dónde.** El C generado y el ejecutable viven en la caché (`%LOCALAPPDATA%\snes-port`, o `--cache <carpeta>` / `SNES_PORT_CACHE`), en una carpeta `<crc32>-<versión>`; cambiar el runtime reconstruye solo. El ejecutable lee la ROM del sitio donde está, y la partida guardada (`.srm`) queda junto a ella. Tras construir se comprueba que ningún byte de la ROM ha acabado en lo construido.
+- **Compilador.** Usa `CC`, gcc, clang o Visual Studio, y los ficheros de desarrollo de SDL2 (`SDL2_DIR`, o la carpeta `sdl2` junto a `snes-port.exe`, que el paquete de `scripts\release.ps1` ya incluye). Con uno local **nunca se descarga nada**. Sin compilador pregunta si descargar TinyCC (480 KiB, desde `download.savannah.gnu.org`, con SHA-256 fijado en el programa; si no coincide se descarta); `--download-compiler` responde que sí de antemano. Es lo único que usa la red.
+- **Paquete para repartir.** `powershell -File scripts\release.ps1` crea `out\release\snes-port-<versión>-win64.zip` con el programa, `games/*.toml`, este README y SDL2. Falla (y no crea el zip) si encuentra `.sfc`, `.smc`, `.srm` o C generado.
+- **Códigos de salida.** 2: ROM no reconocida (se listan las admitidas); 3: falta compilador o SDL2; 4: la construcción falló.
+
+### Jugar a mano
+
 
 `codegen --all` escribe en `out/rom` los bancos en C, el runtime, `play/snes_play.c` y `build_play.bat`:
 
