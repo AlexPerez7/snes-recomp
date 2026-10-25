@@ -38,5 +38,5 @@
 
 - [x] 6.1 Antes de nada: `cargo test` del motor, `scan` de ambos árboles y del historial, `release.ps1` de ambos, `git status` limpio en ambos
 - [x] 6.2 Pedir confirmación explícita al usuario (nombres, MIT, historial con su nombre y correo, visibilidad pública); no continuar sin ella
-- [ ] 6.3 Commit de los cambios del motor y push; crear `AlexPerez7/alttp-recomp` público y subirlo; cambiar `AlexPerez7/snes-recomp` a público; descripción y temas de ambos
-- [ ] 6.4 Comprobar desde fuera (`gh repo view`, clonar en una carpeta temporal) que ambos son públicos y que el clon no contiene ROMs ni `out/`; actualizar `CLAUDE.md` y la memoria con las URLs
+- [x] 6.3 Commit de los cambios del motor y push; crear `AlexPerez7/alttp-recomp` público y subirlo; cambiar `AlexPerez7/snes-recomp` a público; descripción y temas de ambos
+- [x] 6.4 Comprobar desde fuera (`gh repo view`, clonar en una carpeta temporal) que ambos son públicos y que el clon no contiene ROMs ni `out/`; actualizar `CLAUDE.md` y la memoria con las URLs
