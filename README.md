@@ -126,6 +126,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `scaling` | `integer`, `fit` | múltiplos enteros, o relleno del área disponible |
 | `filter` | `nearest`, `bilinear`, `sharp` | `sharp` escala por un factor entero y suaviza solo el resto |
 | `overscan` | `0` (0 a 8) | líneas recortadas arriba y abajo |
+| `wide` | `0` (0 a 96, de 8 en 8) | píxeles de imagen extra a cada lado de los 256 de la consola; la zona nueva muestra lo que dibuja la PPU (los fondos continúan por su mapa), así que puede verse vacía o con restos hasta que el juego la rellene |
 | `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |
 | `grid` | `false`, `true` | rejilla entre los píxeles de la consola |
 | `fps` | `false`, `true` | muestra los fotogramas por segundo en la esquina de la imagen |
@@ -146,7 +147,7 @@ cl /MP /TC /std:c11 /DSNES_RT_TICK /DSNES_RT_CHECKS out\rom\*.c /Fe:out\headless
 out\headless.exe roms\alttp_usa.sfc --frames 1200 --screenshot out\shot.png --wav out\audio.wav
 ```
 
-Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir en WRAM), `--dump DIR` (VRAM, CGRAM, OAM, WRAM), y con `/DSNES_RT_TRACE` las trazas `--trace-frames`, `--trace-reads` y `--watch`. `snes_play --no-window` ofrece lo mismo con el frontal de SDL2.
+Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir en WRAM), `--dump DIR` (VRAM, CGRAM, OAM, WRAM), `--wide N` (captura ensanchada en N columnas por lado, múltiplo de 8 hasta 96), y con `/DSNES_RT_TRACE` las trazas `--trace-frames`, `--trace-reads` y `--watch`. `snes_play --no-window` ofrece lo mismo con el frontal de SDL2.
 
 ## Estructura
 

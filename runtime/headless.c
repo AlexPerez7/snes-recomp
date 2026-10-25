@@ -6,13 +6,16 @@
  *
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png] [--wav FILE.wav]
  *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]... [--press BUTTONS@A-B]...
- *              [--poke ADDR=BYTES@N]...
+ *              [--poke ADDR=BYTES@N]... [--wide N]
  *
  * --press holds buttons of joypad 1 down during frames A to B (BUTTONS: B Y SELECT START UP DOWN LEFT RIGHT A X L R
  * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
  * serial read ($4016). With no --press nothing is held.
  *
  * --game-opt KEY=NUMBER sets an option of the C code of the game (game_opt in snes_rt.h).
+ * --wide N draws N extra columns on each side of the picture (a multiple of 8, 0 to 96; 0 is the 256x224 picture of the
+ * console): the screenshot is then 256+2N pixels wide and shows what the PPU draws there (backgrounds go on through their
+ * map, sprites land where they fall).
  * --poke ADDR=BYTES@N writes BYTES (hex pairs) to consecutive WRAM bytes from ADDR (same forms as --watch) when
  * frame N starts, for debugging (e.g. moving Link: --poke 20=A008C007@3000).
  *
@@ -24,7 +27,7 @@
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
  * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin, ppu_regs.bin and wram.bin. The picture is drawn line by
  * line while the frame goes by (the rows that came due are drawn with the registers as they were until each write, HDMA
- * included), and --screenshot writes the last complete one (modes 1 and 7 and sprites only) as a 256x224 PNG; windows
+ * included), and --screenshot writes the last complete one (modes 1 and 7 and sprites only) as a 256x224 PNG (wider with --wide); windows
  * ($2123-$212B, $212E/$212F, colour window rules of $2130) and the BG mosaic ($2106) are applied.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
@@ -68,6 +71,14 @@ int main(int argc, char **argv) {
             if (!parse_poke(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) {
             if (!parse_game_opt(argv[++i])) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--wide") && i + 1 < argc) {
+            char *end;
+            unsigned long e = strtoul(argv[++i], &end, 10);
+            if (*end || !*argv[i] || e > WIDE_MAX || e % 8) {
+                fprintf(stderr, "error: --wide takes a multiple of 8 from 0 to %d\n", WIDE_MAX);
+                return 2;
+            }
+            ppu_set_wide((int)e);
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -78,7 +89,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!path || max_frames == 0 || frame_len == 0) {
-        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE] [--wav FILE]\n"
+        fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE] [--wav FILE] [--wide N]\n"
                         "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
                         "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]...\n", argv[0]);
         return 2;
