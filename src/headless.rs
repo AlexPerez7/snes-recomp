@@ -1208,7 +1208,7 @@ fn colour_math_can_use_the_subscreen() {
     let fixed_red = st(0x20 | 31, 0x2132);
     // BG3 is only on the subscreen: green plus blue is cyan where BG3 has a pixel...
     let extra = vec![st(0x04, 0x212D), st(0x02, 0x2130), st(0x21, 0x2131), fixed_red.clone()];
-    let Some(img) = math_case("sub", 0x01, GREEN, BLUE, extra.clone()) else { return };
+    let Some(img) = math_case("subscreen", 0x01, GREEN, BLUE, extra.clone()) else { return };
     assert_eq!(img.rgb(0, 0), rgb(0x7FE0));
     // ...and the fixed colour stands in, not halved, when nothing is on the subscreen.
     let extra = vec![st(0x00, 0x212D), st(0x02, 0x2130), st(0x61, 0x2131), fixed_red];
