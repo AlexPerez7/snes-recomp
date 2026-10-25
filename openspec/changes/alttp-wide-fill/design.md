@@ -63,4 +63,5 @@ Investigación de la transición entre áreas (2.3, en curso; área 2C hacia 2B,
 - La franja se cuenta desde el borde exterior hacia la imagen (lo que hay más allá del final del mapa), no desde la imagen: se corrigió `ppu_wide_blank` en el motor al probar el caso parcial.
 - Interior: `$1B != 0` ⇒ franjas completas; se probó en la casa de Link. Salida de la casa a `0x2C` sin basura en ningún fotograma.
 - Gancho por fotograma: `after` en `00:80B5` (el enrutador de módulos que llama el bucle principal una vez por fotograma tras esperar al NMI). En los módulos menores que 6 (título, selección de partida, nombre) se quitan las franjas.
-- Sin medir: tiempo con `--stats`, cuevas, `E = 0` byte a byte contra una versión sin gancho, y un área de 1024 px.
+- `E = 0`: capturas idénticas byte a byte con el gancho y con un gancho vacío (fotogramas 5300, 5730, 6700 y 6850).
+- Sin medir: tiempo con `--stats`, cuevas (comparten la ruta de `$1B != 0` con la casa) y un área de 1024 px.
