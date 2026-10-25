@@ -32,6 +32,17 @@ fn find_msvc() -> Option<PathBuf> {
     None
 }
 
+/// The SDL2 development package for Visual C++ (the folder with `include` and `lib`): `SDL2_DIR`, or the first
+/// `out/sdl2/SDL2-*` of the project. `None` skips the tests that need SDL2.
+pub fn sdl2_dir() -> Option<std::path::PathBuf> {
+    if let Ok(d) = std::env::var("SDL2_DIR") {
+        let p = std::path::PathBuf::from(d);
+        return p.join("include").join("SDL.h").exists().then_some(p);
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("out").join("sdl2");
+    std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| p.join("include").join("SDL.h").exists())
+}
+
 pub fn find() -> Option<Compiler> {
     if let Ok(cc) = std::env::var("CC") {
         if works(&cc) {
@@ -71,6 +82,17 @@ impl Compiler {
     /// Like `compile_run`, but the files may be binary and the program gets `args`. The program runs
     /// in the directory that holds the files, so the arguments can name them.
     pub fn compile_run_with(&self, name: &str, files: &[(&str, &[u8])], defines: &[&str], args: &[&str]) -> Result<String, String> {
+        self.compile_run_sdl(name, files, defines, args, None)
+    }
+
+    /// Like `compile_run_with`, also linking SDL2 from the development package at `sdl` (MSVC only; see `sdl2_dir`).
+    pub fn compile_run_sdl(&self, name: &str, files: &[(&str, &[u8])], defines: &[&str], args: &[&str], sdl: Option<&Path>) -> Result<String, String> {
+        self.compile_run_sdl_times(name, files, defines, args, sdl, 1)
+    }
+
+    /// Like `compile_run_sdl`, but runs the program `runs` times in the same folder (so it can keep files between runs)
+    /// and returns the outputs one after another.
+    pub fn compile_run_sdl_times(&self, name: &str, files: &[(&str, &[u8])], defines: &[&str], args: &[&str], sdl: Option<&Path>, runs: usize) -> Result<String, String> {
         let dir = std::env::temp_dir().join(format!("snes-recomp-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -79,14 +101,14 @@ impl Compiler {
         }
         let sources: Vec<&str> = files.iter().map(|f| f.0).filter(|f| f.ends_with(".c")).collect();
         let result = match self {
-            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args),
-            Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines, args),
+            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args, runs),
+            Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines, args, sdl, runs),
         };
         let _ = std::fs::remove_dir_all(&dir);
         result
     }
 
-    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str]) -> Result<String, String> {
+    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str], runs: usize) -> Result<String, String> {
         let mut cmd = Command::new(cc);
         cmd.current_dir(dir).args(["-std=c11", "-Wall", "-O1", "-o", "prog"]);
         for d in defines {
@@ -96,21 +118,32 @@ impl Compiler {
         if !build.status.success() {
             return Err(String::from_utf8_lossy(&build.stderr).into_owned());
         }
-        let run = Command::new(dir.join("prog")).current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
-        finish(run)
+        let mut all = String::new();
+        for _ in 0..runs {
+            let run = Command::new(dir.join("prog")).current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
+            all.push_str(&finish(run)?);
+        }
+        Ok(all)
     }
 
-    fn run_msvc(&self, vcvars: &Path, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str]) -> Result<String, String> {
+    fn run_msvc(&self, vcvars: &Path, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str], sdl: Option<&Path>, runs: usize) -> Result<String, String> {
         let env = msvc_env(vcvars)?;
-        let defs: String = defines.iter().map(|d| format!(" /D{d}")).collect();
+        let mut defs: String = defines.iter().map(|d| format!(" /D{d}")).collect();
+        let mut link = String::new();
+        if let Some(sdl) = sdl {
+            defs.push_str(&format!(" /I\"{}\"", sdl.join("include").display()));
+            link = format!(" /link /LIBPATH:\"{}\" SDL2.lib", sdl.join("lib").join("x64").display());
+            std::fs::copy(sdl.join("lib").join("x64").join("SDL2.dll"), dir.join("SDL2.dll")).map_err(|e| e.to_string())?;
+        }
         let bat = format!(
             "@echo off\r\ncd /d \"{}\"\r\n\
-             cl /nologo /MP /W3 /TC /std:c11{} /Fe:prog.exe {} >build.log 2>&1\r\n\
-             if errorlevel 1 (type build.log & exit /b 1)\r\n.\\prog.exe{}\r\n",
+             cl /nologo /MP /W3 /TC /std:c11{} /Fe:prog.exe {}{} >build.log 2>&1\r\n\
+             if errorlevel 1 (type build.log & exit /b 1)\r\n{}",
             dir.display(),
             defs,
             sources.join(" "),
-            args.iter().map(|a| format!(" \"{a}\"")).collect::<String>()
+            link,
+            format!(".\\prog.exe{}\r\nif errorlevel 1 exit /b %errorlevel%\r\n", args.iter().map(|a| format!(" \"{a}\"")).collect::<String>()).repeat(runs)
         );
         let script = dir.join("build.bat");
         std::fs::write(&script, bat).map_err(|e| e.to_string())?;
