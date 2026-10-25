@@ -149,6 +149,14 @@ static int16_t spr_xoff[128]; /* added to the X of each sprite (ppu_sprite_xoff)
 void ppu_sprite_xoff(int i, int dx) { if (i >= 0 && i < 128) spr_xoff[i] = (int16_t)dx; }
 void ppu_sprite_xoff_clear(void) { memset(spr_xoff, 0, sizeof spr_xoff); }
 
+static int wide_blank_l, wide_blank_r; /* pixels of the extra columns drawn black, from the picture outwards (ppu_wide_blank) */
+
+void ppu_wide_blank(int left, int right) {
+    wide_blank_l = left < 0 ? 0 : left;
+    wide_blank_r = right < 0 ? 0 : right;
+}
+void ppu_wide_blank_clear(void) { wide_blank_l = wide_blank_r = 0; }
+
 /* Fills row `row` of spr_col/spr_pri with the sprites that cover it (a lower index is in front of a higher one). As on the
  * console, only the first 32 sprites (by index) that touch the line are kept, and only 34 eight pixel slices of them are
  * fetched, taking the sprites from the last of the 32 to the first, so it is the front ones that lose slices. */
@@ -481,6 +489,11 @@ static void render_row(int y, uint8_t *out) {
     }
     draw_sprites_row(y);
     for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
+        if ((x < 0 && -x <= wide_blank_l) || (x >= SCREEN_W && x - SCREEN_W < wide_blank_r)) {
+            uint8_t *q = out + (size_t)(x + wide_x0) * 3;
+            q[0] = q[1] = q[2] = 0;
+            continue;
+        }
         /* The main screen pixel; in the modes 5 and 6 it is the right one of the two 512-pixel columns of x, and the left
          * one comes from the subscreen. */
         int hires = mode == 5 || mode == 6, xc = hires ? 2 * x + 1 : x;
@@ -551,6 +564,8 @@ static void ppu_catch_up(void) {
 static void ppu_sync(void) {
     if (!ppu_hold && tick_in_frame >= ppu_next) ppu_catch_up();
 }
+
+int ppu_wide(void) { return wide_x0; }
 
 static int wide_next;         /* the E asked for, taken at the start of the next frame */
 
