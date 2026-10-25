@@ -64,11 +64,6 @@ fn run(name: &str, segments: &[(u32, &[u8])], roots: &[u32], rom: Option<Vec<u8>
 
 /// Build the generated C of `out` with the runtime, put `rom` next to it as `rom.sfc` and run it.
 fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen::FullOutput, rom: Option<Vec<u8>>, args: &[&str]) -> Run {
-    build_and_run_game(cc, name, out, rom, &[], args)
-}
-
-/// Like `build_and_run`, with the C files of a game (name, text) compiled in.
-fn build_and_run_game(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen::FullOutput, rom: Option<Vec<u8>>, game: &[crate::games::Source], args: &[&str]) -> Run {
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
@@ -80,7 +75,6 @@ fn build_and_run_game(cc: &crate::cctest::Compiler, name: &str, out: &crate::cod
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
     files.extend(rom.map(|bytes| ("rom.sfc".to_string(), bytes)));
-    files.extend(game.iter().map(|g| (g.name.clone(), g.text.clone().into_bytes())));
     let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     match cc.compile_run_with(name, &files, &["SNES_RT_TICK", "SNES_RT_CHECKS", "SNES_RT_TRACE"], args) {
         Ok(out) => Run { code: 0, out },
@@ -529,57 +523,6 @@ fn failures_stop_the_run_with_the_cause_and_a_distinct_exit_code() {
     assert!(r.out.contains("stop: return to an address no call expects"), "{}", r.out);
 }
 
-/// The presses that take A Link to the Past from the title to the first message box of the game (frame 2028 on).
-const ALTTP_TO_FIRST_MESSAGE: [&str; 20] = [
-    "--press", "START@1100-1110", "--press", "A@1300-1305", "--press", "A@1500-1504", "--press", "DOWN@1540-1542", "--press", "DOWN@1560-1562",
-    "--press", "DOWN@1580-1582", "--press", "RIGHT@1600-1602", "--press", "RIGHT@1620-1622", "--press", "A@1640-1643", "--press", "A@2000-2004",
-];
-
-/// A Link to the Past with the hook of its profile: holding R in a message box makes the text appear faster, and
-/// `--game-opt dialog_skip=0` turns that off. The character counter `$1CD9` says how much text there is on screen
-/// at frame 2040, where the unhurried game shows 5 characters. Skipped without the ROM or a compiler.
-#[test]
-fn alttp_message_boxes_go_faster_while_r_is_held_and_not_without_it_or_when_turned_off() {
-    let Some(cc) = crate::cctest::find() else {
-        eprintln!("skipped: no C compiler found");
-        return;
-    };
-    let Ok(bytes) = std::fs::read("roms/alttp_usa.sfc") else {
-        eprintln!("skipped: roms/alttp_usa.sfc not found");
-        return;
-    };
-    let rom = crate::rom::Rom::from_bytes(bytes.clone()).unwrap();
-    let profile = crate::games::identify(rom.crc32()).expect("the built-in profile of A Link to the Past");
-    assert!(!profile.sources.is_empty(), "the profile carries the C code of the dialog hook");
-    let cfg = Config::parse(&profile.config).unwrap();
-    let roots: Vec<(u32, Flags)> = cfg.entries.iter().map(|e| (e.addr, e.flags)).collect();
-    let d = discover(&rom, &cfg, &roots);
-    let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
-    let g = Graph::build(&d, &addrs);
-    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all();
-    let dump = std::env::temp_dir().join(format!("snes-recomp-alttp-dialog-{}", std::process::id()));
-    let chars = |name: &str, extra: &[&str]| -> u8 {
-        let _ = std::fs::remove_dir_all(&dump);
-        std::fs::create_dir_all(&dump).unwrap();
-        let dump_arg = dump.to_string_lossy().into_owned();
-        let mut args = vec!["rom.sfc", "--frames", "2040", "--frame-blocks", "20000", "--dump", &dump_arg];
-        args.extend(ALTTP_TO_FIRST_MESSAGE);
-        args.extend(extra);
-        let r = build_and_run_game(&cc, name, &out, Some(bytes.clone()), &profile.sources, &args);
-        assert_eq!(r.code, 0, "{}", r.out);
-        let wram = std::fs::read(dump.join("wram.bin")).unwrap();
-        assert_eq!(wram[0x10], 0x0E, "the message module is running");
-        wram[0x1CD9]
-    };
-    let plain = chars("alttp-dialog-plain", &[]);
-    let fast = chars("alttp-dialog-fast", &["--press", "R@2000-2300"]);
-    let off = chars("alttp-dialog-off", &["--press", "R@2000-2300", "--game-opt", "dialog_skip=0"]);
-    let _ = std::fs::remove_dir_all(&dump);
-    assert_eq!(plain, 5, "the game as it was");
-    assert!(fast >= 2 * plain, "R shows {fast} characters against {plain}");
-    assert_eq!(off, plain, "turned off, R changes nothing");
-}
-
 /// A Link to the Past, recompiled whole and run with the real ROM through its boot (the audio upload
 /// takes the first 14 frames) and its first NMIs. Where the run stops later is not asserted: it is a
 /// finding about the recompiler, listed in the notes of the change. `ALTTP_FRAMES` and
@@ -590,12 +533,10 @@ fn alttp_boots_and_takes_its_first_nmis() {
         eprintln!("skipped: no C compiler found");
         return;
     };
-    let Ok(bytes) = std::fs::read("roms/alttp_usa.sfc") else {
-        eprintln!("skipped: roms/alttp_usa.sfc not found");
-        return;
-    };
+    let Some(game) = crate::cctest::real_game_id("alttp_usa") else { return };
+    let bytes = std::fs::read(&game.rom_path).unwrap();
     let rom = crate::rom::Rom::from_bytes(bytes.clone()).unwrap();
-    let cfg = Config::load("games/alttp_usa.toml").unwrap();
+    let cfg = Config::parse(&game.profile.config).unwrap();
     let roots: Vec<(u32, Flags)> = cfg.entries.iter().map(|e| (e.addr, e.flags)).collect();
     let d = discover(&rom, &cfg, &roots);
     let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();

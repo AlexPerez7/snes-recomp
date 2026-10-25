@@ -27,19 +27,22 @@ const USAGE: &str = "\
 usage:
   snes-recomp info <rom>
   snes-recomp disasm <rom> <addr> [count] [--m16] [--x16]
-  snes-recomp discover <rom> [addr] [--config <file>] [--unresolved] [--widths]
-  snes-recomp graph <rom> [addr] [--config <file>]
-  snes-recomp codegen <rom> <addr> [--depth N] [-o <file.c>] [--config <file>]
-  snes-recomp codegen <rom> --all -o <dir> [--config <file>]
+  snes-recomp discover <rom> [addr] [--game <profile.toml> | --config <file>] [--unresolved] [--widths]
+  snes-recomp graph <rom> [addr] [--game <profile.toml> | --config <file>]
+  snes-recomp codegen <rom> <addr> [--depth N] [-o <file.c>] [--game <profile.toml> | --config <file>]
+  snes-recomp codegen <rom> --all -o <dir> [--game <profile.toml> | --config <file>]
+  snes-recomp scan <rom> <dir>
 
 <addr> is hex, as BB:AAAA or BBAAAA.
-discover loads games/<id>.toml for known ROMs (override with --config). Without an <addr> it
+discover uses the profile of the ROM, found in games/ (here or next to the program) or given with --game; --config
+uses a bare config instead. Without an <addr> it
 starts from the config's entries, or the reset vector if there are none.
 --unresolved lists indirect jumps/calls that still need a table in the config.
 --widths lists M/X conflicts, unpaired PLPs and calls whose callee never returns.
 graph prints totals for functions and basic blocks; with <addr> it details the function containing it.
 codegen emits C for the function at <addr> and, up to --depth levels (default 1), the functions it calls.
 With -o it also writes snes_rt.h next to the file. The output derives from the ROM: keep it under out/.
+scan fails, naming the file, when anything under <dir> holds bytes of the ROM (run it before publishing).
 codegen --all emits every function into <dir>: rom_BB.c per bank, snes_funcs.h and snes_rt.h. Functions that
 cannot be translated become stubs that call rt_unsupported, and are listed on stderr with their cause.";
 
@@ -57,10 +60,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
     let rom_path = args.get(2).ok_or(USAGE)?;
     let rom = Rom::load(rom_path)?;
     let config_path = option_value(&args, "--config");
+    let catalog = games::catalog(&option_value(&args, "--game").map(PathBuf::from).into_iter().collect::<Vec<_>>())?;
+    for w in catalog.warnings() {
+        eprintln!("{w}");
+    }
+    // the profile of the ROM, unless a bare config was given
+    let profile = if config_path.is_none() { catalog.identify(rom.crc32()) } else { None };
     let mut rest: Vec<String> = Vec::new();
     let mut it = args[3..].iter();
     while let Some(a) = it.next() {
-        if a == "--config" || a == "--depth" || a == "-o" {
+        if a == "--config" || a == "--depth" || a == "-o" || a == "--game" {
             it.next();
         } else if !a.starts_with("--") {
             rest.push(a.clone());
@@ -74,7 +83,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let v = rom.vectors();
             println!("size:        {} bytes{}", rom.len(), if rom.had_copier_header { " (copier header stripped)" } else { "" });
             println!("crc32:       {crc:08X}");
-            match games::identify(crc) {
+            match catalog.identify(crc) {
                 Some(g) => println!("identified:  {}", g.name),
                 None => println!("identified:  unknown dump"),
             }
@@ -85,6 +94,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             println!("irq:         00:{:04X} (native)  00:{:04X} (emu)", v.native_irq, v.emu_irq);
             Ok(())
         }
+        "scan" => port::scan(rom.bytes(), std::path::Path::new(rest.first().ok_or(USAGE)?)),
         "disasm" => {
             let addr = parse_addr(rest.first().ok_or(USAGE)?)?;
             let count = rest.get(1).map(|s| s.parse::<usize>().map_err(|_| format!("bad count: {s}"))).transpose()?.unwrap_or(32);
@@ -94,7 +104,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         "discover" => {
-            let cfg = load_config(&rom, config_path)?;
+            let cfg = load_config(config_path, profile)?;
             let roots: Vec<(u32, Flags)> = match rest.first() {
                 Some(s) => vec![(parse_addr(s)?, flags_from(&args))],
                 None => default_roots(&rom, &cfg),
@@ -121,7 +131,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         "graph" => {
-            let cfg = load_config(&rom, config_path)?;
+            let cfg = load_config(config_path, profile)?;
             let roots = default_roots(&rom, &cfg);
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
@@ -135,7 +145,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         "codegen" => {
-            let cfg = load_config(&rom, config_path.clone())?;
+            let cfg = load_config(config_path, profile)?;
             let roots = default_roots(&rom, &cfg);
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
@@ -146,7 +156,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 let dir = PathBuf::from(dir);
                 write_full_rom(&out, &dir)?;
                 // the C code of the game (hooks) sits in <dir>/game, like in the builds of snes-port
-                if let (None, Some(p)) = (&config_path, games::identify(rom.crc32())) {
+                if let Some(p) = profile {
                     if !p.sources.is_empty() {
                         std::fs::create_dir_all(dir.join("game")).map_err(|e| e.to_string())?;
                         for s in &p.sources {
@@ -227,17 +237,12 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
     Ok(())
 }
 
-/// Config from `--config`, else the bundled one for a known ROM, else an empty one.
-fn load_config(rom: &Rom, path: Option<String>) -> Result<Config, String> {
-    match path {
-        Some(p) => Config::load(p),
-        None => match games::identify(rom.crc32()) {
-            Some(g) => {
-                let p = PathBuf::from("games").join(format!("{}.toml", g.id));
-                if p.exists() { Config::load(p) } else { Ok(Config::default()) }
-            }
-            None => Ok(Config::default()),
-        },
+/// Config from `--config`, else the profile of the ROM, else an empty one.
+fn load_config(path: Option<String>, profile: Option<&games::GameProfile>) -> Result<Config, String> {
+    match (path, profile) {
+        (Some(p), _) => Config::load(p),
+        (None, Some(g)) => Config::parse(&g.config).map_err(|e| format!("{}: {e}", g.origin)),
+        (None, None) => Ok(Config::default()),
     }
 }
 

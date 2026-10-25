@@ -18,6 +18,42 @@ pub fn sdl2_dir() -> Option<std::path::PathBuf> {
     std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| p.join("include").join("SDL.h").exists())
 }
 
+/// A real game for the tests that need one: the profile named by `SNES_GAME_PROFILE` (its `.toml`, with the folder of C
+/// next to it) and the ROM named by `SNES_GAME_ROM`.
+pub struct RealGame {
+    pub profile: crate::games::GameProfile,
+    pub profile_path: PathBuf,
+    pub rom_path: PathBuf,
+    pub rom: crate::rom::Rom,
+}
+
+/// The real game, or `None` (the test is skipped) when the variables are not set, the files cannot be read or the
+/// ROM is not the one the profile is for.
+pub fn real_game() -> Option<RealGame> {
+    let (Ok(profile_path), Ok(rom_path)) = (std::env::var("SNES_GAME_PROFILE"), std::env::var("SNES_GAME_ROM")) else {
+        eprintln!("skipped: SNES_GAME_PROFILE and SNES_GAME_ROM name no real game");
+        return None;
+    };
+    let (profile_path, rom_path) = (PathBuf::from(profile_path), PathBuf::from(rom_path));
+    let profile = crate::games::GameProfile::load(&profile_path).map_err(|e| eprintln!("skipped: {e}")).ok()?;
+    let rom = crate::rom::Rom::load(&rom_path).map_err(|e| eprintln!("skipped: {e}")).ok()?;
+    if rom.crc32() != profile.crc32 {
+        eprintln!("skipped: {} is not the ROM of the profile {} (CRC32 {:08X})", rom_path.display(), profile.id, profile.crc32);
+        return None;
+    }
+    Some(RealGame { profile, profile_path, rom_path, rom })
+}
+
+/// `real_game` when its profile is `id` (for the tests that know addresses of one game).
+pub fn real_game_id(id: &str) -> Option<RealGame> {
+    let game = real_game()?;
+    if game.profile.id != id {
+        eprintln!("skipped: the real game is {}, the test is for {id}", game.profile.id);
+        return None;
+    }
+    Some(game)
+}
+
 /// Declares a skipped test and returns early from the caller when there is no compiler.
 #[macro_export]
 macro_rules! need_compiler {

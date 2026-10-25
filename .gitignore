@@ -5,3 +5,4 @@
 *.srm
 /roms/
 /out/
+*.log
