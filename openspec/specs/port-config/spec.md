@@ -29,11 +29,19 @@ Las opciones de la línea de comandos SHALL prevalecer sobre el fichero durante 
 - **THEN** arranca en pantalla completa y el fichero conserva `false`
 
 ### Requirement: Menú en pantalla
-F1 SHALL abrir un menú que se maneje con el teclado y el mando, pause la emulación y permita cambiar las opciones de imagen, controles y audio, aplicándolas al instante y guardándolas al salir del menú.
+F1 SHALL abrir un menú que se maneje con el teclado y el mando, pause la emulación y permita cambiar las opciones de imagen, controles y audio, aplicándolas al instante y guardándolas al salir del menú. El menú SHALL incluir una pestaña Juego con las acciones continuar, guardar la partida ahora, restaurar valores por defecto y salir, y las pestañas de imagen y audio SHALL permitir restaurar sus valores por defecto.
 
 #### Scenario: Cambiar el filtro
 - **WHEN** el usuario cambia el filtro a `bilinear` en el menú y cierra el menú
 - **THEN** la imagen usa el filtro nuevo y `config.ini` contiene `filter = bilinear`
+
+#### Scenario: Guardar ahora
+- **WHEN** el usuario elige «Guardar ahora» en la pestaña Juego con la SRAM modificada
+- **THEN** `<rom>.srm` contiene la SRAM actual sin esperar al intervalo de guardado
+
+#### Scenario: Restaurar valores por defecto
+- **WHEN** el usuario cambia el escalado y elige «Restaurar» en la pestaña Imagen
+- **THEN** las opciones de imagen vuelven a sus valores por defecto y las demás pestañas no cambian
 
 ### Requirement: Remapeo de controles
 El menú SHALL permitir asignar un botón de la consola a una tecla o a un botón del mando pulsándolo, por jugador, y MUST avisar si la tecla ya está usada por otro botón.
@@ -52,3 +60,10 @@ La configuración SHALL incluir volumen maestro (0 a 100) y dispositivo de salid
 #### Scenario: Volumen
 - **WHEN** el volumen maestro se pone a 50
 - **THEN** la salida de audio tiene la mitad de amplitud que a 100
+
+### Requirement: Contador de fotogramas
+La configuración SHALL incluir la opción `fps` (`on`/`off`, por defecto `off`) que muestra en una esquina de la imagen los fotogramas por segundo, y MUST poder cambiarse desde el menú.
+
+#### Scenario: Mostrar el contador
+- **WHEN** `fps = on` en `config.ini`
+- **THEN** la imagen muestra el contador sobre el juego y, con `off`, la imagen es idéntica al búfer de la consola
