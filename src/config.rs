@@ -44,6 +44,17 @@
 //! addr = "00:8400"
 //! m = 16
 //! x = 16
+//!
+//! [game]                   # identity of the profile; optional for `discover`/`codegen --config`, required by snes-port
+//! id = "alttp_usa"
+//! name = "The Legend of Zelda: A Link to the Past (USA)"
+//! crc32 = "777AAC2F"       # of the ROM without copier header
+//!
+//! [[hook]]                 # a C function of the game (games/<id>/*.c) called from a recompiled function
+//! addr = "06:9271"         # entry of a function of the graph
+//! kind = "before"          # before = on entry, after = before each return, replace = instead of the body
+//! call = "my_hook"         # void my_hook(Cpu *c)
+//! ret = "rts"              # only with replace: how the function returns (rts or rtl)
 //! ```
 
 use crate::disasm::Flags;
@@ -75,6 +86,26 @@ struct RawConfig {
     no_return: Vec<RawAddr>,
     #[serde(default)]
     assume: Vec<RawAssume>,
+    game: Option<RawGame>,
+    #[serde(default)]
+    hook: Vec<RawHook>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawGame {
+    id: String,
+    name: String,
+    crc32: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHook {
+    addr: String,
+    kind: HookKind,
+    call: String,
+    ret: Option<HookReturn>,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +164,40 @@ pub enum TableKind {
     Split,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookKind {
+    Before,
+    After,
+    Replace,
+}
+
+/// How a function whose body a hook replaces returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookReturn {
+    Rts,
+    Rtl,
+}
+
+/// A call to a C function of the game from the recompiled function that starts at `addr`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hook {
+    pub addr: u32,
+    pub kind: HookKind,
+    pub call: String,
+    /// Set for `Replace`, and only then.
+    pub ret: Option<HookReturn>,
+}
+
+/// Who a profile is: the `[game]` section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameId {
+    pub id: String,
+    pub name: String,
+    pub crc32: u32,
+}
+
 /// Locations of the byte arrays of a `split` table.
 #[derive(Debug, Clone, Copy)]
 pub struct Split {
@@ -180,6 +245,8 @@ pub struct Config {
     pub no_return: HashSet<u32>,
     pub not_code: HashSet<u32>,
     pub assume: HashMap<u32, Flags>,
+    pub game: Option<GameId>,
+    pub hooks: Vec<Hook>,
 }
 
 fn width(v: Option<u8>, what: &str) -> Result<bool, String> {
@@ -274,6 +341,32 @@ impl Config {
             cfg.assume.insert(addr, Flags { m: width(a.m, &a.addr)?, x: width(a.x, &a.addr)? });
         }
 
+        if let Some(g) = raw.game {
+            let hex = g.crc32.trim().trim_start_matches("0x");
+            let crc32 = u32::from_str_radix(hex, 16).ok().filter(|_| hex.len() == 8).ok_or_else(|| format!("[game]: crc32 must be 8 hex digits, got {:?}", g.crc32))?;
+            if g.id.is_empty() || !g.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return Err(format!("[game]: id must be letters, digits, `_` or `-`, got {:?}", g.id));
+            }
+            cfg.game = Some(GameId { id: g.id, name: g.name, crc32 });
+        }
+
+        for h in raw.hook {
+            let addr = parse_addr(&h.addr)?;
+            let ident = h.call.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && h.call.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !ident {
+                return Err(format!("hook at {}: call must be a C identifier, got {:?}", h.addr, h.call));
+            }
+            match (h.kind, h.ret) {
+                (HookKind::Replace, None) => return Err(format!("hook at {}: replace needs `ret` (rts or rtl)", h.addr)),
+                (HookKind::Before | HookKind::After, Some(_)) => return Err(format!("hook at {}: only replace can set `ret`", h.addr)),
+                _ => {}
+            }
+            if cfg.hooks.iter().any(|o| o.addr == addr && o.kind == h.kind) {
+                return Err(format!("duplicate {:?} hook for {}", h.kind, h.addr));
+            }
+            cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret });
+        }
+
         Ok(cfg)
     }
 }
@@ -354,6 +447,59 @@ addr=\"00:8781\"").is_err());
         assert_eq!(cfg.inline_helpers.len(), 2);
         assert!(cfg.tables.contains_key(&0x00_80C6));
         assert!(cfg.tables.len() > 60);
+    }
+
+    #[test]
+    fn parses_game_and_hooks() {
+        let cfg = Config::parse(
+            "[game]
+id=\"g1\"
+name=\"Game One\"
+crc32=\"0000ABCD\"
+[[hook]]
+addr=\"00:8000\"
+kind=\"before\"
+call=\"on_reset\"
+[[hook]]
+addr=\"00:8000\"
+kind=\"replace\"
+call=\"f2\"
+ret=\"rtl\"",
+        )
+        .unwrap();
+        assert_eq!(cfg.game, Some(GameId { id: "g1".into(), name: "Game One".into(), crc32: 0xABCD }));
+        assert_eq!(cfg.hooks.len(), 2);
+        assert_eq!(cfg.hooks[1], Hook { addr: 0x8000, kind: HookKind::Replace, call: "f2".into(), ret: Some(HookReturn::Rtl) });
+        assert!(Config::parse("[[entry]]
+addr=\"00:8000\"").unwrap().game.is_none());
+    }
+
+    #[test]
+    fn rejects_bad_game_and_hooks() {
+        let hook = |extra: &str| format!("[[hook]]
+addr=\"00:8000\"
+call=\"f\"
+{extra}");
+        assert!(Config::parse(&hook("kind=\"replace\"")).is_err(), "replace without ret");
+        assert!(Config::parse(&hook("kind=\"before\"
+ret=\"rts\"")).is_err(), "ret without replace");
+        assert!(Config::parse("[[hook]]
+addr=\"00:8000\"
+kind=\"before\"
+call=\"a b\"").is_err(), "not an identifier");
+        assert!(Config::parse(&format!("{}
+{}", hook("kind=\"before\""), hook("kind=\"before\""))).is_err(), "duplicate");
+        assert!(Config::parse("[game]
+id=\"g\"
+name=\"n\"
+crc32=\"12\"").is_err(), "short crc");
+        assert!(Config::parse("[game]
+id=\"g\"
+name=\"n\"").is_err(), "missing crc");
+        assert!(Config::parse("[game]
+id=\"a/b\"
+name=\"n\"
+crc32=\"0000ABCD\"").is_err(), "bad id");
     }
 
     #[test]

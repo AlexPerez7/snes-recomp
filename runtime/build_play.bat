@@ -12,7 +12,9 @@ where cl >nul 2>&1 || (
   exit /b 2
 )
 if not exist obj mkdir obj
-cl /nologo /MP /O2 /TC /std:c11 /DSNES_RT_TICK /I. /I"%SDL2_DIR%\include" rom_*.c snes_entry.c play\snes_play.c /Fe:snes_play.exe /Fo:obj\ /link /LIBPATH:"%SDL2_DIR%\lib\x64" SDL2.lib || exit /b 1
+set "GAMEC="
+if exist game\*.c set "GAMEC=game\*.c /I game"
+cl /nologo /MP /O2 /TC /std:c11 /DSNES_RT_TICK /I. /I"%SDL2_DIR%\include" rom_*.c snes_entry.c play\snes_play.c %GAMEC% /Fe:snes_play.exe /Fo:obj\ /link /LIBPATH:"%SDL2_DIR%\lib\x64" SDL2.lib || exit /b 1
 copy /y "%SDL2_DIR%\lib\x64\SDL2.dll" . >nul
 echo built snes_play.exe
 exit /b 0

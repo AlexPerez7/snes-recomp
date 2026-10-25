@@ -30,14 +30,15 @@ fn fail<T>(code: i32, message: impl Into<String>) -> Result<T, Failure> {
 
 pub const USAGE: &str = "\
 usage:
-  snes-port <rom> [--cache <dir>] [--no-launch] [--fast] [--download-compiler] [-- <game options>]
+  snes-port <rom> [--cache <dir>] [--no-launch] [--fast] [--download-compiler] [--game <profile.toml>]... [-- <game options>]
   snes-port clean [<rom>] [--cache <dir>]
 
 Builds the game from your own ROM, on this machine, the first time (a few minutes) and starts it; the next times
 it starts at once. Nothing derived from the ROM leaves this machine: the generated C and the executable live in the
 cache (%LOCALAPPDATA%\\snes-port on Windows) and the executable reads your ROM from where it is. You can also drag
 the ROM onto snes-port.exe, or open it without arguments (double click) to choose the ROM in a file dialog.
---no-launch builds and does not start the game. --fast builds with fewer optimisations (quicker, slower game).
+--game adds a game profile (a .toml, and the folder of C code next to it with the same name); it wins over the built-in one
+for the same ROM. --no-launch builds and does not start the game. --fast builds with fewer optimisations (quicker, slower game).
 Everything after `--` goes to the game (see its options in the README).
 clean deletes the cache of that ROM, or the whole cache; it never touches ROMs or saved games.
 Needs a C compiler (Visual Studio Build Tools, clang or gcc) and the SDL2 development files (SDL2_DIR, or the sdl2
@@ -74,10 +75,18 @@ pub fn version_tag(parts: &[&str]) -> String {
     format!("{:08x}", crc32(&all))
 }
 
-/// The tag of this program: its version, the runtimes and game configurations it embeds, and the source of the
-/// generator, so that a new generator or runtime rebuilds what an older one left in the cache.
-pub fn current_version(fast: bool) -> String {
-    let configs: Vec<&str> = games::KNOWN.iter().map(|g| g.config).collect();
+/// The tag of this program: its version, the runtimes it embeds, the source of the generator and the profile of the
+/// game (its configuration and C code), so that a new generator, runtime or profile rebuilds what an older one left
+/// in the cache.
+pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> String {
+    let mut game: Vec<&str> = Vec::new();
+    if let Some(p) = profile {
+        game.push(&p.config);
+        for s in &p.sources {
+            game.push(&s.name);
+            game.push(&s.text);
+        }
+    }
     let mut parts = vec![
         env!("CARGO_PKG_VERSION"),
         if fast { "fast" } else { "full" },
@@ -95,7 +104,7 @@ pub fn current_version(fast: bool) -> String {
         include_str!("opcodes.rs"),
         include_str!("config.rs"),
     ];
-    parts.extend(configs);
+    parts.extend(game);
     version_tag(&parts)
 }
 
@@ -170,13 +179,33 @@ pub fn clean(cache: &Path, crc: Option<u32>) -> Result<Vec<PathBuf>, String> {
 
 /// Generates the C of the game into `dir`.
 fn generate(rom: &Rom, profile: &games::GameProfile, dir: &Path) -> Result<(), String> {
-    let cfg = Config::parse(profile.config).map_err(|e| format!("games/{}.toml: {e}", profile.id))?;
+    let cfg = Config::parse(&profile.config).map_err(|e| format!("{}: {e}", profile.origin))?;
     let roots = crate::default_roots(rom, &cfg);
     let d = discover::discover(rom, &cfg, &roots);
     let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = graph::Graph::build(&d, &root_addrs);
-    let out = codegen::Emitter::new(&d, &g).generate_all();
-    crate::write_sources(&out, dir).map(|_| ())
+    let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks).map_err(|e| format!("{}: {e}", profile.origin))?.generate_all();
+    crate::write_sources(&out, dir).map(|_| ())?;
+    write_game_sources(profile, &cfg, dir)
+}
+
+/// Copies the C code of the game into `dir/game` and checks that every hook has its function there.
+fn write_game_sources(profile: &games::GameProfile, cfg: &Config, dir: &Path) -> Result<(), String> {
+    for h in &cfg.hooks {
+        let defined = profile.sources.iter().any(|s| s.name.ends_with(".c") && s.text.contains(&format!("void {}(", h.call)));
+        if !defined {
+            return Err(format!("{}: the hook at {:06X} calls `{}`, which no .c file of the game defines (void {}(Cpu *c))", profile.origin, h.addr, h.call, h.call));
+        }
+    }
+    if profile.sources.is_empty() {
+        return Ok(());
+    }
+    let game = dir.join("game");
+    std::fs::create_dir_all(&game).map_err(|e| format!("{}: {e}", game.display()))?;
+    for s in &profile.sources {
+        std::fs::write(game.join(&s.name), &s.text).map_err(|e| format!("{}: {e}", s.name))?;
+    }
+    Ok(())
 }
 
 pub fn exe_name() -> &'static str {
@@ -206,19 +235,34 @@ fn tail(text: &str) -> String {
     lines[lines.len().saturating_sub(30)..].join("\n")
 }
 
+/// Names of the `.c` files in `dir/game`.
+fn game_c_files(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir.join("game"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".c"))
+        .collect();
+    names.sort();
+    names
+}
+
 /// Compiles the C in `dir` into `dir/game[.exe]` (and copies SDL2.dll next to it on Windows).
 fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<(), String> {
+    let has_game = dir.join("game").is_dir();
     match compiler {
         Compiler::Msvc(vcvars) => {
             let env = toolchain::msvc_env(vcvars)?;
             let lib = sdl.join("lib").join("x64");
             let bat = format!(
                 "@echo off\r\ncd /d \"{}\"\r\nif not exist obj mkdir obj\r\n\
-                 cl /nologo /MP {} /TC /std:c11 /D_CRT_SECURE_NO_WARNINGS /DSNES_RT_TICK /I. /I\"{}\" rom_*.c snes_entry.c play\\snes_play.c \
+                 cl /nologo /MP {} /TC /std:c11 /D_CRT_SECURE_NO_WARNINGS /DSNES_RT_TICK /I. /I\"{}\" rom_*.c snes_entry.c play\\snes_play.c{} \
                  /Fe:{} /Fo:obj\\ /link /LIBPATH:\"{}\" SDL2.lib >build.log 2>&1\r\nif errorlevel 1 (type build.log & exit /b 1)\r\n",
                 dir.display(),
                 if fast { "/O1" } else { "/O2" },
                 sdl.join("include").display(),
+                if has_game { " game\\*.c /I game" } else { "" },
                 exe_name(),
                 lib.display()
             );
@@ -248,9 +292,10 @@ fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<()
                 .filter(|n| n.ends_with(".c") && (n.starts_with("rom_") || n == "snes_entry.c"))
                 .collect();
             sources.push("play/snes_play.c".to_string());
+            sources.extend(game_c_files(dir).into_iter().map(|n| format!("game/{n}")));
             let out = Command::new(tcc)
                 .current_dir(dir)
-                .args(["-DDECLSPEC=", "-DSDLCALL=", "-D_CRT_SECURE_NO_WARNINGS", "-DSNES_RT_TICK", "-I."])
+                .args(["-DDECLSPEC=", "-DSDLCALL=", "-D_CRT_SECURE_NO_WARNINGS", "-DSNES_RT_TICK", "-I.", "-Igame"])
                 .arg(format!("-I{}", sdl.join("include").display()))
                 .args(&sources)
                 .args(["-L.", "-lSDL2", "-o"])
@@ -281,6 +326,7 @@ fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<()
                 .filter(|p| p.extension().is_some_and(|x| x == "c") && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rom_") || n == "snes_entry.c"))
                 .collect();
             sources.push(dir.join("play").join("snes_play.c"));
+            sources.extend(game_c_files(dir).into_iter().map(|n| dir.join("game").join(n)));
             std::fs::create_dir_all(dir.join("obj")).map_err(|e| e.to_string())?;
             let jobs = std::thread::available_parallelism().map_or(2, |n| n.get());
             let next = std::sync::atomic::AtomicUsize::new(0);
@@ -293,7 +339,7 @@ fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<()
                         let obj = dir.join("obj").join(format!("{i}.o"));
                         let out = Command::new(cc)
                             .current_dir(dir)
-                            .args(["-std=c11", if fast { "-O1" } else { "-O2" }, "-DSNES_RT_TICK", "-I.", "-c"])
+                            .args(["-std=c11", if fast { "-O1" } else { "-O2" }, "-DSNES_RT_TICK", "-I.", "-Igame", "-c"])
                             .args(&cflags)
                             .arg(src)
                             .arg("-o")
@@ -462,6 +508,13 @@ pub struct Options {
     /// Capture the game's output instead of passing it through (tests).
     pub capture: bool,
     pub game_args: Vec<String>,
+    /// Profiles given with `--game`.
+    pub games: Vec<PathBuf>,
+}
+
+/// The built-in profiles with those of `--game` on top.
+fn catalog(opts: &Options) -> Result<games::Catalog, String> {
+    games::builtin().clone().with_external(games::load_external(&opts.games)?)
 }
 
 /// What a run of the command did.
@@ -478,15 +531,19 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         Ok(r) => r,
         Err(e) => return fail(1, e),
     };
+    let catalog = match catalog(opts) {
+        Ok(c) => c,
+        Err(e) => return fail(1, format!("error: {e}")),
+    };
     let crc = rom.crc32();
-    let Some(profile) = games::identify(crc) else {
+    let Some(profile) = catalog.identify(crc) else {
         let mut m = format!("error: unknown ROM: CRC32 {crc:08X}\nSupported games:\n");
-        for g in games::KNOWN {
+        for g in catalog.profiles() {
             m.push_str(&format!("  {} (CRC32 {:08X})\n", g.name, g.crc32));
         }
         return fail(EXIT_UNKNOWN_ROM, m);
     };
-    let version = current_version(opts.fast);
+    let version = current_version(opts.fast, Some(profile));
     let name = cache_name(crc, &version);
     let prefix = format!("{crc:08x}-");
     let mut build = |tmp: &Path| -> Result<(), String> {
@@ -551,7 +608,11 @@ fn cache_has(cache: &Path, name: &str) -> bool {
 fn needs_no_build(opts: &Options) -> bool {
     let Ok(rom) = Rom::load(&opts.rom) else { return true };
     let crc = rom.crc32();
-    games::identify(crc).is_none() || cache_has(&opts.cache, &cache_name(crc, &current_version(opts.fast)))
+    let Ok(catalog) = catalog(opts) else { return true };
+    match catalog.identify(crc) {
+        None => true,
+        Some(p) => cache_has(&opts.cache, &cache_name(crc, &current_version(opts.fast, Some(p)))),
+    }
 }
 
 /// The last resort when the machine has no C compiler: the portable one in the cache, or, if the user agrees
@@ -587,6 +648,7 @@ pub fn main(args: &[String]) -> i32 {
     let mut cache: Option<PathBuf> = None;
     let (mut launch, mut fast, mut clean_cmd, mut download_yes) = (true, false, false, false);
     let mut game_args = Vec::new();
+    let mut profiles: Vec<PathBuf> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -596,6 +658,13 @@ pub fn main(args: &[String]) -> i32 {
             }
             "--cache" => match it.next() {
                 Some(d) => cache = Some(PathBuf::from(d)),
+                None => {
+                    eprintln!("{USAGE}");
+                    return 1;
+                }
+            },
+            "--game" => match it.next() {
+                Some(f) => profiles.push(PathBuf::from(f)),
                 None => {
                     eprintln!("{USAGE}");
                     return 1;
@@ -655,7 +724,7 @@ pub fn main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let code = run_port(rom, cache, launch, fast, download_yes, game_args);
+    let code = run_port(rom, cache, launch, fast, download_yes, game_args, profiles);
     if launcher && code != 0 {
         eprintln!("
 Press Enter to close.");
@@ -682,10 +751,12 @@ fn pick_rom(cache: &Path) -> Option<PathBuf> {
     Some(chosen)
 }
 
-fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>) -> i32 {
+fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>, profiles: Vec<PathBuf>) -> i32 {
     // the game starts in its cache folder, so the ROM must not be a relative path
     let rom = std::path::absolute(&rom).unwrap_or(rom);
-    let opts = Options { rom, cache, launch, fast, capture: false, game_args };
+    // absolute for the same reason as the ROM
+    let games = profiles.into_iter().map(|p| std::path::absolute(&p).unwrap_or(p)).collect();
+    let opts = Options { rom, cache, launch, fast, capture: false, game_args, games };
     let mut compiler = toolchain::find();
     if compiler.is_none() && !needs_no_build(&opts) {
         compiler = portable_compiler(&opts.cache, download_yes, &mut std::io::stdin().lock());
@@ -760,8 +831,8 @@ mod tests {
         assert_ne!(base, version_tag(&["0.1.0", "runtime v2", "config v1"]));
         assert_ne!(base, version_tag(&["0.1.0", "runtime v1", "config v2"]));
         assert_ne!(version_tag(&["ab", "c"]), version_tag(&["a", "bc"]), "the parts are told apart");
-        assert_ne!(current_version(true), current_version(false), "a fast build is another build");
-        assert_eq!(current_version(false).len(), 8);
+        assert_ne!(current_version(true, None), current_version(false, None), "a fast build is another build");
+        assert_eq!(current_version(false, None).len(), 8);
     }
 
     /// 256 distinct-looking bytes per kilobyte: a stand-in ROM.
@@ -804,7 +875,7 @@ mod tests {
     }
 
     fn opts(rom: &Path, cache: &Path) -> Options {
-        Options { rom: rom.to_path_buf(), cache: cache.to_path_buf(), launch: true, fast: false, capture: true, game_args: vec![] }
+        Options { rom: rom.to_path_buf(), cache: cache.to_path_buf(), launch: true, fast: false, capture: true, game_args: vec![], games: vec![] }
     }
 
     #[test]
@@ -823,6 +894,106 @@ mod tests {
         std::fs::write(dir.join("tiny.sfc"), b"nope").unwrap();
         assert_eq!(build_port(&opts(&dir.join("tiny.sfc"), &cache), None, None).err().unwrap().code, 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_profile_given_with_game_identifies_a_rom_the_built_in_ones_do_not_know() {
+        let dir = temp("game-flag");
+        let rom: Vec<u8> = (0..0x8000u32).map(|i| (i.wrapping_mul(40503) >> 7) as u8).collect();
+        std::fs::write(dir.join("mystery.sfc"), &rom).unwrap();
+        std::fs::write(dir.join("mine.toml"), format!("[game]
+id=\"mine\"
+name=\"My Game\"
+crc32=\"{:08X}\"
+", crc32(&rom))).unwrap();
+        let mut o = opts(&dir.join("mystery.sfc"), &dir.join("cache"));
+        o.games = vec![dir.join("mine.toml")];
+        // it is no longer an unknown ROM: the build stops for lack of a compiler instead
+        let f = build_port(&o, None, None).err().expect("there is no compiler");
+        assert_eq!(f.code, EXIT_NO_TOOLCHAIN, "{}", f.message);
+        // and the games it lists include the profile
+        o.rom = dir.join("other.sfc");
+        std::fs::write(&o.rom, (0..0x8000u32).map(|i| (i.wrapping_mul(7) >> 3) as u8).collect::<Vec<u8>>()).unwrap();
+        let f = build_port(&o, None, None).err().unwrap();
+        assert_eq!(f.code, EXIT_UNKNOWN_ROM);
+        assert!(f.message.contains("My Game") && f.message.contains("A Link to the Past"), "{}", f.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_or_incomplete_game_profile_stops_with_its_name_and_creates_nothing() {
+        let dir = temp("game-flag-bad");
+        std::fs::write(dir.join("a.sfc"), fake_rom()).unwrap();
+        let cache = dir.join("cache");
+        let mut o = opts(&dir.join("a.sfc"), &cache);
+        o.games = vec![dir.join("absent.toml")];
+        let f = build_port(&o, None, None).err().unwrap();
+        assert!(f.code != 0 && f.message.contains("absent.toml"), "{}", f.message);
+        std::fs::write(dir.join("nogame.toml"), "[[entry]]
+addr=\"00:8000\"
+").unwrap();
+        o.games = vec![dir.join("nogame.toml")];
+        let f = build_port(&o, None, None).err().unwrap();
+        assert!(f.code != 0 && f.message.contains("nogame.toml") && f.message.contains("[game]"), "{}", f.message);
+        assert!(!cache.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_c_code_of_the_game_is_copied_next_to_the_generated_files_and_a_hook_needs_its_function() {
+        let dir = temp("game-c");
+        let toml = "[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n[[hook]]\naddr=\"00:8000\"\nkind=\"before\"\ncall=\"my_hook\"\n";
+        let src = |t: &str| vec![games::Source { name: "hooks.c".into(), text: t.into() }, games::Source { name: "hooks.h".into(), text: "/* h */".into() }];
+        let cfg = Config::parse(toml).unwrap();
+        // the function is missing: the error names the hook and the function
+        let bad = games::GameProfile::from_text(toml, src("void other(Cpu *c) {}"), "g.toml").unwrap();
+        let e = write_game_sources(&bad, &cfg, &dir).unwrap_err();
+        assert!(e.contains("my_hook") && e.contains("008000"), "{e}");
+        assert!(!dir.join("game").exists(), "nothing is written when a hook has no function");
+        let good = games::GameProfile::from_text(toml, src("void my_hook(Cpu *c) { (void)c; }"), "g.toml").unwrap();
+        write_game_sources(&good, &cfg, &dir).unwrap();
+        assert_eq!(game_c_files(&dir), ["hooks.c"]);
+        assert!(dir.join("game").join("hooks.h").exists());
+        // a profile without C code leaves no folder
+        let none = games::GameProfile::from_text("[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n", vec![], "g.toml").unwrap();
+        let dir2 = temp("game-c-none");
+        write_game_sources(&none, &Config::default(), &dir2).unwrap();
+        assert!(!dir2.join("game").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn bytes_of_the_rom_in_the_c_code_of_a_game_are_found_by_the_check_on_the_build() {
+        let dir = temp("game-c-rom");
+        let rom = fake_rom();
+        let literal: Vec<String> = rom[0x100..0x120].iter().map(|b| format!("0x{b:02X}")).collect();
+        let text = format!("static const unsigned char x[] = {{{}}};", literal.join(", "));
+        let toml = "[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n";
+        let p = games::GameProfile::from_text(toml, vec![games::Source { name: "hooks.c".into(), text }], "g.toml").unwrap();
+        write_game_sources(&p, &Config::default(), &dir).unwrap();
+        let (file, _, at) = find_rom_bytes_at(&rom, &dir).expect("the copy of the ROM is detected inside game/");
+        assert!(file.ends_with("hooks.c") && at == 0x100, "{file:?} {at}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_version_follows_the_profile_and_its_c_code() {
+        let toml = "[game]
+id=\"g\"
+name=\"G\"
+crc32=\"0000ABCD\"
+";
+        let src = |t: &str| vec![games::Source { name: "hooks.c".into(), text: t.into() }];
+        let a = games::GameProfile::from_text(toml, src("int a;"), "g.toml").unwrap();
+        let b = games::GameProfile::from_text(toml, src("int b;"), "g.toml").unwrap();
+        let c = games::GameProfile::from_text(&format!("{toml}[[entry]]
+addr=\"00:8000\"
+"), src("int a;"), "g.toml").unwrap();
+        let v = |p| current_version(false, Some(p));
+        assert_eq!(v(&a), v(&a));
+        assert_ne!(v(&a), v(&b), "another C file is another build");
+        assert_ne!(v(&a), v(&c), "another configuration is another build");
     }
 
     #[test]

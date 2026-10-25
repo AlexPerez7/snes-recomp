@@ -1,6 +1,11 @@
 # A Link to the Past (USA), CRC32 777AAC2F
 # See src/config.rs for the format.
 
+[game]
+id = "alttp_usa"
+name = "The Legend of Zelda: A Link to the Past (USA)"
+crc32 = "777AAC2F"
+
 [[entry]]
 addr = "00:8000"
 name = "reset"
@@ -730,3 +735,11 @@ at = "06:CBD0"
 count = 4
 size = 2
 bias = 1
+
+# --- Mejoras propias del juego (código C en games/alttp_usa/) ---
+
+# Mensajes: con R pulsado el texto sale a un carácter por fotograma (dialog.c).
+[[hook]]
+addr = "0E:CA6C"
+kind = "before"
+call = "alttp_dialog_speed"
