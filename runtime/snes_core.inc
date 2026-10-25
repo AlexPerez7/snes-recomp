@@ -485,6 +485,21 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
             case 0x2181: wram_port = (wram_port & 0x1FF00) | v; break;
             case 0x2182: wram_port = (wram_port & 0x100FF) | ((uint32_t)v << 8); break;
             case 0x2183: wram_port = (wram_port & 0x0FFFF) | ((uint32_t)(v & 1) << 16); break;
+            case 0x4203: { /* unsigned 8x8 multiply: $4202 * $4203 -> $4216/$4217 (the hardware takes 8 cycles; here it is instant) */
+                uint16_t p = (uint16_t)(hw[0x4202] * v);
+                hw[0x4216] = (uint8_t)p;
+                hw[0x4217] = (uint8_t)(p >> 8);
+                break;
+            }
+            case 0x4206: { /* unsigned 16/8 divide: $4204/$4205 / $4206 -> quotient $4214/$4215, remainder $4216/$4217 */
+                uint16_t n = (uint16_t)(hw[0x4204] | hw[0x4205] << 8), q, r;
+                if (v) { q = (uint16_t)(n / v); r = (uint16_t)(n % v); } else { q = 0xFFFF; r = n; }
+                hw[0x4214] = (uint8_t)q;
+                hw[0x4215] = (uint8_t)(q >> 8);
+                hw[0x4216] = (uint8_t)r;
+                hw[0x4217] = (uint8_t)(r >> 8);
+                break;
+            }
             case 0x420B:
                 for (i = 0; i < 8; i++) if (v >> i & 1) run_dma(i);
                 break;

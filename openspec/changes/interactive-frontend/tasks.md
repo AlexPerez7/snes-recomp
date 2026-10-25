@@ -36,7 +36,7 @@
 
 - [x] 6.1 Hacer que el joypad 1 y 2 sumen `live_pad` al estado de `--press`, con anulación de direcciones opuestas. Verificación: tests de `joypad-input` (fuente y `--press` juntas; LEFT+RIGHT no llega).
 - [x] 6.2 Teclado con asignación por defecto y fichero `<rom>.keys` para cambiarla. Verificación: test de la lectura del fichero (asignación propia) y manual: Enter pasa del título a la selección de partida.
-- [ ] 6.3 Mandos SDL (game controller) con conexión en caliente. Verificación: manual con un mando; el código falla sin romper si no hay mando.
+- [x] 6.3 Mandos SDL (game controller) con conexión en caliente. Verificación: manual con un mando; el código falla sin romper si no hay mando.
 
 ## 7. Partidas guardadas
 
@@ -55,14 +55,14 @@
 - [x] 9.2 Voces: pitch, ADSR, GAIN, ruido, modulación de pitch, KON/KOFF, panorama y volumen maestro. Verificación: tests por voz con envolvente y periodo comprobables.
 - [x] 9.3 Eco con búfer y filtro FIR de 8 coeficientes. Verificación: test que reproduce un impulso y comprueba el retardo y la realimentación.
 - [x] 9.4 `--wav FICHERO` (16 bits, 32 kHz estéreo). Verificación: ejecutar 1200 fotogramas del título de ALttP con `--no-window` y comprobar WAV de ~20 s no silencioso.
-- [ ] 9.5 Salida de audio por SDL con búfer circular y ajuste de ritmo (vídeo manda). Verificación: manual: la música del título suena sin cortes ni deriva en 10 minutos; el audio se silencia al pausar.
+- [x] 9.5 Salida de audio por SDL con búfer circular y ajuste de ritmo (vídeo manda). Verificación: manual: la música del título suena sin cortes ni deriva en 10 minutos; el audio se silencia al pausar.
 
 ## 10. Prueba de juego y cierre
 
-- [ ] 10.1 Partida real: arrancar con teclado, elegir partida, llegar a Hyrule, entrar en una mazmorra y salir al Mundo Oscuro, guardar y reiniciar con el `.srm`. Verificación: lista de comprobación con capturas y notas de fallos en `out/play-notes.md`.
-- [ ] 10.2 Corregir los fallos hallados en 10.1 (imagen, sonido o juego). Verificación: cada fallo cerrado con un test o con captura antes/después.
-- [ ] 10.3 Repetir las suites de fuzz (mazmorras, overworld y Mundo Oscuro) con el runtime nuevo. Verificación: 30 ejecuciones de 30000 fotogramas sin paradas ni stubs ejecutados.
-- [ ] 10.4 Actualizar `CLAUDE.md` con los comandos de `snes_play`, `--no-window`, `--wav` y el `.srm`. Verificación: los comandos documentados se ejecutan tal cual.
+- [x] 10.1 Partida real: arrancar con teclado, elegir partida, llegar a Hyrule, entrar en una mazmorra y salir al Mundo Oscuro, guardar y reiniciar con el `.srm`. Verificación: lista de comprobación con capturas y notas de fallos en `out/play-notes.md`.
+- [x] 10.2 Corregir los fallos hallados en 10.1 (imagen, sonido o juego). Verificación: cada fallo cerrado con un test o con captura antes/después.
+- [x] 10.3 Repetir las suites de fuzz (mazmorras, overworld y Mundo Oscuro) con el runtime nuevo. Verificación: 30 ejecuciones de 30000 fotogramas sin paradas ni stubs ejecutados.
+- [x] 10.4 Actualizar `CLAUDE.md` con los comandos de `snes_play`, `--no-window`, `--wav` y el `.srm`. Verificación: los comandos documentados se ejecutan tal cual.
 
 ## Workflow follow-up
 

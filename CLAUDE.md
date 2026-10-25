@@ -22,6 +22,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 # Jugar con ventana, teclado/mando, sonido y partidas guardadas (necesita el paquete de desarrollo SDL2 para Visual C++, SDL2-devel-x.y.z-VC.zip, descomprimido en out\sdl2 o apuntado por SDL2_DIR):
 #   cd out\rom ; set SDL2_DIR=...\SDL2-2.30.9 ; build_play.bat   # compila snes_play.exe y copia SDL2.dll (codegen --all escribe build_play.bat y play\snes_play.c)
 #   snes_play.exe ..\..\roms\alttp_usa.sfc [--scale 3] [--fullscreen] [--mute] [--wav F.wav] [--stats]
+#   Sin ROM (doble clic o sin argumentos) abre el diálogo de Windows para elegirla.
 #   Teclas: flechas, X=B, Z=Y, S=A, A=X, Q=L, W=R, Intro=START, Mayús dcha=SELECT; F11 pantalla completa, P pausa, Tab acelera, F10 captura PNG, Esc sale. --print-keys lista la asignación; un fichero <rom>.keys (líneas "Space = A") la cambia. Cualquier mando SDL (hot-plug) también juega.
 #   La SRAM se guarda en <rom>.srm junto a la ROM (cada ~1 s si cambia y al salir) y se recarga al arrancar.
 #   Sin ventana (tests): snes_play.exe <rom> --no-window --frames N [--hold BOTONES] [--press BOTONES@A-B] [--screenshot F.png] [--wav F.wav]

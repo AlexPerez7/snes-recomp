@@ -19,6 +19,11 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 #include "snes_core.inc"
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#pragma comment(lib, "comdlg32.lib")
+#endif
 
 static int opt_no_window, opt_fullscreen, opt_scale = 3;
 static SDL_Window *win;
@@ -418,9 +423,27 @@ static int open_window(void) {
     return 1;
 }
 
+/* Without a ROM argument, asks for one with the system's file dialog (Windows only). */
+static const char *pick_rom(void) {
+#ifdef _WIN32
+    static char buf[MAX_PATH];
+    OPENFILENAMEA ofn;
+    memset(&ofn, 0, sizeof ofn);
+    buf[0] = 0;
+    ofn.lStructSize = sizeof ofn;
+    ofn.lpstrFilter = "SNES ROM (*.sfc;*.smc)\0*.sfc;*.smc\0All files\0*.*\0";
+    ofn.lpstrFile = buf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = "Select a SNES ROM";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) return buf;
+#endif
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     const char *path = NULL;
-    int i;
+    int i, bad = 0;
     max_frames = 0xFFFFFFFFu;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = (uint32_t)strtoul(argv[++i], NULL, 10);
@@ -433,13 +456,14 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--fullscreen")) opt_fullscreen = 1;
         else if (!strcmp(argv[i], "--print-keys")) opt_print_keys = 1;
         else if (!strcmp(argv[i], "--no-window")) opt_no_window = 1;
-        else if (!strcmp(argv[i], "--press") && i + 1 < argc) { if (!parse_press(argv[++i])) { path = NULL; break; } }
-        else if (!strcmp(argv[i], "--hold") && i + 1 < argc) { int m = parse_buttons(argv[++i]); if (m < 0) { path = NULL; break; } held |= (uint16_t)m; }
-        else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { path = NULL; break; } }
+        else if (!strcmp(argv[i], "--press") && i + 1 < argc) { if (!parse_press(argv[++i])) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--hold") && i + 1 < argc) { int m = parse_buttons(argv[++i]); if (m < 0) { bad = 1; break; } held |= (uint16_t)m; }
+        else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { bad = 1; break; } }
         else if (argv[i][0] != '-' && !path) path = argv[i];
-        else { path = NULL; break; }
+        else { bad = 1; break; }
     }
-    if (!path || max_frames == 0 || frame_len == 0 || opt_scale < 1) {
+    if (!bad && !path && !opt_no_window && !opt_print_keys) path = pick_rom();
+    if (bad || !path || max_frames == 0 || frame_len == 0 || opt_scale < 1) {
         fprintf(stderr, "usage: %s <rom> [--scale N] [--fullscreen] [--no-window] [--frames N] [--screenshot FILE]\n"
                         "       [--wav FILE] [--frame-blocks N] [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n", argv[0]);
         return 2;

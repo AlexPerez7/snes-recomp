@@ -2162,3 +2162,17 @@ fn mode_7_shares_the_priority_with_sprites() {
     let Some(high) = case(2, "rd-m7-spr2") else { return };
     assert_eq!(high, rgb(BLUE), "sprites of priority 2 are in front of BG1");
 }
+
+#[test]
+fn hardware_multiply_and_divide_leave_their_results_in_the_registers() {
+    let code = prog(&[
+        st(0x25, 0x4202), st(0x37, 0x4203), mv(0x4216, 0x10), mv(0x4217, 0x11), // 37 * 55 = $07F3
+        st(0x34, 0x4204), st(0x12, 0x4205), st(7, 0x4206), // $1234 / 7 = 665 rest 5
+        mv(0x4214, 0x12), mv(0x4215, 0x13), mv(0x4216, 0x14), mv(0x4217, 0x15),
+        st(0, 0x4206), // by zero: quotient $FFFF, remainder = dividend
+        mv(0x4214, 0x16), mv(0x4215, 0x17), mv(0x4216, 0x18), mv(0x4217, 0x19),
+    ]);
+    let Some((r, mem, _)) = run_dump("hl-muldiv", &code, &[], true) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(&mem.wram[0x10..0x1A], &[0xF3, 0x07, 0x99, 0x02, 0x05, 0x00, 0xFF, 0xFF, 0x34, 0x12], "{}", r.out);
+}
