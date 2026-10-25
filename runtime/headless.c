@@ -17,7 +17,7 @@
  * ignored), after the NMI of the frame. Execution contexts: an RTI whose S is not the one its handler started
  * with returns to another context (a fibre of its own), as the ALttP intro does between NMI and IRQ.
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
- * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin and ppu_regs.bin. --screenshot draws
+ * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin, ppu_regs.bin and wram.bin. --screenshot draws
  * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
@@ -728,6 +728,7 @@ static void dump_memories(void) {
     dump_file("cgram.bin", cgram, sizeof cgram);
     dump_file("oam.bin", oam, sizeof oam);
     dump_file("ppu_regs.bin", hw + 0x2100, 0x40);
+    dump_file("wram.bin", wram, sizeof wram);
 }
 
 static void report(const char *cause) {
