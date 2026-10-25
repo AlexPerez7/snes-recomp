@@ -5,6 +5,8 @@ pub struct GameProfile {
     pub id: &'static str,
     pub name: &'static str,
     pub crc32: u32,
+    /// The text of `games/<id>.toml`, so the program needs no files next to it.
+    pub config: &'static str,
 }
 
 /// The USA release; a copier header is stripped before hashing.
@@ -12,6 +14,7 @@ pub const ALTTP_USA: GameProfile = GameProfile {
     id: "alttp_usa",
     name: "The Legend of Zelda: A Link to the Past (USA)",
     crc32: 0x777A_AC2F,
+    config: include_str!("../games/alttp_usa.toml"),
 };
 
 pub const KNOWN: &[GameProfile] = &[ALTTP_USA];

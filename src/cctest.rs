@@ -4,33 +4,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub enum Compiler {
-    /// A GCC-compatible driver on the PATH (or named by `CC`).
-    Gnu(String),
-    /// MSVC, through the `vcvars64.bat` of a Visual Studio installation.
-    Msvc(PathBuf),
-}
-
-fn works(cc: &str) -> bool {
-    Command::new(cc).arg("--version").output().is_ok_and(|o| o.status.success())
-}
-
-#[cfg(windows)]
-fn find_msvc() -> Option<PathBuf> {
-    let vswhere = r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
-    let out = Command::new(vswhere)
-        .args(["-latest", "-products", "*", "-property", "installationPath"])
-        .output()
-        .ok()?;
-    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let bat = PathBuf::from(root).join(r"VC\Auxiliary\Build\vcvars64.bat");
-    bat.exists().then_some(bat)
-}
-
-#[cfg(not(windows))]
-fn find_msvc() -> Option<PathBuf> {
-    None
-}
+pub use crate::toolchain::{find, Compiler};
+use crate::toolchain::msvc_env;
 
 /// The SDL2 development package for Visual C++ (the folder with `include` and `lib`): `SDL2_DIR`, or the first
 /// `out/sdl2/SDL2-*` of the project. `None` skips the tests that need SDL2.
@@ -43,25 +18,11 @@ pub fn sdl2_dir() -> Option<std::path::PathBuf> {
     std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| p.join("include").join("SDL.h").exists())
 }
 
-pub fn find() -> Option<Compiler> {
-    if let Ok(cc) = std::env::var("CC") {
-        if works(&cc) {
-            return Some(Compiler::Gnu(cc));
-        }
-    }
-    for cc in ["gcc", "clang", "cc"] {
-        if works(cc) {
-            return Some(Compiler::Gnu(cc.to_string()));
-        }
-    }
-    find_msvc().map(Compiler::Msvc)
-}
-
 /// Declares a skipped test and returns early from the caller when there is no compiler.
 #[macro_export]
 macro_rules! need_compiler {
     () => {
-        match $crate::cctest::find() {
+        match $crate::toolchain::find() {
             Some(cc) => cc,
             None => {
                 eprintln!("skipped: no C compiler found (set CC, or install gcc, clang or Visual Studio)");
@@ -150,26 +111,6 @@ impl Compiler {
         let run = Command::new("cmd").arg("/C").arg(&script).envs(env.iter().map(|(k, v)| (k, v))).output().map_err(|e| e.to_string())?;
         finish(run)
     }
-}
-
-/// The environment `vcvars64.bat` sets up, computed once: running that script in parallel from several
-/// tests is racy, so each build reuses the variables instead of calling it again.
-fn msvc_env(vcvars: &Path) -> Result<&'static Vec<(String, String)>, String> {
-    static ENV: std::sync::OnceLock<Result<Vec<(String, String)>, String>> = std::sync::OnceLock::new();
-    ENV.get_or_init(|| {
-        use std::os::windows::process::CommandExt;
-        let out = Command::new("cmd")
-            .raw_arg(format!("/S /C \"call \"{}\" >nul 2>nul && set\"", vcvars.display()))
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err("vcvars64.bat failed".to_string());
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        Ok(text.lines().filter_map(|l| l.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.trim_end().to_string())).collect())
-    })
-    .as_ref()
-    .map_err(|e| e.clone())
 }
 
 fn finish(out: std::process::Output) -> Result<String, String> {

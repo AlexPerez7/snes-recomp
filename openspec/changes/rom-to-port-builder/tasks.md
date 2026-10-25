@@ -2,15 +2,15 @@
 
 ## 1. Orquestación de la construcción
 
-- [ ] 1.1 Mover la detección de compilador de `src/cctest.rs` a un módulo común (`src/toolchain.rs`) usado por tests y por el builder. Verificación: `cargo test` sigue verde.
-- [ ] 1.2 Subcomando `snes-port <rom>`: identifica por CRC32 (cabecera de copiador incluida), genera el C en un directorio temporal de la caché y compila en paralelo por banco. Verificación: test con la ROM real que produce un `game.exe` que corre 300 fotogramas (se omite si falta ROM o compilador).
-- [ ] 1.3 Caché `<crc32>-<versión>` con escritura atómica y reconstrucción por cambio de versión. Verificación: test que comprueba que la segunda ejecución no invoca al generador y que cambiar el hash del runtime reconstruye.
-- [ ] 1.4 Códigos de salida y mensajes para ROM desconocida y sin compilador. Verificación: tests de ambos casos (código 2, CRC32 mostrado, nada creado en la caché).
+- [x] 1.1 Mover la detección de compilador de `src/cctest.rs` a un módulo común (`src/toolchain.rs`) usado por tests y por el builder. Verificación: `cargo test` sigue verde.
+- [x] 1.2 Subcomando `snes-port <rom>`: identifica por CRC32 (cabecera de copiador incluida), genera el C en un directorio temporal de la caché y compila en paralelo por banco. Verificación: test con la ROM real que produce un `game.exe` que corre 300 fotogramas (se omite si falta ROM o compilador).
+- [x] 1.3 Caché `<crc32>-<versión>` con escritura atómica y reconstrucción por cambio de versión. Verificación: test que comprueba que la segunda ejecución no invoca al generador y que cambiar el hash del runtime reconstruye.
+- [x] 1.4 Códigos de salida y mensajes para ROM desconocida y sin compilador. Verificación: tests de ambos casos (código 2, CRC32 mostrado, nada creado en la caché).
 
 ## 2. Garantías de lo derivado
 
-- [ ] 2.1 Comprobar que el ejecutable y los ficheros de la caché no contienen secuencias de 32 bytes de la ROM. Verificación: test que escanea la caché de prueba.
-- [ ] 2.2 Que el `.srm` vaya junto a la ROM y `snes-port clean [rom]` borre solo la caché. Verificación: test que crea un `.srm`, ejecuta `clean` y comprueba que el `.srm` y la ROM siguen.
+- [x] 2.1 Comprobar que el ejecutable y los ficheros de la caché no contienen secuencias de 32 bytes de la ROM. Verificación: test que escanea la caché de prueba.
+- [x] 2.2 Que el `.srm` vaya junto a la ROM y `snes-port clean [rom]` borre solo la caché. Verificación: test que crea un `.srm`, ejecuta `clean` y comprueba que el `.srm` y la ROM siguen.
 - [ ] 2.3 Garantizar que no hay conexiones de red cuando hay compilador local (la descarga solo existe en la ruta sin compilador). Verificación: revisión de código más test que ejecuta con la red del proceso inhabilitada en la ruta local.
 
 ## 3. Compilador de último recurso
