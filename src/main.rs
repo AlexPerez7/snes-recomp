@@ -10,9 +10,11 @@ mod graph;
 #[cfg(test)]
 mod headless;
 mod opcodes;
+mod port;
 mod rom;
 #[cfg(test)]
 mod spctest;
+mod toolchain;
 
 use config::{parse_addr, Config};
 use disasm::{fmt_addr, Flags};
@@ -165,8 +167,9 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// Writes `rom_BB.c` per bank, `snes_funcs.h` and `snes_rt.h` into `dir`, and summarises on stderr.
-fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<(), String> {
+/// Writes the C of the whole ROM and the runtime files into `dir`: `rom_BB.c` per bank, `snes_funcs.h`, `snes_rt.h`,
+/// the runtimes and `build_play.bat`. Returns the number of lines of generated C.
+fn write_sources(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<usize, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let write = |name: String, text: &str| {
         let path = dir.join(name);
@@ -188,6 +191,12 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
         write(format!("rom_{bank:02X}.c"), text)?;
         lines += text.lines().count();
     }
+    Ok(lines)
+}
+
+/// Writes the sources (see `write_sources`) and summarises on stderr.
+fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<(), String> {
+    let lines = write_sources(out, dir)?;
     let stubs = out.unsupported.len();
     eprintln!("functions: {} ({} generated, {} stubs)", out.functions, out.functions - stubs, stubs);
     let mut by_cause: std::collections::BTreeMap<codegen::Cause, usize> = Default::default();
@@ -302,8 +311,19 @@ fn print_instr(rom: &Rom, ins: &disasm::Instr) {
     println!("{}  {:<12}{}", fmt_addr(ins.addr), bytes.join(" "), ins.text());
 }
 
+/// True when the program was started as `snes-port` (the same program, under that name).
+fn started_as_port() -> bool {
+    std::env::args_os().next().and_then(|a| PathBuf::from(a).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase())).is_some_and(|s| s == "snes-port")
+}
+
 fn main() -> ExitCode {
-    match run(std::env::args().collect()) {
+    let args: Vec<String> = std::env::args().collect();
+    if started_as_port() || args.get(1).is_some_and(|a| a == "port") {
+        let skip = if started_as_port() { 1 } else { 2 };
+        let code = port::main(&args[skip.min(args.len())..]);
+        return ExitCode::from(code.clamp(0, 255) as u8);
+    }
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("{e}");

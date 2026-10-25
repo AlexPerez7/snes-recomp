@@ -51,6 +51,11 @@ impl Rom {
         Ok(Rom { data, had_copier_header })
     }
 
+    /// The image without the copier header.
+    pub fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
     pub fn len(&self) -> usize {
         self.data.len()
     }

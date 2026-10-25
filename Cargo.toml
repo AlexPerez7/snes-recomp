@@ -5,6 +5,16 @@ edition = "2021"
 description = "Static recompiler for SNES (65816) ROMs"
 publish = false
 
+[[bin]]
+name = "snes-recomp"
+path = "src/main.rs"
+
+# The same program under the name the users run: it behaves as `snes-recomp port` (see `started_as_port`).
+[[bin]]
+name = "snes-port"
+path = "src/main.rs"
+test = false
+
 [dependencies]
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.8"
