@@ -1,11 +1,13 @@
 # snes-recomp
 
-Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. Primer objetivo: *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`).
+Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. Este repositorio es el **motor** (público, MIT) y no incrusta ningún juego: cada juego es un perfil `games/<id>.toml` (+ `games/<id>/*.c`) en su propio repositorio. Primer juego: *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`), en el repositorio hermano `alttp-recomp` (`..\alttp-recomp` en esta máquina).
 
 ## Comandos
 
 ```
-cargo test                                          # tests unitarios
+cargo test                                          # tests unitarios; sin juego real se omiten los que lo necesitan
+$env:SNES_GAME_PROFILE="..\alttp-recomp\games\alttp_usa.toml"; $env:SNES_GAME_ROM="roms\alttp_usa.sfc"; cargo test   # también las pruebas con el juego real (se omiten si el CRC32 de la ROM no es el del perfil)
+cargo run --release -- scan roms/alttp_usa.sfc <carpeta>   # falla nombrando el fichero si algo de la carpeta lleva bytes de la ROM; úsalo antes de publicar
 cargo run --release --bin snes-port -- roms/alttp_usa.sfc [--cache D] [--no-launch] [--fast] [--download-compiler] [--game PERFIL.toml]... [-- OPCIONES_DEL_JUEGO]   # construye el juego desde la ROM del usuario (caché <crc32>-<versión>) y lo arranca; `snes-port clean [rom]` borra la caché
 powershell -File scripts\release.ps1   # out\release\snes-port-<v>-win64.zip; falla si hay .sfc/.smc/.srm o C generado
 cargo run --release -- info roms/alttp_usa.sfc      # cabecera, CRC y vectores
@@ -48,16 +50,16 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 - `runtime/headless.c` (conjunto): runtime sin vídeo (bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, `--wav` con el audio, bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, captura `--screenshot` del modo 1, los sprites y el color math, trazas `--trace-frames`/`--trace-reads`/`--watch`, latch de contadores H/V (`$2137`, `$213C/$213D`, `$213F`), IRQ vertical (`$4200` bits 4-5, `$4209/$420A`, `$4211`), contextos de ejecución (fibras; un `RTI` con otra `S` cambia de contexto, como hace la intro de ALttP entre NMI e IRQ), fotogramas por bloques, NMI, informe). `codegen --all` lo escribe como `snes_headless.c`, junto a `snes_entry.c`; la ROM se lee del disco, nunca se incrusta. Tests en `src/headless.rs`.
 - `src/cctest.rs`: solo para tests; busca `CC`/gcc/clang/cc o Visual Studio y compila C.
 - `src/port.rs`, `src/toolchain.rs`, `src/download.rs`: el constructor `snes-port` (segundo binario, el mismo `main.rs`; arranca como `port` si se llama así). `port.rs`: caché atómica (`<crc32>-<versión>`, directorio temporal + marca `.complete`), versión = CRC32 de runtime, configuraciones y generador, compilación (MSVC por `vcvars64.bat`, gcc/clang, TinyCC) y la comprobación de que ningún byte de la ROM acaba en lo construido. `toolchain.rs`: detección del compilador. `download.rs`: única red del programa (TinyCC con SHA-256 fijado, solo sin compilador local y con consentimiento); `network_requests()` lo comprueban los tests. `SNES_TCC_EXE` activa el test de construcción con TinyCC; `cargo test -- --ignored the_real_tinycc` prueba la descarga real.
-- `src/config.rs`: formato de `games/<id>.toml` (documentado al inicio del fichero): entradas, tablas, `[game]` (id, nombre, CRC32) y `[[hook]]`.
-- `src/games.rs`: perfiles de juego (un `.toml` con `[game]` más la carpeta hermana `games/<id>/` con su C propio). `Catalog` reúne los incrustados y los de `--game` (el externo gana con el mismo CRC32); ya no hay constantes por juego.
-- `games/alttp_usa.toml` y `games/alttp_usa/`: entradas, tablas de saltos y ganchos de A Link to the Past; `dialog.c` acelera los mensajes mientras se mantiene R (`0E:CA6C`, contador `$1CD5`). El C propio de un juego es código original y puede distribuirse; no deriva de la ROM.
+- `src/config.rs`: formato de los perfiles `games/<id>.toml` (documentado al inicio del fichero): entradas, tablas, `[game]` (id, nombre, CRC32) y `[[hook]]`.
+- `src/games.rs`: perfiles de juego (un `.toml` con `[game]` más la carpeta hermana `games/<id>/` con su C propio). `Catalog::discover` reúne los de `games/` del directorio actual y junto al ejecutable (`search_dirs()`; el actual manda) y los de `--game` (que mandan sobre todos); un `.toml` roto en una carpeta se avisa y se omite; mismo CRC32 dos veces en un sitio es error. El motor no trae ninguno.
+- El perfil de A Link to the Past (`games/alttp_usa.toml`, `games/alttp_usa/dialog.c`) vive en el repositorio `alttp-recomp`, con su `scripts/check.ps1` (prueba de los mensajes con R) y su `release.ps1`. El C propio de un juego es código original y puede distribuirse; no deriva de la ROM. Las pruebas del motor que necesitan un juego real usan `cctest::real_game()` (`SNES_GAME_PROFILE`, `SNES_GAME_ROM`).
 - Ganchos (`Emitter::with_hooks` en `src/codegen.rs`): `before`/`after`/`replace` sobre la entrada de una función; con ganchos el cuerpo pasa a `static f_XX_YYYY_body` y la función pública es un envoltorio. El C del juego usa `snes_rt.h` (`wram_read8/wram_write8`, `joy1_state()`, `game_opt()`); `snes-port` lo copia a `game/` y lo compila con el resto, y la versión de la caché lo incluye.
 
 ## Reglas
 
 - El código es propio (clean-room): no copiar código de otros recompiladores.
 - El ROM lo aporta el usuario. Nunca se sube ni se distribuye: `roms/` y `*.sfc`/`*.smc` están en `.gitignore`.
-- Las tablas de saltos que se añadan a `games/*.toml` se comprueban a mano contra el ROM real.
+- Las tablas de saltos que se añadan a un perfil (`games/*.toml` de un repositorio de juego) se comprueban a mano contra el ROM real.
 - El C generado deriva del ROM: va a `out/` (ignorado) y nunca se sube.
 - Los tests que necesitan compilador o el ROM se omiten solos si faltan; en esta máquina se usa Visual Studio Build Tools.
 - Los cambios se hacen con OpenSpec: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Contexto del proyecto en `openspec/config.yaml`.

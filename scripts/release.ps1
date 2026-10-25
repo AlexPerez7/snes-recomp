@@ -1,6 +1,6 @@
-# Arma out\release\snes-port-<version>-win64.zip: el programa, las configuraciones de juegos, la documentación y los
-# ficheros de desarrollo de SDL2 (licencia zlib). No lleva ROMs, partidas guardadas ni C generado: si algo así acaba
-# en la carpeta, el script falla y no crea el zip.
+# Arma out\release\snes-port-<version>-win64.zip: el programa, la documentación, la licencia y los ficheros de
+# desarrollo de SDL2 (licencia zlib). El motor no lleva perfiles de juegos (cada juego tiene su repositorio y su
+# paquete) ni ROMs, partidas guardadas o C generado: si algo así acaba en la carpeta, el script falla y no crea el zip.
 #
 #   powershell -File scripts\release.ps1 [-Sdl2 <carpeta con include y lib>] [-Extra <carpeta a añadir>]
 #
@@ -25,8 +25,7 @@ if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 
 Copy-Item target\release\snes-port.exe, target\release\snes-recomp.exe $stage
-Copy-Item README.md $stage
-Copy-Item games $stage -Recurse
+Copy-Item README.md, LICENSE $stage
 
 if ($Sdl2 -eq "") {
     $found = Get-ChildItem out\sdl2 -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path "$($_.FullName)\include\SDL.h" } | Select-Object -First 1

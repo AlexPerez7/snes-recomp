@@ -473,6 +473,14 @@ pub fn find_rom_bytes(rom: &[u8], dir: &Path) -> Option<PathBuf> {
     find_rom_bytes_at(rom, dir).map(|f| f.0)
 }
 
+/// `snes-recomp scan`: fails, naming the file, when anything under `dir` holds bytes of the ROM (before publishing).
+pub fn scan(rom: &[u8], dir: &Path) -> Result<(), String> {
+    match find_rom_bytes_at(rom, dir) {
+        Some((file, at, r)) => Err(format!("{}: bytes of the ROM (file offset {at}, ROM offset {r:#X})", file.display())),
+        None => Ok(()),
+    }
+}
+
 /// Like `find_rom_bytes`, also saying where: (file, offset in the file, offset in the ROM).
 pub fn find_rom_bytes_at(rom: &[u8], dir: &Path) -> Option<(PathBuf, usize, usize)> {
     let index = RomIndex::new(rom);
@@ -510,11 +518,14 @@ pub struct Options {
     pub game_args: Vec<String>,
     /// Profiles given with `--game`.
     pub games: Vec<PathBuf>,
+    /// The folders where profiles are looked for (`None`: `games::search_dirs()`); tests give their own.
+    pub search: Option<Vec<PathBuf>>,
 }
 
-/// The built-in profiles with those of `--game` on top.
+/// The profiles of the folders and of `--game`.
 fn catalog(opts: &Options) -> Result<games::Catalog, String> {
-    games::builtin().clone().with_external(games::load_external(&opts.games)?)
+    let dirs = opts.search.clone().unwrap_or_else(games::search_dirs);
+    games::Catalog::discover(&dirs, games::load_external(&opts.games)?)
 }
 
 /// What a run of the command did.
@@ -535,9 +546,20 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         Ok(c) => c,
         Err(e) => return fail(1, format!("error: {e}")),
     };
+    for w in catalog.warnings() {
+        eprintln!("{w}");
+    }
     let crc = rom.crc32();
     let Some(profile) = catalog.identify(crc) else {
-        let mut m = format!("error: unknown ROM: CRC32 {crc:08X}\nSupported games:\n");
+        let mut m = format!("error: unknown ROM: CRC32 {crc:08X}\n");
+        if catalog.profiles().is_empty() {
+            m.push_str(
+                "No game profiles found. snes-port looks for them in `games/` next to the program, in `games/` of the current\n\
+                 folder and in the files given with --game <profile.toml>. A profile comes with the repository of the game\n\
+                 (for A Link to the Past: alttp-recomp); put its games/ folder next to snes-port.exe.\n",
+            );
+        }
+        m.push_str("Supported games:\n");
         for g in catalog.profiles() {
             m.push_str(&format!("  {} (CRC32 {:08X})\n", g.name, g.crc32));
         }
@@ -756,7 +778,7 @@ fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes
     let rom = std::path::absolute(&rom).unwrap_or(rom);
     // absolute for the same reason as the ROM
     let games = profiles.into_iter().map(|p| std::path::absolute(&p).unwrap_or(p)).collect();
-    let opts = Options { rom, cache, launch, fast, capture: false, game_args, games };
+    let opts = Options { rom, cache, launch, fast, capture: false, game_args, games, search: None };
     let mut compiler = toolchain::find();
     if compiler.is_none() && !needs_no_build(&opts) {
         compiler = portable_compiler(&opts.cache, download_yes, &mut std::io::stdin().lock());
@@ -869,13 +891,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn real_rom() -> Option<PathBuf> {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("roms").join("alttp_usa.sfc");
-        p.exists().then_some(p)
+    #[test]
+    fn scan_passes_a_clean_folder_and_names_the_file_with_rom_bytes() {
+        let dir = temp("scan");
+        let rom = fake_rom();
+        std::fs::write(dir.join("notes.txt"), "nothing of the ROM here").unwrap();
+        assert!(scan(&rom, &dir).is_ok());
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub").join("raw.bin"), &rom[0x1000..0x1100]).unwrap();
+        let e = scan(&rom, &dir).unwrap_err();
+        assert!(e.contains("raw.bin") && e.contains("bytes of the ROM"), "{e}");
+        std::fs::remove_file(dir.join("sub").join("raw.bin")).unwrap();
+        let hex: String = rom[0x3000..0x3000 + 40].iter().map(|b| format!("0x{b:02X}, ")).collect();
+        std::fs::write(dir.join("t.c"), format!("const unsigned char t[] = {{ {hex} }};")).unwrap();
+        let e = scan(&rom, &dir).unwrap_err();
+        assert!(e.contains("t.c"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn opts(rom: &Path, cache: &Path) -> Options {
-        Options { rom: rom.to_path_buf(), cache: cache.to_path_buf(), launch: true, fast: false, capture: true, game_args: vec![], games: vec![] }
+        Options { rom: rom.to_path_buf(), cache: cache.to_path_buf(), launch: true, fast: false, capture: true, game_args: vec![], games: vec![], search: Some(vec![]) }
+    }
+
+    /// `opts` with the profile of the real game given as `--game`.
+    fn opts_for(game: &crate::cctest::RealGame, rom: &Path, cache: &Path) -> Options {
+        Options { games: vec![game.profile_path.clone()], ..opts(rom, cache) }
     }
 
     #[test]
@@ -887,8 +927,20 @@ mod tests {
         let f = build_port(&opts(&dir.join("mystery.sfc"), &cache), toolchain::find(), find_sdl2()).err().expect("an unknown ROM must fail");
         assert_eq!(f.code, EXIT_UNKNOWN_ROM);
         assert!(f.message.contains(&format!("{:08X}", crc32(&rom))), "{}", f.message);
-        assert!(f.message.contains("A Link to the Past") && f.message.contains("777AAC2F"), "the supported games are listed
-{}", f.message);
+        assert!(f.message.contains("No game profiles found") && f.message.contains("games/") && f.message.contains("--game"), "without profiles it says where they go: {}", f.message);
+        // with a profile in a folder, the games it supports are listed
+        let games = dir.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(games.join("zed.toml"), "[game]
+id=\"zed\"
+name=\"Game Zed\"
+crc32=\"0000BEEF\"
+").unwrap();
+        let mut o = opts(&dir.join("mystery.sfc"), &cache);
+        o.search = Some(vec![games]);
+        let f = build_port(&o, toolchain::find(), find_sdl2()).err().expect("still an unknown ROM");
+        assert_eq!(f.code, EXIT_UNKNOWN_ROM);
+        assert!(f.message.contains("Game Zed") && f.message.contains("0000BEEF") && !f.message.contains("No game profiles found"), "the supported games are listed: {}", f.message);
         assert!(!cache.exists(), "nothing is created in the cache");
         // a file that is not a ROM at all
         std::fs::write(dir.join("tiny.sfc"), b"nope").unwrap();
@@ -916,7 +968,29 @@ crc32=\"{:08X}\"
         std::fs::write(&o.rom, (0..0x8000u32).map(|i| (i.wrapping_mul(7) >> 3) as u8).collect::<Vec<u8>>()).unwrap();
         let f = build_port(&o, None, None).err().unwrap();
         assert_eq!(f.code, EXIT_UNKNOWN_ROM);
-        assert!(f.message.contains("My Game") && f.message.contains("A Link to the Past"), "{}", f.message);
+        assert!(f.message.contains("My Game"), "{}", f.message);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_profile_in_a_games_folder_identifies_the_rom_without_game_and_a_broken_one_does_not_stop_it() {
+        let dir = temp("games-folder");
+        let rom: Vec<u8> = (0..0x8000u32).map(|i| (i.wrapping_mul(40503) >> 7) as u8).collect();
+        std::fs::write(dir.join("mystery.sfc"), &rom).unwrap();
+        let games = dir.join("games");
+        std::fs::create_dir_all(&games).unwrap();
+        std::fs::write(games.join("mine.toml"), format!("[game]
+id=\"mine\"
+name=\"My Game\"
+crc32=\"{:08X}\"
+", crc32(&rom))).unwrap();
+        std::fs::write(games.join("broken.toml"), "[[entry]]
+addr=\"00:8000\"
+").unwrap();
+        let mut o = opts(&dir.join("mystery.sfc"), &dir.join("cache"));
+        o.search = Some(vec![games]);
+        let f = build_port(&o, None, None).err().expect("there is no compiler");
+        assert_eq!(f.code, EXIT_NO_TOOLCHAIN, "identified through the folder: {}", f.message);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -998,22 +1072,20 @@ addr=\"00:8000\"
 
     #[test]
     fn without_a_compiler_or_sdl2_it_explains_what_is_missing_and_creates_nothing() {
-        let Some(real) = real_rom() else {
-            eprintln!("skipped: no ROM in roms/");
-            return;
-        };
+        let Some(game) = crate::cctest::real_game() else { return };
+        let real = game.rom_path.clone();
         let dir = temp("nocc");
         // a copier header does not stop the ROM from being recognised (it gets as far as asking for the compiler)
         let mut headered = vec![0u8; 512];
         headered.extend(std::fs::read(&real).unwrap());
         std::fs::write(dir.join("headered.smc"), &headered).unwrap();
         let cache = dir.join("cache");
-        let f = build_port(&opts(&dir.join("headered.smc"), &cache), None, None).err().expect("no compiler");
+        let f = build_port(&opts_for(&game, &dir.join("headered.smc"), &cache), None, None).err().expect("no compiler");
         assert_eq!(f.code, EXIT_NO_TOOLCHAIN);
         assert!(f.message.contains("no C compiler"), "{}", f.message);
         assert!(!cache.exists(), "nothing is created in the cache");
         if let Some(cc) = toolchain::find() {
-            let f = build_port(&opts(&dir.join("headered.smc"), &cache), Some(cc), None).err().expect("no SDL2");
+            let f = build_port(&opts_for(&game, &dir.join("headered.smc"), &cache), Some(cc), None).err().expect("no SDL2");
             assert_eq!(f.code, EXIT_NO_TOOLCHAIN);
             assert!(f.message.contains("SDL2"), "{}", f.message);
             assert!(!cache.exists());
@@ -1023,10 +1095,8 @@ addr=\"00:8000\"
 
     #[test]
     fn it_builds_and_runs_the_game_from_the_rom_and_keeps_everything_local() {
-        let Some(real) = real_rom() else {
-            eprintln!("skipped: no ROM in roms/");
-            return;
-        };
+        let Some(game) = crate::cctest::real_game() else { return };
+        let real = game.rom_path.clone();
         let (Some(cc), Some(sdl)) = (toolchain::find(), find_sdl2()) else {
             eprintln!("skipped: no C compiler or no SDL2 development files");
             return;
@@ -1037,7 +1107,7 @@ addr=\"00:8000\"
         let rom_bytes = std::fs::read(&rom_path).unwrap();
         let cache = dir.join("cache");
         let requests = download::network_requests();
-        let mut o = opts(&rom_path, &cache);
+        let mut o = opts_for(&game, &rom_path, &cache);
         o.game_args = ["--no-window", "--frames", "300", "--mute"].map(String::from).to_vec();
         // first run: builds, and the game runs its 300 frames
         let first = build_port(&o, Some(cc), Some(sdl.clone())).unwrap_or_else(|f| panic!("{}", f.message));
@@ -1068,14 +1138,15 @@ addr=\"00:8000\"
     /// The portable compiler path (3.2), when `SNES_TCC_EXE` names a TinyCC (the download itself is tested in `download`).
     #[test]
     fn it_builds_the_game_with_tinycc() {
-        let (Some(real), Some(sdl), Ok(tcc)) = (real_rom(), find_sdl2(), std::env::var("SNES_TCC_EXE")) else {
-            eprintln!("skipped: needs the ROM, SDL2 and SNES_TCC_EXE");
+        let (Some(game), Some(sdl), Ok(tcc)) = (crate::cctest::real_game(), find_sdl2(), std::env::var("SNES_TCC_EXE")) else {
+            eprintln!("skipped: needs the game, SDL2 and SNES_TCC_EXE");
             return;
         };
+        let real = game.rom_path.clone();
         let dir = temp("tcc");
         let rom_path = dir.join("alttp.sfc");
         std::fs::copy(&real, &rom_path).unwrap();
-        let mut o = opts(&rom_path, &dir.join("cache"));
+        let mut o = opts_for(&game, &rom_path, &dir.join("cache"));
         o.game_args = ["--no-window", "--frames", "200", "--mute"].map(String::from).to_vec();
         let r = build_port(&o, Some(Compiler::Tcc(PathBuf::from(tcc))), Some(sdl)).unwrap_or_else(|f| panic!("{}", f.message));
         let (code, out) = r.game.expect("started");

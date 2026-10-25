@@ -442,11 +442,11 @@ addr=\"00:8781\"").is_err());
     }
 
     #[test]
-    fn bundled_alttp_config_parses() {
-        let cfg = Config::load(concat!(env!("CARGO_MANIFEST_DIR"), "/games/alttp_usa.toml")).unwrap();
-        assert_eq!(cfg.inline_helpers.len(), 2);
-        assert!(cfg.tables.contains_key(&0x00_80C6));
-        assert!(cfg.tables.len() > 60);
+    fn the_real_game_profile_parses() {
+        let Some(game) = crate::cctest::real_game() else { return };
+        let cfg = Config::parse(&game.profile.config).unwrap();
+        assert!(!cfg.entries.is_empty());
+        assert_eq!(cfg.game.as_ref().map(|g| g.crc32), Some(game.profile.crc32));
     }
 
     #[test]

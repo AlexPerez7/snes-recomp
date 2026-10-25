@@ -1,10 +1,9 @@
-//! Known games: each one is a profile, a `.toml` (see `config.rs`) with a `[game]` section that says which ROM it is
+//! Games: each one is a profile, a `.toml` (see `config.rs`) with a `[game]` section that says which ROM it is
 //! for, and optionally a folder next to it with the same name (`games/<id>/`) holding C code of the game that is
 //! compiled together with the generated C.
 
 use crate::config::Config;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 
 /// A file of C code of a game.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,49 +55,71 @@ impl GameProfile {
     }
 }
 
-/// The profiles that ship inside the program: the text of each `.toml` and of the C files of its folder.
-fn builtin_texts() -> Vec<(&'static str, &'static str, Vec<Source>)> {
-    let source = |name: &str, text: &str| Source { name: name.to_string(), text: text.to_string() };
-    vec![("games/alttp_usa.toml", include_str!("../games/alttp_usa.toml"), vec![source("dialog.c", include_str!("../games/alttp_usa/dialog.c"))])]
+/// The profiles in `dir`: every `*.toml` in it, with its folder of C code. A file that is not a valid profile is left
+/// out and reported in the second value.
+pub fn load_dir(dir: &Path) -> (Vec<GameProfile>, Vec<String>) {
+    let mut profiles = Vec::new();
+    let mut warnings = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else { return (profiles, warnings) };
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "toml")).collect();
+    files.sort();
+    for f in files {
+        match GameProfile::load(&f) {
+            Ok(p) => profiles.push(p),
+            Err(e) => warnings.push(format!("warning: ignoring {e}")),
+        }
+    }
+    (profiles, warnings)
 }
 
-/// The profiles in use: the embedded ones, with those given with `--game` on top.
-#[derive(Debug, Clone)]
+/// The profiles in use: those of the folders where the program looks, with those given with `--game` on top. The
+/// program carries none of its own.
+#[derive(Debug, Clone, Default)]
 pub struct Catalog {
     profiles: Vec<GameProfile>,
+    warnings: Vec<String>,
 }
 
 impl Catalog {
-    /// The embedded profiles only.
-    pub fn builtin() -> Result<Catalog, String> {
+    /// The profiles of `dirs` (highest priority first: a ROM found in an earlier folder ignores the later ones) and of
+    /// `explicit`, which wins over all of them. Two profiles for the same ROM in one folder, or two explicit ones, are an
+    /// error.
+    pub fn discover(dirs: &[PathBuf], explicit: Vec<GameProfile>) -> Result<Catalog, String> {
+        let clash = |a: &GameProfile, b: &GameProfile| format!("{} and {} are both for CRC32 {:08X}", a.origin, b.origin, b.crc32);
         let mut profiles: Vec<GameProfile> = Vec::new();
-        for (origin, text, sources) in builtin_texts() {
-            let p = GameProfile::from_text(text, sources, origin)?;
+        for p in explicit {
             if let Some(o) = profiles.iter().find(|o| o.crc32 == p.crc32) {
-                return Err(format!("{} and {} are both for CRC32 {:08X}", o.origin, p.origin, p.crc32));
+                return Err(clash(o, &p));
             }
             profiles.push(p);
         }
-        Ok(Catalog { profiles })
-    }
-
-    /// Adds `external` profiles: one replaces an embedded profile for the same ROM, but two of them for the same ROM
-    /// are an error.
-    pub fn with_external(self, external: Vec<GameProfile>) -> Result<Catalog, String> {
-        let mut profiles: Vec<GameProfile> = Vec::new();
-        for p in external {
-            if let Some(o) = profiles.iter().find(|o| o.crc32 == p.crc32) {
-                return Err(format!("{} and {} are both for CRC32 {:08X}", o.origin, p.origin, p.crc32));
+        let mut warnings = Vec::new();
+        for dir in dirs {
+            let (found, w) = load_dir(dir);
+            warnings.extend(w);
+            let mut here: Vec<GameProfile> = Vec::new();
+            for p in found {
+                if let Some(o) = here.iter().find(|o| o.crc32 == p.crc32) {
+                    return Err(clash(o, &p));
+                }
+                here.push(p);
             }
-            profiles.push(p);
+            for p in here {
+                if !profiles.iter().any(|o| o.crc32 == p.crc32) {
+                    profiles.push(p);
+                }
+            }
         }
-        let embedded: Vec<GameProfile> = self.profiles.into_iter().filter(|e| !profiles.iter().any(|p| p.crc32 == e.crc32)).collect();
-        profiles.extend(embedded);
-        Ok(Catalog { profiles })
+        Ok(Catalog { profiles, warnings })
     }
 
     pub fn profiles(&self) -> &[GameProfile] {
         &self.profiles
+    }
+
+    /// What was left out while looking (files of the folders that are not valid profiles).
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     pub fn identify(&self, crc: u32) -> Option<&GameProfile> {
@@ -106,20 +127,27 @@ impl Catalog {
     }
 }
 
-/// The embedded profiles, parsed once.
-pub fn builtin() -> &'static Catalog {
-    static CATALOG: OnceLock<Catalog> = OnceLock::new();
-    CATALOG.get_or_init(|| Catalog::builtin().unwrap_or_else(|e| panic!("bad embedded game profile: {e}")))
-}
-
-/// The embedded profile for the ROM with this CRC32.
-pub fn identify(crc: u32) -> Option<&'static GameProfile> {
-    builtin().identify(crc)
+/// The folders where profiles are looked for, highest priority first: `games/` of the current directory and `games/`
+/// next to the executable.
+pub fn search_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![PathBuf::from("games")];
+    if let Some(exe) = std::env::current_exe().ok().and_then(|e| e.parent().map(|p| p.join("games"))) {
+        let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y);
+        if !same(&dirs[0], &exe) {
+            dirs.push(exe);
+        }
+    }
+    dirs
 }
 
 /// Paths of the `.toml` files given with `--game`, loaded.
 pub fn load_external(paths: &[PathBuf]) -> Result<Vec<GameProfile>, String> {
     paths.iter().map(|p| GameProfile::load(p)).collect()
+}
+
+/// The catalog of a run: the usual folders and the `--game` files.
+pub fn catalog(explicit: &[PathBuf]) -> Result<Catalog, String> {
+    Catalog::discover(&search_dirs(), load_external(explicit)?)
 }
 
 #[cfg(test)]
@@ -130,12 +158,15 @@ mod tests {
         format!("[game]\nid=\"{id}\"\nname=\"Game {id}\"\ncrc32=\"{crc}\"\n")
     }
 
-    #[test]
-    fn the_embedded_profile_is_alttp() {
-        let p = identify(0x777A_AC2F).unwrap();
-        assert_eq!(p.id, "alttp_usa");
-        assert!(p.name.contains("A Link to the Past"));
-        assert!(identify(0x1234_5678).is_none());
+    fn folder(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("snes-recomp-games-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn profile(id: &str, crc: &str, origin: &str) -> GameProfile {
+        GameProfile::from_text(&toml(id, crc), vec![], origin).unwrap()
     }
 
     #[test]
@@ -148,22 +179,64 @@ mod tests {
     }
 
     #[test]
-    fn two_external_profiles_for_one_rom_are_an_error_but_one_replaces_an_embedded_one() {
-        let a = GameProfile::from_text(&toml("a", "0000ABCD"), vec![], "a.toml").unwrap();
-        let b = GameProfile::from_text(&toml("b", "0000ABCD"), vec![], "b.toml").unwrap();
-        let e = Catalog::builtin().unwrap().with_external(vec![a.clone(), b]).unwrap_err();
-        assert!(e.contains("a.toml") && e.contains("b.toml") && e.contains("0000ABCD"), "{e}");
-        let over = GameProfile::from_text(&toml("mine", "777AAC2F"), vec![], "mine.toml").unwrap();
-        let c = Catalog::builtin().unwrap().with_external(vec![a, over]).unwrap();
-        assert_eq!(c.identify(0x777A_AC2F).unwrap().id, "mine");
-        assert_eq!(c.identify(0xABCD).unwrap().id, "a");
+    fn the_program_knows_no_game_by_itself() {
+        let c = Catalog::discover(&[], vec![]).unwrap();
+        assert!(c.profiles().is_empty() && c.identify(0x777A_AC2F).is_none());
+    }
+
+    #[test]
+    fn profiles_are_found_in_the_folders_and_the_first_folder_wins() {
+        let (first, second) = (folder("first"), folder("second"));
+        std::fs::write(first.join("a.toml"), toml("from_first", "0000ABCD")).unwrap();
+        std::fs::write(second.join("a.toml"), toml("from_second", "0000ABCD")).unwrap();
+        std::fs::write(second.join("b.toml"), toml("only_second", "0000BEEF")).unwrap();
+        std::fs::write(second.join("notes.txt"), "not a profile").unwrap();
+        let c = Catalog::discover(&[first.clone(), second.clone(), std::env::temp_dir().join("snes-recomp-games-absent")], vec![]).unwrap();
+        assert_eq!(c.identify(0xABCD).unwrap().id, "from_first");
+        assert_eq!(c.identify(0xBEEF).unwrap().id, "only_second");
         assert_eq!(c.profiles().len(), 2);
+        assert!(c.warnings().is_empty());
+        let _ = (std::fs::remove_dir_all(&first), std::fs::remove_dir_all(&second));
+    }
+
+    #[test]
+    fn a_broken_file_in_a_folder_is_reported_and_the_others_still_load() {
+        let dir = folder("broken");
+        std::fs::write(dir.join("bad.toml"), "[[entry]]\naddr=\"00:8000\"").unwrap();
+        std::fs::write(dir.join("good.toml"), toml("good", "0000ABCD")).unwrap();
+        let c = Catalog::discover(&[dir.clone()], vec![]).unwrap();
+        assert_eq!(c.profiles().len(), 1);
+        assert_eq!(c.warnings().len(), 1);
+        assert!(c.warnings()[0].contains("bad.toml"), "{:?}", c.warnings());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_profiles_for_one_rom_in_one_place_are_an_error_and_game_beats_the_folders() {
+        let dir = folder("clash");
+        std::fs::write(dir.join("a.toml"), toml("a", "0000ABCD")).unwrap();
+        std::fs::write(dir.join("b.toml"), toml("b", "0000ABCD")).unwrap();
+        let e = Catalog::discover(&[dir.clone()], vec![]).unwrap_err();
+        assert!(e.contains("a.toml") && e.contains("b.toml") && e.contains("0000ABCD"), "{e}");
+        let e = Catalog::discover(&[], vec![profile("x", "0000ABCD", "x.toml"), profile("y", "0000ABCD", "y.toml")]).unwrap_err();
+        assert!(e.contains("x.toml") && e.contains("y.toml"), "{e}");
+        std::fs::remove_file(dir.join("b.toml")).unwrap();
+        let c = Catalog::discover(&[dir.clone()], vec![profile("mine", "0000ABCD", "mine.toml")]).unwrap();
+        assert_eq!(c.identify(0xABCD).unwrap().id, "mine");
+        assert_eq!(c.profiles().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_search_folders_are_games_here_and_next_to_the_executable() {
+        let dirs = search_dirs();
+        assert_eq!(dirs[0], PathBuf::from("games"));
+        assert!(dirs.iter().all(|d| d.ends_with("games")));
     }
 
     #[test]
     fn a_profile_loads_the_c_files_of_the_folder_next_to_it() {
-        let dir = std::env::temp_dir().join(format!("snes-recomp-games-{}-folder", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = folder("c-files");
         std::fs::create_dir_all(dir.join("g")).unwrap();
         std::fs::write(dir.join("g.toml"), toml("g", "0000ABCD")).unwrap();
         std::fs::write(dir.join("g").join("b.c"), "int b;").unwrap();

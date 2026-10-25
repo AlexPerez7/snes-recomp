@@ -1976,18 +1976,16 @@ int main(void) {
 "#;
 
     /// Recompile `entry` of A Link to the Past with its callees down to `depth` and run it against the
-    /// real ROM; `setup` is C that runs on the CPU state right after reset, and the result is the output
-    /// of the run. `None` when there is no C compiler or no ROM.
+    /// real ROM (`SNES_GAME_PROFILE` of `alttp_usa`, `SNES_GAME_ROM`); `setup` is C that runs on the CPU state right
+    /// after reset, and the result is the output of the run. `None` when there is no C compiler or that game.
     fn run_alttp(name: &str, entry: u32, depth: usize, setup: &dyn Fn(Flags) -> String) -> Option<String> {
         let Some(cc) = crate::cctest::find() else {
             eprintln!("skipped: no C compiler found");
             return None;
         };
-        let Ok(rom) = crate::rom::Rom::load("roms/alttp_usa.sfc") else {
-            eprintln!("skipped: roms/alttp_usa.sfc not found");
-            return None;
-        };
-        let cfg = crate::config::Config::load("games/alttp_usa.toml").unwrap();
+        let game = crate::cctest::real_game_id("alttp_usa")?;
+        let rom = game.rom;
+        let cfg = crate::config::Config::parse(&game.profile.config).unwrap();
         let roots: Vec<(u32, Flags)> = cfg.entries.iter().map(|e| (e.addr, e.flags)).collect();
         let d = crate::discover::discover(&rom, &cfg, &roots);
         let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
@@ -2049,19 +2047,17 @@ int main(void) {
         Some(out)
     }
 
-    /// The whole of A Link to the Past, generated with `generate_all`, compiles and links against the
-    /// mock runtime. Skipped without the ROM or a C compiler.
+    /// The whole of the real game (`SNES_GAME_PROFILE`, `SNES_GAME_ROM`), generated with `generate_all`, compiles and
+    /// links against the mock runtime. Skipped without the game or a C compiler.
     #[test]
     fn alttp_full_rom_compiles_and_links() {
         let Some(cc) = crate::cctest::find() else {
             eprintln!("skipped: no C compiler found");
             return;
         };
-        let Ok(rom) = crate::rom::Rom::load("roms/alttp_usa.sfc") else {
-            eprintln!("skipped: roms/alttp_usa.sfc not found");
-            return;
-        };
-        let cfg = crate::config::Config::load("games/alttp_usa.toml").unwrap();
+        let Some(game) = crate::cctest::real_game() else { return };
+        let rom = game.rom;
+        let cfg = crate::config::Config::parse(&game.profile.config).unwrap();
         let roots: Vec<(u32, Flags)> = cfg.entries.iter().map(|e| (e.addr, e.flags)).collect();
         let d = crate::discover::discover(&rom, &cfg, &roots);
         let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
