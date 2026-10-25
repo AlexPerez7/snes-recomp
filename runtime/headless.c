@@ -22,7 +22,8 @@
  * with returns to another context (a fibre of its own), as the ALttP intro does between NMI and IRQ.
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
  * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin, ppu_regs.bin and wram.bin. --screenshot draws
- * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG.
+ * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG; the HDMA tables of the channels
+ * enabled in $420C are replayed line by line (direct and indirect, repeat and non repeat) on top of that state.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
  * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned, 12 an execution context returned,
@@ -757,6 +758,105 @@ static int write_png(const char *path, const uint8_t *rgb, uint32_t w, uint32_t 
     return f != NULL;
 }
 
+/* ---- HDMA replay for the screenshot ----
+ * The tables the enabled channels ($420C) point at are walked once per scanline, writing to the B bus registers
+ * before the line is drawn, as the console does at the start of each H-blank. The registers and PPU state the
+ * writes change are saved first and restored afterwards, so the report is not altered. */
+
+typedef struct {
+    int on, indirect, repeat, do_xfer, mode, lines;
+    uint8_t dest, ind_bank;
+    uint32_t table, ind;
+} Hdma;
+static Hdma hdma_ch[8];
+static uint32_t hdma_transfers;
+
+typedef struct {
+    uint8_t hw[0x40], cgram[512], fixed_col[3], bgofs_latch, cg_latch, cg_write_half, cg_read_half;
+    uint32_t hw_writes[0x40], cg_index;
+    uint16_t bg_hofs[4], bg_vofs[4];
+} PpuState;
+
+static void ppu_save(PpuState *st) {
+    memcpy(st->hw, hw + 0x2100, 0x40);
+    memcpy(st->hw_writes, hw_writes + 0x2100, sizeof st->hw_writes);
+    memcpy(st->cgram, cgram, sizeof cgram);
+    memcpy(st->fixed_col, fixed_col, sizeof fixed_col);
+    memcpy(st->bg_hofs, bg_hofs, sizeof bg_hofs);
+    memcpy(st->bg_vofs, bg_vofs, sizeof bg_vofs);
+    st->bgofs_latch = bgofs_latch; st->cg_latch = cg_latch; st->cg_write_half = cg_write_half;
+    st->cg_read_half = cg_read_half; st->cg_index = cg_index;
+}
+
+static void ppu_restore(const PpuState *st) {
+    memcpy(hw + 0x2100, st->hw, 0x40);
+    memcpy(hw_writes + 0x2100, st->hw_writes, sizeof st->hw_writes);
+    memcpy(cgram, st->cgram, sizeof cgram);
+    memcpy(fixed_col, st->fixed_col, sizeof fixed_col);
+    memcpy(bg_hofs, st->bg_hofs, sizeof bg_hofs);
+    memcpy(bg_vofs, st->bg_vofs, sizeof bg_vofs);
+    bgofs_latch = st->bgofs_latch; cg_latch = st->cg_latch; cg_write_half = st->cg_write_half;
+    cg_read_half = st->cg_read_half; cg_index = st->cg_index;
+}
+
+/* Reads the header of the next group of lines; a zero header ends the channel for the frame. */
+static void hdma_header(Hdma *h) {
+    uint8_t v = bus_read8_raw(h->table);
+    h->table = (h->table & 0xFF0000) | ((h->table + 1) & 0xFFFF);
+    if (!v) { h->on = 0; return; }
+    h->repeat = v >> 7;
+    h->lines = v & 0x7F ? v & 0x7F : 128;
+    if (h->indirect) {
+        h->ind = bus_read8_raw(h->table) | (uint32_t)bus_read8_raw((h->table & 0xFF0000) | ((h->table + 1) & 0xFFFF)) << 8;
+        h->table = (h->table & 0xFF0000) | ((h->table + 2) & 0xFFFF);
+    }
+    h->do_xfer = 1;
+}
+
+static void hdma_start_frame(void) {
+    int ch;
+    for (ch = 0; ch < 8; ch++) {
+        uint32_t base = 0x4300 + (uint32_t)ch * 16;
+        Hdma *h = &hdma_ch[ch];
+        memset(h, 0, sizeof *h);
+        if (!(hw[0x420C] >> ch & 1)) continue;
+        h->on = 1;
+        h->indirect = hw[base] >> 6 & 1;
+        h->mode = hw[base] & 7;
+        h->dest = hw[base + 1];
+        h->table = (uint32_t)hw[base + 4] << 16 | hw[base + 2] | (uint32_t)hw[base + 3] << 8;
+        h->ind_bank = hw[base + 7];
+        hdma_header(h);
+    }
+}
+
+static void hdma_line(void) {
+    static const uint8_t pattern[8][4] = {{0, 0, 0, 0}, {0, 1, 0, 1}, {0, 0, 0, 0}, {0, 0, 1, 1},
+                                          {0, 1, 2, 3}, {0, 1, 0, 1}, {0, 0, 0, 0}, {0, 0, 1, 1}};
+    static const uint8_t unit[8] = {1, 2, 2, 4, 4, 4, 2, 4};
+    int ch, i;
+    for (ch = 0; ch < 8; ch++) {
+        Hdma *h = &hdma_ch[ch];
+        if (!h->on) continue;
+        if (h->do_xfer) {
+            for (i = 0; i < unit[h->mode]; i++) {
+                uint8_t v;
+                if (h->indirect) {
+                    v = bus_read8_raw((uint32_t)h->ind_bank << 16 | h->ind);
+                    h->ind = (h->ind + 1) & 0xFFFF;
+                } else {
+                    v = bus_read8_raw(h->table);
+                    h->table = (h->table & 0xFF0000) | ((h->table + 1) & 0xFFFF);
+                }
+                bus_write8_raw(0x2100 + ((h->dest + pattern[h->mode][i]) & 0xFF), v);
+            }
+            hdma_transfers++;
+        }
+        if (--h->lines == 0) hdma_header(h);
+        else h->do_xfer = h->repeat;
+    }
+}
+
 static const char *shot_path;
 
 static void screenshot(void) {
@@ -765,6 +865,7 @@ static void screenshot(void) {
     const Layer *order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
     int mode = hw[0x2105] & 7, bright = hw[0x2100] & 15, blank = hw[0x2100] >> 7 & 1, x, y;
     uint8_t *rgb = (uint8_t *)malloc((size_t)SCREEN_W * SCREEN_H * 3);
+    PpuState saved;
     if (mode != 1) printf("warning: graphics mode %d is not drawn\n", mode);
     if (hw[0x212E] | hw[0x212F]) printf("warning: windows are not applied\n");
     if (hw[0x2106] & 0x0F) printf("warning: mosaic is not applied\n");
@@ -772,7 +873,14 @@ static void screenshot(void) {
         printf("warning: colour math inside or outside the colour window is not applied\n");
     if (!rgb) return;
     draw_sprites();
+    ppu_save(&saved);
+    hdma_start_frame();
     for (y = 0; y < SCREEN_H; y++) {
+        hdma_line();
+        blank = hw[0x2100] >> 7 & 1;
+        bright = hw[0x2100] & 15;
+        order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
+        mode = hw[0x2105] & 7;
         for (x = 0; x < SCREEN_W; x++) {
             int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1, hw[0x212C], &layer);
             uint8_t *p = rgb + ((size_t)y * SCREEN_W + (size_t)x) * 3;
@@ -787,6 +895,8 @@ static void screenshot(void) {
             }
         }
     }
+    ppu_restore(&saved);
+    if (hdma_transfers) printf("hdma replayed: %u line transfers\n", (unsigned)hdma_transfers);
     if (!write_png(shot_path, rgb, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", shot_path);
     free(rgb);
 }
