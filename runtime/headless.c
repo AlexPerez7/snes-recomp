@@ -269,6 +269,7 @@ static void oam_write(uint8_t v) {
 
 static int dma_active;
 static void bus_write8_raw(uint32_t a, uint8_t v);
+static uint8_t m7_product_byte(int byte);
 
 static uint8_t bus_read8_raw(uint32_t a) {
     uint32_t bank = (a >> 16) & 0xFF, off = a & 0xFFFF, b = bank & 0x7F;
@@ -280,6 +281,8 @@ static uint8_t bus_read8_raw(uint32_t a) {
             uint8_t v;
             hw_reads[off]++;
             switch (off) {
+            case 0x2134: case 0x2135: case 0x2136:
+                return m7_product_byte(off - 0x2134);
             case 0x2138:
                 v = oam[oam_slot()];
                 oam_byte = (oam_byte + 1) & 0x3FF;
@@ -580,6 +583,12 @@ static void write_m7(uint32_t off, uint8_t v) {
     case 0x211F: m7_x0 = sign13(value); break;
     default: m7_y0 = sign13(value); break;
     }
+}
+
+/* $2134-$2136: the 24-bit signed product of the matrix A (16 bit) and the last byte written to $211C (8 bit). */
+static uint8_t m7_product_byte(int byte) {
+    int32_t p = (int32_t)m7_a * (int8_t)(m7_b >> 8);
+    return (uint8_t)((uint32_t)p >> (8 * byte));
 }
 
 static void write_scroll(uint32_t off, uint8_t v) {

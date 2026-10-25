@@ -1332,6 +1332,26 @@ fn bit_0_of_hvbjoy_is_set_only_at_the_start_of_vblank() {
 }
 
 #[test]
+fn mode_7_multiplication_reads_back_the_signed_product_of_a_and_the_last_b_byte() {
+    // A = $0300 (768), B = $FE00 (last byte written -2): the product -1536 is $FFFA00 at $2134-$2136.
+    let wr = |v: u8, to: u16| vec![0xA9, v, 0x8D, to as u8, (to >> 8) as u8];
+    let ld = |r: u16, to: u16| vec![0xAD, r as u8, (r >> 8) as u8, 0x8D, to as u8, (to >> 8) as u8];
+    let code = prog(&[
+        wr(0x00, 0x211B),
+        wr(0x03, 0x211B),
+        wr(0x00, 0x211C),
+        wr(0xFE, 0x211C),
+        ld(0x2134, 0x2170),
+        ld(0x2135, 0x2171),
+        ld(0x2136, 0x2172),
+    ]);
+    let args = ["rom.sfc", "--frames", "1", "--frame-blocks", "50"];
+    let Some(r) = run("hl-m7-mul", &[(0x8000, &code)], &[0x8000], None, &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert_eq!(bits(&r, 3), [0x00, 0xFA, 0xFF], "{}", r.out);
+}
+
+#[test]
 fn the_hv_latch_gives_the_line_low_byte_then_bit_0_and_resets_with_2137() {
     // $2137 ; $213D -> $2170 ; $213D -> $2171 ; $213F (bit 6) -> $2172 ; $213F -> $2173 ; $213D -> $2174
     let ld = |r: u16, to: u16| vec![0xAD, r as u8, (r >> 8) as u8, 0x8D, to as u8, (to >> 8) as u8];
