@@ -135,21 +135,33 @@ fn run(args: Vec<String>) -> Result<(), String> {
             }
         }
         "codegen" => {
-            let cfg = load_config(&rom, config_path)?;
+            let cfg = load_config(&rom, config_path.clone())?;
             let roots = default_roots(&rom, &cfg);
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
             let g = graph::Graph::build(&d, &root_addrs);
             if args.iter().any(|a| a == "--all") {
                 let dir = option_value(&args, "-o").ok_or("codegen --all needs -o <dir>")?;
-                return write_full_rom(&codegen::Emitter::new(&d, &g).generate_all(), &PathBuf::from(dir));
+                let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.generate_all();
+                let dir = PathBuf::from(dir);
+                write_full_rom(&out, &dir)?;
+                // the C code of the game (hooks) sits in <dir>/game, like in the builds of snes-port
+                if let (None, Some(p)) = (&config_path, games::identify(rom.crc32())) {
+                    if !p.sources.is_empty() {
+                        std::fs::create_dir_all(dir.join("game")).map_err(|e| e.to_string())?;
+                        for s in &p.sources {
+                            std::fs::write(dir.join("game").join(&s.name), &s.text).map_err(|e| format!("{}: {e}", s.name))?;
+                        }
+                    }
+                }
+                return Ok(());
             }
             let addr = parse_addr(rest.first().ok_or(USAGE)?)?;
             let depth = option_value(&args, "--depth")
                 .map(|s| s.parse::<usize>().map_err(|_| format!("bad depth: {s}")))
                 .transpose()?
                 .unwrap_or(1);
-            let text = codegen::Emitter::new(&d, &g).generate(addr, depth)?;
+            let text = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.generate(addr, depth)?;
             match option_value(&args, "-o") {
                 Some(path) => {
                     let path = PathBuf::from(path);

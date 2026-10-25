@@ -32,6 +32,14 @@ typedef struct Cpu {
 uint8_t bus_read8(uint32_t addr);
 void bus_write8(uint32_t addr, uint8_t value);
 
+/* For the C code of a game (hooks): WRAM by its 17-bit offset (7E:0000-7F:FFFF), and the buttons of pad 1 in the layout of
+ * $4219:$4218 (B Y Select Start Up Down Left Right A X L R from bit 15 to bit 4) as the game would read them now. */
+static inline uint8_t wram_read8(uint32_t off) { return bus_read8(0x7E0000u + (off & 0x1FFFFu)); }
+static inline void wram_write8(uint32_t off, uint8_t v) { bus_write8(0x7E0000u + (off & 0x1FFFFu), v); }
+uint16_t joy1_state(void);
+/* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
+int game_opt(const char *key, int def);
+
 /* An indirect jump or call reached a target the recompiler did not know about. */
 void rt_unresolved(Cpu *c, uint32_t site, uint32_t target);
 /* A block was entered with M/X different from what the recompiler assumed. */

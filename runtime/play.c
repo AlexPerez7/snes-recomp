@@ -1090,6 +1090,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) { if (!parse_press(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) { int m = parse_buttons(argv[++i]); if (m < 0) { bad = 1; break; } held |= (uint16_t)m; }
         else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) { if (!parse_game_opt(argv[++i])) { bad = 1; break; } }
         else if (argv[i][0] != '-' && !path) path = argv[i];
         else { bad = 1; break; }
     }
@@ -1097,7 +1098,7 @@ int main(int argc, char **argv) {
     if (bad || !path || max_frames == 0 || frame_len == 0 || (cli_scale && opt_scale < 1)) {
         fprintf(stderr, "usage: %s [<rom>] [--scale N] [--fullscreen] [--no-window] [--frames N] [--screenshot FILE]\n"
                         "       [--wav FILE] [--frame-blocks N] [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n"
-                        "       [--opt KEY=VALUE]... [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n", argv[0]);
+                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;

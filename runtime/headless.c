@@ -12,6 +12,7 @@
  * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
  * serial read ($4016). With no --press nothing is held.
  *
+ * --game-opt KEY=NUMBER sets an option of the C code of the game (game_opt in snes_rt.h).
  * --poke ADDR=BYTES@N writes BYTES (hex pairs) to consecutive WRAM bytes from ADDR (same forms as --watch) when
  * frame N starts, for debugging (e.g. moving Link: --poke 20=A008C007@3000).
  *
@@ -65,6 +66,8 @@ int main(int argc, char **argv) {
             watch_any = 1;
         } else if (!strcmp(argv[i], "--poke") && i + 1 < argc) {
             if (!parse_poke(argv[++i])) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) {
+            if (!parse_game_opt(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -77,7 +80,7 @@ int main(int argc, char **argv) {
     if (!path || max_frames == 0 || frame_len == 0) {
         fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE] [--wav FILE]\n"
                         "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
-                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n", argv[0]);
+                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]...\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;

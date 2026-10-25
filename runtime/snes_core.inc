@@ -88,6 +88,34 @@ static uint16_t joy_now(void) {
     return m;
 }
 
+/* For the C code of a game (snes_rt.h). */
+uint16_t joy1_state(void) { return joy_now(); }
+
+#define MAX_GAME_OPT 16
+static struct { char key[32]; long val; } game_opts[MAX_GAME_OPT];
+static int ngame_opts;
+
+/* Parses KEY=NUMBER of --game-opt; returns 0 when it is malformed or there are too many. */
+static int parse_game_opt(const char *arg) {
+    const char *eq = strchr(arg, '=');
+    char *end;
+    long v;
+    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof game_opts[0].key || ngame_opts == MAX_GAME_OPT || !eq[1]) return 0;
+    v = strtol(eq + 1, &end, 0);
+    if (*end) return 0;
+    memcpy(game_opts[ngame_opts].key, arg, (size_t)(eq - arg));
+    game_opts[ngame_opts].key[eq - arg] = 0;
+    game_opts[ngame_opts].val = v;
+    ngame_opts++;
+    return 1;
+}
+
+int game_opt(const char *key, int def) {
+    int i;
+    for (i = ngame_opts - 1; i >= 0; i--) if (!strcmp(game_opts[i].key, key)) return (int)game_opts[i].val;
+    return def;
+}
+
 /* Parses BUTTONS@A-B, BUTTONS being names joined by '+'; returns 0 when it is malformed. */
 static int parse_press(const char *arg) {
     char buf[128], *at, *end, *tok, *next;

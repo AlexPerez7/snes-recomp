@@ -1,5 +1,6 @@
 //! C code generation: one C function per function of the graph, one label per basic block.
 
+use crate::config::{Hook, HookKind, HookReturn};
 use crate::disasm::{fmt_addr, Flags, Flow, Instr};
 use crate::discover::{Discovery, EdgeKind};
 use crate::graph::{Block, Graph, SuccKind};
@@ -315,6 +316,8 @@ fn call_lines(ins: &Instr, targets: &[u32]) -> Result<Vec<String>, String> {
 pub struct Emitter<'a> {
     d: &'a Discovery,
     g: &'a Graph,
+    /// Calls to C functions of the game, by the entry of the function they hook.
+    hooks: BTreeMap<u32, Vec<Hook>>,
 }
 
 /// A function body under construction: the blocks it owns and what it refers to.
@@ -348,7 +351,25 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g }
+        Emitter { d, g, hooks: BTreeMap::new() }
+    }
+
+    /// Hooks the functions of the game's profile: a hook runs `before` the body of the function at `addr`, `after` it
+    /// has returned (by any of its returns, or a tail call), or `replace`s the body and returns as the hook says.
+    /// Every `addr` has to be the entry of a function of the graph.
+    pub fn with_hooks(mut self, hooks: &[Hook]) -> Result<Self, String> {
+        for h in hooks {
+            if !self.g.functions.contains_key(&h.addr) {
+                return Err(format!("hook `{}`: {} is not the entry of a function", h.call, fmt_addr(h.addr)));
+            }
+            self.hooks.entry(h.addr).or_default().push(h.clone());
+        }
+        Ok(self)
+    }
+
+    /// The names of the C functions the hooks call, each once.
+    fn hook_calls(&self) -> BTreeSet<&str> {
+        self.hooks.values().flatten().map(|h| h.call.as_str()).collect()
     }
 
     /// Blocks reachable from `entry` without entering another function. Unlike the graph's own
@@ -583,6 +604,43 @@ impl<'a> Emitter<'a> {
         if !self.g.functions.contains_key(&entry) {
             return Err(format!("{} is not the entry of a function", fmt_addr(entry)));
         }
+        let Some(hooks) = self.hooks.get(&entry) else {
+            return self.plain_function(entry);
+        };
+        let name = func_name(entry);
+        let replace = hooks.iter().find(|h| h.kind == HookKind::Replace);
+        // a replaced body is not translated at all, so a function that cannot be translated can still be replaced
+        let (mut text, refs) = if replace.is_some() { (String::new(), BTreeSet::new()) } else { self.plain_function(entry)? };
+        let mut call = String::new();
+        if replace.is_none() {
+            let header = format!("void {name}(Cpu *c) {{");
+            assert!(text.starts_with(&header), "a function starts with its header");
+            text = format!("static void {name}_body(Cpu *c) {{{}", &text[header.len()..]);
+            text.push('\n');
+        }
+        let hooked = |kind: HookKind| hooks.iter().filter(move |h| h.kind == kind);
+        text.push_str(&format!("void {name}(Cpu *c) {{\n"));
+        for h in hooked(HookKind::Before) {
+            call.push_str(&format!("    {}(c);\n", h.call));
+        }
+        match replace {
+            Some(h) => {
+                call.push_str(&format!("    {}(c);\n    c->ret = rt_pull16(c);\n", h.call));
+                if h.ret == Some(HookReturn::Rtl) {
+                    call.push_str("    (void)rt_pull8(c);\n");
+                }
+            }
+            None => call.push_str(&format!("    {name}_body(c);\n")),
+        }
+        for h in hooked(HookKind::After) {
+            call.push_str(&format!("    {}(c);\n", h.call));
+        }
+        text.push_str(&call);
+        text.push_str("}\n");
+        Ok((text, refs))
+    }
+
+    fn plain_function(&self, entry: u32) -> Result<(String, BTreeSet<u32>), String> {
         let blocks = self.reachable_blocks(entry);
         match self.check_widths(&blocks) {
             Ok(()) => self.function_text(entry, blocks, None),
@@ -680,6 +738,9 @@ impl<'a> Emitter<'a> {
         for r in &referenced {
             out.push_str(&format!("void {}(Cpu *c);\n", func_name(*r)));
         }
+        for call in self.hook_calls() {
+            out.push_str(&format!("void {call}(Cpu *c);\n"));
+        }
         for (_, text) in bodies {
             out.push('\n');
             out.push_str(&text);
@@ -710,6 +771,9 @@ impl<'a> Emitter<'a> {
         let mut header = format!("{banner}#include \"snes_rt.h\"\n\n");
         for r in &referenced {
             header.push_str(&format!("void {}(Cpu *c);\n", func_name(*r)));
+        }
+        for call in self.hook_calls() {
+            header.push_str(&format!("void {call}(Cpu *c);\n"));
         }
         let banks = banks
             .into_iter()
@@ -1065,7 +1129,7 @@ sep xf=1 x=0034 p=10
         let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
         let d = crate::discover::discover(&rom, &cfg, &r);
         let g = Graph::build(&d, roots);
-        Emitter::new(&d, &g).generate(entry, depth)
+        Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.generate(entry, depth)
     }
 
     fn gen_all(segments: &[(u32, &[u8])], cfg: &str, roots: &[u32]) -> FullOutput {
@@ -1074,7 +1138,7 @@ sep xf=1 x=0034 p=10
         let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
         let d = crate::discover::discover(&rom, &cfg, &r);
         let g = Graph::build(&d, roots);
-        Emitter::new(&d, &g).generate_all()
+        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all()
     }
 
     /// Roots 00:8000 (widths in conflict, so it cannot be translated), 00:9000 and 01:8000.
@@ -1483,6 +1547,11 @@ exit=\"00:820F\"";
     /// mock runtime and runs `main_body` (which sees a zeroed native-mode `Cpu c` with a stack at
     /// $01FF and a helper `load`). `None` when there is no C compiler.
     fn exec(name: &str, segments: &[(u32, &[u8])], cfg: &str, roots: &[u32], main_body: &str) -> Option<String> {
+        exec_with(name, segments, cfg, roots, "", main_body)
+    }
+
+    /// `exec` with `extra` C code (the functions of hooks) in front of `main`.
+    fn exec_with(name: &str, segments: &[(u32, &[u8])], cfg: &str, roots: &[u32], extra: &str, main_body: &str) -> Option<String> {
         let cc = match crate::cctest::find() {
             Some(cc) => cc,
             None => {
@@ -1496,6 +1565,7 @@ exit=\"00:820F\"";
 #include <stdio.h>
 void {entry}(Cpu *c);
 static void load(uint32_t a, const uint8_t *p, int n) {{ int i; for (i = 0; i < n; i++) bus_write8(a + i, p[i]); }}
+{extra}
 int main(void) {{
     Cpu c = {{0}};
     c.m = 1; c.xf = 1; c.s = 0x01FF;
@@ -1506,6 +1576,7 @@ int main(void) {{
 }}
 "#,
             entry = func_name(roots[0]),
+            extra = extra,
             body = main_body.split("//report").next().unwrap(),
             report = main_body.split("//report").nth(1).unwrap_or(""),
         );
@@ -1535,6 +1606,77 @@ int main(void) {{
         let Some(out) = exec("add16", &rom, "", &[0x8000], r#"//report
             printf("a=%04X mem=%02X%02X m=%d\n", c.a, bus_read8(0x2001), bus_read8(0x2000), c.m);"#) else { return };
         assert_eq!(out, "a=2345 mem=2345 m=0\n");
+    }
+
+    fn hook_cfg(extra: &str) -> String {
+        extra.replace("HOOK", "[[hook]]")
+    }
+
+    #[test]
+    fn a_function_without_hooks_is_emitted_as_before() {
+        let rom = [(0x8000, &[0xA9, 0x01, 0x60][..])];
+        let plain = gen(&rom, "", &[0x8000], 0x8000, 0).unwrap();
+        assert!(!plain.contains("_body") && plain.contains("void f_00_8000(Cpu *c) {"), "{plain}");
+        let other = hook_cfg("HOOK\naddr=\"00:9000\"\nkind=\"before\"\ncall=\"hk\"");
+        let rom2 = [(0x8000, &[0xA9, 0x01, 0x60][..]), (0x9000, &[0x60][..])];
+        let hooked = gen(&rom2, &other, &[0x8000, 0x9000], 0x8000, 0).unwrap();
+        assert!(hooked.contains("void hk(Cpu *c);"), "the hook function is declared");
+        assert!(!hooked.contains("f_00_8000_body"), "a function nobody hooks keeps its shape");
+    }
+
+    #[test]
+    fn a_hook_on_something_that_is_not_a_function_is_an_error() {
+        let rom = [(0x8000, &[0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8001\"\nkind=\"before\"\ncall=\"hk\"");
+        let e = gen(&rom, &cfg, &[0x8000], 0x8000, 0).unwrap_err();
+        assert!(e.contains("00:8001") && e.contains("hk"), "{e}");
+    }
+
+    #[test]
+    fn a_before_hook_sees_the_state_at_entry_and_an_after_hook_the_state_at_the_return() {
+        // LDA #$01 ; STA $10 ; RTS
+        let rom = [(0x8000, &[0xA9, 0x01, 0x85, 0x10, 0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8000\"\nkind=\"before\"\ncall=\"hk_before\"\nHOOK\naddr=\"00:8000\"\nkind=\"after\"\ncall=\"hk_after\"");
+        let extra = "void hk_before(Cpu *c) { bus_write8(0x20, bus_read8(0x10)); }\nvoid hk_after(Cpu *c) { bus_write8(0x21, bus_read8(0x10)); }";
+        let Some(out) = exec_with("hook-before-after", &rom, &cfg, &[0x8000], extra, r#"bus_write8(0x10, 7);
+            //report
+            printf("before=%02X after=%02X s=%04X\n", bus_read8(0x20), bus_read8(0x21), c.s);"#) else { return };
+        assert_eq!(out, "before=07 after=01 s=0201\n");
+    }
+
+    #[test]
+    fn an_after_hook_runs_for_each_of_the_returns_of_the_function() {
+        // LDA $30 ; BEQ +3 ; INC $12 ; RTS ; INC $13 ; RTS
+        let rom = [(0x8000, &[0xA5, 0x30, 0xF0, 0x03, 0xE6, 0x12, 0x60, 0xE6, 0x13, 0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8000\"\nkind=\"after\"\ncall=\"hk_after\"");
+        let extra = "void hk_after(Cpu *c) { bus_write8(0x20, bus_read8(0x20) + 1); }";
+        let Some(out) = exec_with("hook-after-returns", &rom, &cfg, &[0x8000], extra, r#"bus_write8(0x30, 1);
+            //report
+            bus_write8(0x30, 0); c.s = 0x01FF; f_00_8000(&c);
+            printf("calls=%02X path1=%02X path2=%02X\n", bus_read8(0x20), bus_read8(0x12), bus_read8(0x13));"#) else { return };
+        assert_eq!(out, "calls=02 path1=01 path2=01\n");
+    }
+
+    #[test]
+    fn a_replace_hook_stands_in_for_the_body_and_returns_like_an_rts() {
+        // 8100: JSR $8000 ; STA $11 ; RTS      8000: LDA #$01 ; STA $10 ; RTS (replaced)
+        let rom = [(0x8100, &[0x20, 0x00, 0x80, 0x85, 0x11, 0x60][..]), (0x8000, &[0xA9, 0x01, 0x85, 0x10, 0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8000\"\nkind=\"replace\"\ncall=\"hk_rep\"\nret=\"rts\"");
+        let extra = "void hk_rep(Cpu *c) { bus_write8(0x10, 0x99); c->a = 0x42; }";
+        let Some(out) = exec_with("hook-replace-rts", &rom, &cfg, &[0x8100, 0x8000], extra, r#"//report
+            printf("m10=%02X m11=%02X s=%04X\n", bus_read8(0x10), bus_read8(0x11), c.s);"#) else { return };
+        assert_eq!(out, "m10=99 m11=42 s=0201\n");
+    }
+
+    #[test]
+    fn a_replace_hook_with_rtl_pulls_the_bank_too() {
+        // 8100: JSL $018000 ; STA $11 ; RTS      01:8000: RTL (replaced)
+        let rom = [(0x8100, &[0x22, 0x00, 0x80, 0x01, 0x85, 0x11, 0x60][..]), (0x1_8000, &[0x6B][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"01:8000\"\nkind=\"replace\"\ncall=\"hk_rep\"\nret=\"rtl\"");
+        let extra = "void hk_rep(Cpu *c) { c->a = 0x37; }";
+        let Some(out) = exec_with("hook-replace-rtl", &rom, &cfg, &[0x8100, 0x1_8000], extra, r#"//report
+            printf("m11=%02X s=%04X\n", bus_read8(0x11), c.s);"#) else { return };
+        assert_eq!(out, "m11=37 s=0201\n");
     }
 
     #[test]
