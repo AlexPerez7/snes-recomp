@@ -73,7 +73,32 @@ static const char *dump_dir;
 /* Stand-in for the sound CPU: its ports say $AA,$BB until the upload handshake ($CC on port 0) and
  * then echo what the CPU writes. */
 static uint8_t apu_port[4] = {0xAA, 0xBB, 0, 0};
-static int apu_started;
+/* SPC700 as the boot ROM and the sound driver behave on the ports: IDLE answers $BBAA until the game sends $CC;
+ * LOAD takes blocks of bytes, each answered by echoing the counter the game writes (the block header is the
+ * first write that is not the next counter: port 1 non zero starts another block, zero runs the program);
+ * RUN echoes the ports, and $FF on port 0 is the driver's "load a new bank" command that sends it back to IDLE. */
+enum { APU_IDLE, APU_LOAD, APU_RUN };
+static int apu_state = APU_IDLE;
+static uint8_t apu_next;   /* the counter the next data byte must carry */
+static uint8_t apu_in1;    /* last value written to port 1 */
+
+static void apu_write(int port, uint8_t v) {
+    if (port == 1) apu_in1 = v;
+    if (apu_state == APU_IDLE) {
+        if (port == 0 && v == 0xCC) { apu_state = APU_LOAD; apu_next = 0; apu_port[0] = v; }
+        return;
+    }
+    if (port == 0 && apu_state == APU_LOAD) {
+        if (v == apu_next) apu_next++;
+        else if (apu_in1) apu_next = 0;
+        else apu_state = APU_RUN;
+    } else if (port == 0 && v == 0xFF) {
+        apu_state = APU_IDLE;
+        apu_port[0] = 0xAA; apu_port[1] = 0xBB; apu_port[2] = 0; apu_port[3] = 0;
+        return;
+    }
+    apu_port[port] = v;
+}
 
 /* ---- Clock ---- */
 
@@ -496,8 +521,7 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
                 for (i = 0; i < 3; i++) if (v >> (5 + i) & 1) fixed_col[i] = v & 31;
                 break;
             case 0x2140: case 0x2141: case 0x2142: case 0x2143:
-                if (off == 0x2140 && v == 0xCC) apu_started = 1;
-                if (apu_started) apu_port[off - 0x2140] = v;
+                apu_write((int)(off - 0x2140), v);
                 break;
             case 0x2180:
                 wram[wram_port++ & 0x1FFFF] = v;
