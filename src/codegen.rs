@@ -18,6 +18,10 @@ pub const RUNTIME_CORE: &str = include_str!("../runtime/snes_core.inc");
 /// Interactive frontend (SDL2 window and keyboard), written as `play/snes_play.c` by `codegen --all`.
 pub const PLAY_RUNTIME: &str = include_str!("../runtime/play.c");
 
+/// Options, INI file, picture layout, screen effects and key map of the interactive frontend (no SDL), written as
+/// `play/play_cfg.h` by `codegen --all`.
+pub const PLAY_CFG: &str = include_str!("../runtime/play_cfg.h");
+
 /// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
 pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
 

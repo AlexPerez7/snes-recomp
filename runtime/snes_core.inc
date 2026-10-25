@@ -72,11 +72,14 @@ static int joy_read_done; /* the auto-read of this frame has been done */
 static int joy_latched;   /* $4016 bit 0 is 1 */
 static uint16_t joy_cap;  /* buttons captured by the last latch */
 static int joy_count;     /* bits of joy_cap already read through $4016 */
+static uint16_t joy_cap2; /* the same for pad 2 ($4017) */
+static int joy_count2;
 
 /* The buttons held down during the current frame. */
 /* Set by a frontend: called once per frame, right after the picture of the frame is complete. */
 static void (*frame_hook)(void);
 static uint16_t live_pad; /* buttons held according to a live source (a keyboard, a pad), as in --press */
+static uint16_t live_pad2; /* the same for pad 2: only a live source presses its buttons */
 
 static uint16_t joy_now(void) {
     uint16_t m = live_pad;
@@ -122,7 +125,8 @@ static void joy_auto_read(void) {
     if (!(hw[0x4200] & 1)) return;
     hw[0x4218] = (uint8_t)m;
     hw[0x4219] = (uint8_t)(m >> 8);
-    hw[0x421A] = hw[0x421B] = 0;
+    hw[0x421A] = (uint8_t)live_pad2;
+    hw[0x421B] = (uint8_t)(live_pad2 >> 8);
 }
 
 /* $4212 bit 0: the auto-read takes the first 3 of 262 lines of vblank. */
@@ -259,6 +263,9 @@ static uint8_t bus_read8_raw(uint32_t a) {
             case 0x4016:
                 if (joy_latched) return (uint8_t)(joy_cap >> 15 & 1);
                 return (uint8_t)(joy_count < 16 ? joy_cap >> (15 - joy_count++) & 1 : 1);
+            case 0x4017:
+                if (joy_latched) return (uint8_t)(live_pad2 >> 15 & 1);
+                return (uint8_t)(joy_count2 < 16 ? joy_cap2 >> (15 - joy_count2++) & 1 : 0);
             case 0x4210:
                 v = (uint8_t)((nmi_flag ? 0x80 : 0) | 0x02);
                 nmi_flag = 0;
@@ -471,6 +478,8 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
                  * the buttons of that moment are what the serial reads return. */
                 joy_cap = joy_now();
                 joy_count = 0;
+                joy_cap2 = live_pad2;
+                joy_count2 = 0;
                 joy_latched = v & 1;
                 break;
             case 0x2132:

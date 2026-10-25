@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_RUNTIME, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_RUNTIME, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -121,6 +121,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
         ("snes_entry.c".into(), out.entry.clone().into_bytes()),
         ("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()),
+        ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
@@ -2175,4 +2176,217 @@ fn hardware_multiply_and_divide_leave_their_results_in_the_registers() {
     let Some((r, mem, _)) = run_dump("hl-muldiv", &code, &[], true) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert_eq!(&mem.wram[0x10..0x1A], &[0xF3, 0x07, 0x99, 0x02, 0x05, 0x00, 0xFF, 0xFF, 0x34, 0x12], "{}", r.out);
+}
+
+/// The C program that checks `runtime/play_cfg.h` (options, INI, layout, effects, volume, key map) and prints `ok` or
+/// the first thing that failed.
+const PLAY_CFG_TEST: &str = r##"
+#include "play_cfg.h"
+#define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+
+int main(void) {
+    Settings s; Ini ini = {0}, back = {0}; Config cfg; char buf[64]; Rect r; int i, n;
+    FILE *f;
+
+    /* defaults, an invalid value, an unknown key and the comments */
+    f = fopen("t.ini", "w");
+    fputs("# my config\nscale = banana\nfilter = bilinear\nmystery = 7\nvolume = 50\nfullscreen = false\n", f);
+    fclose(f);
+    CHECK(ini_load(&ini, "t.ini") == 1);
+    CHECK(cfg_apply(&s, &ini) == 1);
+    CHECK(s.v[O_SCALE] == 3);                 /* the default, after the warning */
+    CHECK(s.v[O_FILTER] == FILTER_BILINEAR && s.v[O_VOLUME] == 50 && s.v[O_FULLSCREEN] == 0);
+    CHECK(s.v[O_ASPECT] == ASPECT_87 && s.v[O_SCALING] == SCALING_INTEGER && s.v[O_OVERSCAN] == 0 && s.v[O_SCANLINES] == 0);
+
+    /* saving keeps the comments and the unknown keys, and writes every option */
+    s.v[O_FILTER] = FILTER_SHARP;
+    cfg_store(&s, &ini);
+    CHECK(ini_save(&ini, "t.ini") == 1);
+    CHECK(ini_load(&back, "t.ini") == 1);
+    CHECK(!strcmp(back.line[0], "# my config"));
+    CHECK(ini_get(&back, "mystery", buf, sizeof buf) && !strcmp(buf, "7"));
+    CHECK(ini_get(&back, "filter", buf, sizeof buf) && !strcmp(buf, "sharp"));
+    for (i = 0; i < O_COUNT; i++) CHECK(ini_find(&back, opt_defs[i].key) >= 0);
+    CHECK(cfg_apply(&s, &back) == 0 && s.v[O_FILTER] == FILTER_SHARP);
+
+    /* the defaults file written for a first run reads back as the defaults */
+    ini_free(&ini);
+    settings_defaults(&s);
+    cfg_store(&s, &ini);
+    CHECK(cfg_apply(&s, &ini) == 0 && s.v[O_SCALE] == 3 && s.v[O_VOLUME] == 100);
+
+    /* the command line wins over the file for this run, and the file keeps its value */
+    settings_defaults(&s);
+    config_init(&cfg, &s);
+    config_override(&cfg, O_FULLSCREEN, 1);
+    CHECK(cfg.eff.v[O_FULLSCREEN] == 1 && cfg.file.v[O_FULLSCREEN] == 0);
+    cfg_store(&cfg.file, &ini);
+    CHECK(ini_get(&ini, "fullscreen", buf, sizeof buf) && !strcmp(buf, "false"));
+    config_user_set(&cfg, O_FULLSCREEN, 1);
+    CHECK(cfg.file.v[O_FULLSCREEN] == 1 && !(cfg.cli & 1u << O_FULLSCREEN));
+
+    /* the old .keys file becomes keys of the INI */
+    f = fopen("t.keys", "w");
+    fputs("# my keys\nSpace = A\nReturn = START\nZ = A\nbogus line\nQ = NOPE\n", f);
+    fclose(f);
+    ini_free(&ini);
+    n = keys_migrate(&ini, "t.keys");
+    CHECK(n == 3);
+    CHECK(ini_get(&ini, "p1.key.A", buf, sizeof buf) && !strcmp(buf, "Space, Z"));
+    CHECK(ini_get(&ini, "p1.key.START", buf, sizeof buf) && !strcmp(buf, "Return"));
+    CHECK(keys_migrate(&ini, "missing.keys") == -1);
+
+    /* layout */
+    r = view_rect(1920, 1080, ASPECT_43, SCALING_FIT, 224);
+    CHECK(r.w == 1440 && r.h == 1080 && r.x == 240 && r.y == 0);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 224);
+    CHECK(r.w == 768 && r.h == 672 && r.x == 116 && r.y == 114);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 208);
+    CHECK(r.w == 768 && r.h == 624);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_FIT, 224);
+    CHECK(r.w == 1000 && r.h == 875 && r.y == 12);
+    r = view_rect(200, 100, ASPECT_87, SCALING_INTEGER, 224);  /* not even 1x fits: fitted */
+    CHECK(r.h == 100 && r.w == 114);
+    r = view_rect(800, 600, ASPECT_FREE, SCALING_INTEGER, 224);
+    CHECK(r.x == 0 && r.y == 0 && r.w == 800 && r.h == 600);
+
+    /* effects */
+    {
+        uint8_t px[8 * 4 * 4];
+        memset(px, 0xAA, sizeof px);
+        CHECK(overlay_build(px, 8, 4, 4, 2, 0, 0) == 0 && px[0] == 0xAA && px[sizeof px - 1] == 0xAA);
+        CHECK(overlay_build(px, 8, 4, 4, 2, 50, 0) == 1);
+        CHECK(px[(0 * 8 + 3) * 4 + 3] == 0 && px[(1 * 8 + 3) * 4 + 3] == 127 && px[(2 * 8 + 3) * 4 + 3] == 0 && px[(3 * 8 + 3) * 4 + 3] == 127);
+        CHECK(overlay_build(px, 8, 4, 4, 2, 0, 1) == 1);
+        CHECK(px[(1 * 8 + 1) * 4 + 3] == 0 && px[(1 * 8 + 2) * 4 + 3] == 100 && px[(2 * 8 + 1) * 4 + 3] == 100 && px[(1 * 8 + 0) * 4 + 3] == 100);
+    }
+
+    /* volume */
+    CHECK(vol_apply(10000, 50) == 5000 && vol_apply(-10000, 50) == -5000 && vol_apply(12345, 100) == 12345 && vol_apply(12345, 0) == 0);
+
+    /* key map */
+    {
+        Bind b[8]; int nb = 0;
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 44, 0, 0x0080, 0) == 0);        /* Space -> A */
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 40, 0, 0x1000, 0) == 0);        /* Return -> START */
+        CHECK(bind_find(b, nb, BIND_KEY, 44) >= 0 && b[bind_find(b, nb, BIND_KEY, 44)].button == 0x0080);
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 44, 0, 0x8000, 0) == 1 && nb == 2); /* Space is A's: asks */
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 44, 0, 0x8000, 1) == 0 && nb == 2); /* replaced: B has it, A has none */
+        CHECK(b[bind_find(b, nb, BIND_KEY, 44)].button == 0x8000);
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 45, 0, 0x8000, 0) == 0 && nb == 2 && bind_find(b, nb, BIND_KEY, 44) < 0); /* B moves to 45 */
+        CHECK(bind_assign(b, &nb, 8, BIND_PAD, 44, 1, 0x0080, 0) == 0);        /* another device or player does not clash */
+        CHECK(bind_assign(b, &nb, 8, BIND_KEY, 45, 0, 0x8000, 0) == 0 && nb == 3); /* the same again changes nothing */
+    }
+    printf("ok\n");
+    return 0;
+}
+"##;
+
+#[test]
+fn the_port_options_logic_reads_saves_lays_out_and_assigns() {
+    let cc = crate::need_compiler!();
+    match cc.compile_run("play-cfg", &[("play_cfg.h", PLAY_CFG), ("t.c", PLAY_CFG_TEST)], &[]) {
+        Ok(out) => assert!(out.trim_end().ends_with("ok"), "{out}"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+/// Runs the interactive frontend on a program that only loops, without a window, for `frames` frames with `args` and
+/// the files `extra` next to the ROM (a `config.ini`, for one); `--print-config` is added, so the output ends with the
+/// lines of the config file as it was left.
+fn run_menu(name: &str, args: &[&str], extra: &[(&str, &[u8])]) -> Option<Run> {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let mut all = vec!["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config"];
+    all.extend_from_slice(args);
+    run_play_with(name, &seg, &[0x8000], &all, extra)
+}
+
+/// The lines of the config file in the output of `run_menu`.
+fn config_lines(r: &Run) -> Vec<&str> {
+    r.out.lines().collect()
+}
+
+#[test]
+fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults() {
+    // F1 opens the menu; Enter on Image; four Downs reach `filter`; Right makes it bilinear; Escape twice closes and saves
+    let keys = "F1,Return,Down,Down,Down,Down,Right,Escape,Escape";
+    let Some(r) = run_menu("menu-filter", &["--menu-keys", keys], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = bilinear"), "{}", r.out);
+    assert!(l.contains(&"scale = 3") && l.contains(&"volume = 100") && l.contains(&"fullscreen = false") && l.contains(&"scaling = integer"), "every option with its default\n{}", r.out);
+    assert!(l.iter().any(|x| x.starts_with("# Options of snes_play")), "{}", r.out);
+    // closing the menu without changing anything still writes the defaults on the first run
+    let Some(r) = run_menu("menu-defaults", &["--menu-keys", "F1,Escape"], &[]) else { return };
+    assert!(config_lines(&r).contains(&"filter = nearest"), "{}", r.out);
+}
+
+#[test]
+fn the_command_line_wins_over_the_config_file_without_changing_it() {
+    let ini = b"# mine\nfullscreen = false\nmystery = 7\nfilter = sharp\n";
+    let Some(r) = run_menu("menu-precedence", &["--opt", "fullscreen=true", "--opt", "filter=bilinear", "--menu-keys", "F1,Escape"], &[("config.ini", ini)]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let l = config_lines(&r);
+    assert!(l.contains(&"fullscreen = false") && l.contains(&"filter = sharp"), "the file keeps its values\n{}", r.out);
+    assert!(l.contains(&"# mine") && l.contains(&"mystery = 7"), "comments and unknown keys stay\n{}", r.out);
+    let Some(r) = run_menu("menu-badopt", &["--opt", "filter=banana"], &[]) else { return };
+    assert_eq!(r.code, 2, "{}", r.out);
+}
+
+#[test]
+fn the_menu_remaps_a_key_and_asks_before_taking_one_that_is_in_use() {
+    // Controls (two Downs and Enter), Player 1 (Enter), button A is the ninth line, Enter starts the capture
+    let to_a = "F1,Down,Down,Return,Return,Down,Down,Down,Down,Down,Down,Down,Down,Return";
+    let Some(r) = run_menu("menu-remap", &["--menu-keys", &format!("{to_a},Space,Escape,Escape,Escape")], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let l = config_lines(&r);
+    assert!(l.contains(&"p1.key.A = Space"), "{}", r.out);
+    assert!(l.contains(&"p1.key.START = Return") && l.contains(&"p1.key.B = X"), "{}", r.out);
+    // Return is START's: Escape cancels and leaves things as they were
+    let Some(r) = run_menu("menu-conflict", &["--menu-keys", &format!("{to_a},Return,Escape,Escape,Escape,Escape")], &[]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"p1.key.A = S") && l.contains(&"p1.key.START = Return"), "{}", r.out);
+    // Enter replaces: A gets Return and START is left without a key
+    let Some(r) = run_menu("menu-replace", &["--menu-keys", &format!("{to_a},Return,Return,Escape,Escape,Escape")], &[]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"p1.key.A = Return") && l.contains(&"p1.key.START = "), "{}", r.out);
+}
+
+#[test]
+fn the_picture_is_shown_unchanged_without_effects_and_cropped_by_overscan() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let base = ["rom.sfc", "--no-window", "--frames", "5", "--frame-blocks", "20", "--present-shot", "p.png"];
+    let args: Vec<&str> = base.iter().copied().chain(["--present-size", "256x224"]).collect();
+    let Some(r) = run_play("play-present", &seg, &[0x8000], &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("present-shot: identical to the picture"), "{}", r.out);
+    let args: Vec<&str> = base.iter().copied().chain(["--present-size", "256x208", "--opt", "overscan=8"]).collect();
+    let Some(r) = run_play("play-overscan", &seg, &[0x8000], &args) else { return };
+    assert!(r.out.contains("present-shot: identical to the picture"), "208 lines of the picture\n{}", r.out);
+}
+
+#[test]
+fn the_documented_options_are_the_ones_of_the_default_config() {
+    let Some(r) = run_menu("menu-docs", &["--menu-keys", "F1,Escape"], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let readme = include_str!("../README.md");
+    let claude = include_str!("../CLAUDE.md");
+    let mut keys = 0;
+    for line in config_lines(&r) {
+        let Some((key, _)) = line.split_once(" = ").or_else(|| line.strip_suffix(" =").map(|k| (k, ""))) else { continue };
+        if line.starts_with('#') {
+            continue;
+        }
+        keys += 1;
+        // the key map is documented by its pattern (`p1.key.A`, `p2.pad.B`); the options one by one
+        let documented = match key.split('.').collect::<Vec<_>>().as_slice() {
+            [p, kind @ ("key" | "pad"), _] if p.starts_with('p') => readme.contains(&format!("`{p}.{kind}.")) || readme.contains("`p1.key.A`, `p2.pad.B`"),
+            _ => readme.contains(&format!("| `{key}` |")),
+        };
+        assert!(documented, "the option `{key}` is not in the README table");
+        if !key.contains('.') && key != "audio_device" {
+            assert!(claude.contains(key), "the option `{key}` is not in CLAUDE.md");
+        }
+    }
+    assert!(keys > 10 + 48, "the default file lists the options and the key map ({keys} keys)\n{}", r.out);
 }

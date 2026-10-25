@@ -83,13 +83,33 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | X / Z / S / A | B / Y / A / X |
 | Q / W | L / R |
 | Intro / Mayús derecha | START / SELECT |
+| F1 | menú de opciones |
 | F11 | pantalla completa |
 | P | pausa (silencia el audio) |
 | Tab (mantener) | avance rápido |
 | F10 | captura PNG |
 | Esc | salir |
 
-- Un fichero `<rom>.keys` junto a la ROM cambia la asignación (líneas `Space = A`); `--print-keys` la lista. Cualquier mando SDL funciona, también conectado en caliente.
+- Cualquier mando SDL funciona, también conectado en caliente: el primero es el jugador 1 y el segundo el jugador 2. `--print-keys` lista el teclado del jugador 1.
+- Las opciones viven en `config.ini` junto a la ROM: se crea con los valores por defecto la primera vez, conserva comentarios y claves que no conoce, y se relee al arrancar. La línea de comandos manda sobre el fichero solo en esa ejecución (`--scale N`, `--fullscreen`, `--opt CLAVE=VALOR`, repetible). Un `<rom>.keys` antiguo se importa una vez, si aún no hay `config.ini`.
+- F1 abre un menú (teclado o mando: cruceta, A confirma, B vuelve) que pausa la emulación, aplica los cambios al instante y los guarda al cerrarlo. En «Controls» se elige jugador y botón y se pulsa la tecla o el botón del mando que se quiere asignar; si ya está en uso avisa y ofrece reemplazar (Intro) o cancelar (Esc).
+
+| Clave | Valores (por defecto el primero) | Efecto |
+|---|---|---|
+| `fullscreen` | `false`, `true` | pantalla completa sin bordes (F11 la alterna) |
+| `vsync` | `false`, `true` | sincronía vertical del renderizador |
+| `aspect` | `8:7`, `4:3`, `free` | píxel cuadrado, píxel 7/6 más ancho como en un televisor, o la imagen llena toda la ventana |
+| `scale` | `3` (1 a 8) | tamaño inicial de la ventana |
+| `scaling` | `integer`, `fit` | múltiplos enteros, o relleno del área disponible |
+| `filter` | `nearest`, `bilinear`, `sharp` | `sharp` escala por un factor entero y suaviza solo el resto |
+| `overscan` | `0` (0 a 8) | líneas recortadas arriba y abajo |
+| `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |
+| `grid` | `false`, `true` | rejilla entre los píxeles de la consola |
+| `volume` | `100` (0 a 100) | volumen maestro |
+| `audio_device` | vacío = el del sistema | nombre del dispositivo de salida |
+| `p1.key.A`, `p2.pad.B`… | nombres de tecla o de botón de SDL separados por comas | asignación por jugador (`key` teclado, `pad` mando) y botón (`B Y SELECT START UP DOWN LEFT RIGHT A X L R`) |
+
+- Para ver el resultado de las opciones de imagen sin ventana: `snes_play <rom> --no-window --frames 700 --opt filter=sharp --present-shot out\p.png --present-size 640x560`. Con efectos desactivados y el tamaño de la propia imagen, la salida es idéntica al búfer byte a byte (lo dice por consola).
 - La SRAM se guarda en `<rom>.srm` (cada segundo si cambió y al salir) y se recarga al arrancar.
 - `--stats` muestra ritmo, cola de audio y parones.
 
@@ -115,7 +135,7 @@ Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir
 | `src/config.rs`, `games/*.toml` | configuración por juego: entradas y tablas de saltos |
 | `runtime/snes_rt.h` | interfaz entre el C generado y el runtime |
 | `runtime/snes_core.inc`, `snes_ppu.inc`, `snes_spc.inc` | núcleo de hardware, PPU y sonido |
-| `runtime/headless.c`, `runtime/play.c` | frontales sin vídeo e interactivo |
+| `runtime/headless.c`, `runtime/play.c`, `runtime/play_cfg.h` | frontales sin vídeo e interactivo, y la lógica de opciones sin SDL (INI, imagen, efectos, volumen, teclas) |
 | `src/headless.rs`, `src/spctest.rs`, `src/cctest.rs` | pruebas del runtime y utilidades de compilación |
 | `openspec/` | especificaciones y cambios (spec-driven) |
 
