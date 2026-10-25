@@ -36,7 +36,7 @@ usage:
 Builds the game from your own ROM, on this machine, the first time (a few minutes) and starts it; the next times
 it starts at once. Nothing derived from the ROM leaves this machine: the generated C and the executable live in the
 cache (%LOCALAPPDATA%\\snes-port on Windows) and the executable reads your ROM from where it is. You can also drag
-the ROM onto snes-port.exe.
+the ROM onto snes-port.exe, or open it without arguments (double click) to choose the ROM in a file dialog.
 --no-launch builds and does not start the game. --fast builds with fewer optimisations (quicker, slower game).
 Everything after `--` goes to the game (see its options in the README).
 clean deletes the cache of that ROM, or the whole cache; it never touches ROMs or saved games.
@@ -640,10 +640,48 @@ pub fn main(args: &[String]) -> i32 {
             }
         };
     }
-    let Some(rom) = rom else {
-        eprintln!("{USAGE}");
-        return 1;
+    // started without a ROM (double click): the launcher asks for it, remembers the folder, and keeps the window open if
+    // something goes wrong so the message can be read
+    let launcher = rom.is_none() && args.is_empty();
+    let rom = match rom {
+        Some(r) => r,
+        None if launcher => match pick_rom(&cache) {
+            Some(r) => r,
+            None => return 0,
+        },
+        None => {
+            eprintln!("{USAGE}");
+            return 1;
+        }
     };
+    let code = run_port(rom, cache, launch, fast, download_yes, game_args);
+    if launcher && code != 0 {
+        eprintln!("
+Press Enter to close.");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+    code
+}
+
+/// The ROM chosen in the Windows "open file" dialog (through PowerShell, which every Windows has), starting in the
+/// folder of the last one; `None` if cancelled or there is no dialog.
+fn pick_rom(cache: &Path) -> Option<PathBuf> {
+    let last = cache.join("last-rom-dir.txt");
+    let start = std::fs::read_to_string(&last).unwrap_or_default().trim().to_string();
+    println!("snes-port: choose your ROM in the window that opens (A Link to the Past, USA).");
+    let script = "Add-Type -AssemblyName System.Windows.Forms;         $d = New-Object System.Windows.Forms.OpenFileDialog;         $d.Title = 'snes-port: choose your ROM';         $d.Filter = 'SNES ROM (*.sfc;*.smc)|*.sfc;*.smc|All files (*.*)|*.*';         if ($env:SNES_PORT_START -and (Test-Path $env:SNES_PORT_START)) { $d.InitialDirectory = $env:SNES_PORT_START };         if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.FileName) }";
+    let out = Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]).env("SNES_PORT_START", start).output().ok()?;
+    let chosen = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    if chosen.as_os_str().is_empty() {
+        return None;
+    }
+    if let (Some(dir), Ok(())) = (chosen.parent(), std::fs::create_dir_all(cache)) {
+        let _ = std::fs::write(&last, dir.to_string_lossy().as_bytes());
+    }
+    Some(chosen)
+}
+
+fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>) -> i32 {
     let opts = Options { rom, cache, launch, fast, capture: false, game_args };
     let mut compiler = toolchain::find();
     if compiler.is_none() && !needs_no_build(&opts) {
