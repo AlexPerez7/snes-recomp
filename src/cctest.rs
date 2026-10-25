@@ -101,12 +101,12 @@ impl Compiler {
     }
 
     fn run_msvc(&self, vcvars: &Path, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str]) -> Result<String, String> {
+        let env = msvc_env(vcvars)?;
         let defs: String = defines.iter().map(|d| format!(" /D{d}")).collect();
         let bat = format!(
-            "@echo off\r\ncall \"{}\" >nul 2>nul || exit /b 1\r\ncd /d \"{}\"\r\n\
+            "@echo off\r\ncd /d \"{}\"\r\n\
              cl /nologo /MP /W3 /TC /std:c11{} /Fe:prog.exe {} >build.log 2>&1\r\n\
              if errorlevel 1 (type build.log & exit /b 1)\r\n.\\prog.exe{}\r\n",
-            vcvars.display(),
             dir.display(),
             defs,
             sources.join(" "),
@@ -114,9 +114,29 @@ impl Compiler {
         );
         let script = dir.join("build.bat");
         std::fs::write(&script, bat).map_err(|e| e.to_string())?;
-        let run = Command::new("cmd").arg("/C").arg(&script).output().map_err(|e| e.to_string())?;
+        let run = Command::new("cmd").arg("/C").arg(&script).envs(env.iter().map(|(k, v)| (k, v))).output().map_err(|e| e.to_string())?;
         finish(run)
     }
+}
+
+/// The environment `vcvars64.bat` sets up, computed once: running that script in parallel from several
+/// tests is racy, so each build reuses the variables instead of calling it again.
+fn msvc_env(vcvars: &Path) -> Result<&'static Vec<(String, String)>, String> {
+    static ENV: std::sync::OnceLock<Result<Vec<(String, String)>, String>> = std::sync::OnceLock::new();
+    ENV.get_or_init(|| {
+        use std::os::windows::process::CommandExt;
+        let out = Command::new("cmd")
+            .raw_arg(format!("/S /C \"call \"{}\" >nul 2>nul && set\"", vcvars.display()))
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            return Err("vcvars64.bat failed".to_string());
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text.lines().filter_map(|l| l.split_once('=')).filter(|(k, _)| !k.is_empty()).map(|(k, v)| (k.to_string(), v.trim_end().to_string())).collect())
+    })
+    .as_ref()
+    .map_err(|e| e.clone())
 }
 
 fn finish(out: std::process::Output) -> Result<String, String> {
