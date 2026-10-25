@@ -6,10 +6,14 @@
  *
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png]
  *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]... [--press BUTTONS@A-B]...
+ *              [--poke ADDR=BYTES@N]...
  *
  * --press holds buttons of joypad 1 down during frames A to B (BUTTONS: B Y SELECT START UP DOWN LEFT RIGHT A X L R
  * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
  * serial read ($4016). With no --press nothing is held.
+ *
+ * --poke ADDR=BYTES@N writes BYTES (hex pairs) to consecutive WRAM bytes from ADDR (same forms as --watch) when
+ * frame N starts, for debugging (e.g. moving Link: --poke 20=A008C007@3000).
  *
  * The ROM is read from the file at run time and is never part of the generated sources.
  * Time is not cycle accurate: a frame is a fixed number of executed blocks.
@@ -26,6 +30,7 @@
  */
 #include "snes_funcs.h"
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
@@ -299,6 +304,54 @@ static uint8_t bus_read8_raw(uint32_t a) {
     if (b < 0x70) return off >= 0x8000 ? rom_byte(a) : 0;
     if (b <= 0x7D) return off >= 0x8000 ? rom_byte(a) : sram[off & sram_mask];
     return 0;
+}
+
+/* Reads a WRAM address (0000-1FFF, 7E:xxxx, 7F:xxxx or a 17-bit offset) into *out; *end is left after it. */
+static int parse_wram_addr(const char *arg, char **end, uint32_t *out) {
+    unsigned long v = strtoul(arg, end, 16);
+    if (*end == arg) return 0;
+    if (**end == ':') {
+        unsigned long bank = v;
+        const char *rest = *end + 1;
+        v = strtoul(rest, end, 16);
+        if (*end == rest || v > 0xFFFF || (bank != 0x7E && bank != 0x7F)) return 0;
+        v |= (bank & 1) << 16;
+    } else if (v > 0x1FFFF) {
+        return 0;
+    }
+    *out = (uint32_t)v;
+    return 1;
+}
+
+/* --poke ADDR=BYTES@FRAME: BYTES are hex pairs written to consecutive WRAM bytes when FRAME starts. */
+#define MAX_POKE 256
+static struct { uint32_t addr, frame; uint8_t value; } poke[MAX_POKE];
+static int npoke;
+
+static int parse_poke(const char *arg) {
+    char *end;
+    uint32_t addr, n = 0, frame, first = (uint32_t)npoke;
+    const char *p;
+    unsigned long f;
+    if (!parse_wram_addr(arg, &end, &addr) || *end != '=') return 0;
+    for (p = end + 1; isxdigit((unsigned char)p[0]) && isxdigit((unsigned char)p[1]); p += 2, n++) {
+        char pair[3] = { p[0], p[1], 0 };
+        if (npoke == MAX_POKE || addr + n > 0x1FFFF) return 0;
+        poke[npoke].addr = addr + n;
+        poke[npoke].value = (uint8_t)strtoul(pair, NULL, 16);
+        npoke++;
+    }
+    if (n == 0 || *p != '@') return 0;
+    f = strtoul(p + 1, &end, 10);
+    if (end == p + 1 || *end) return 0;
+    frame = (uint32_t)f;
+    for (; first < (uint32_t)npoke; first++) poke[first].frame = frame;
+    return 1;
+}
+
+static void apply_pokes(void) {
+    int i;
+    for (i = 0; i < npoke; i++) if (poke[i].frame == frames) wram[poke[i].addr] = poke[i].value;
 }
 
 /* ---- Trace: hardware reads and watched WRAM bytes, inside a window of frames ---- */
@@ -973,6 +1026,7 @@ void rt_poll(Cpu *c) {
         tick_in_frame = 0;
         joy_read_done = 0;
         frames++;
+        apply_pokes();
         nmi_flag = 1;
         irq_fired = 0;
         if (hw[0x4200] & 0x80) nmi_pending = 1;
@@ -1045,18 +1099,12 @@ int main(int argc, char **argv) {
             trace_reads_on = 1;
         } else if (!strcmp(argv[i], "--watch") && i + 1 < argc) {
             char *end;
-            unsigned long v = strtoul(argv[++i], &end, 16);
-            if (*end == ':') {
-                unsigned long bank = v;
-                v = strtoul(end + 1, &end, 16);
-                if (*end || v > 0xFFFF || (bank != 0x7E && bank != 0x7F)) { path = NULL; break; }
-                v |= (bank & 1) << 16;
-            } else if (*end || v > 0x1FFFF) {
-                path = NULL;
-                break;
-            }
-            watch[v & 0x1FFFF] = 1;
+            uint32_t v;
+            if (!parse_wram_addr(argv[++i], &end, &v) || *end) { path = NULL; break; }
+            watch[v] = 1;
             watch_any = 1;
+        } else if (!strcmp(argv[i], "--poke") && i + 1 < argc) {
+            if (!parse_poke(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -1069,7 +1117,7 @@ int main(int argc, char **argv) {
     if (!path || max_frames == 0 || frame_len == 0) {
         fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE]\n"
                         "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
-                        "       [--press BUTTONS@A-B]...\n", argv[0]);
+                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
