@@ -1226,9 +1226,9 @@ fn colour_math_can_use_the_subscreen() {
 
 #[test]
 fn what_is_not_drawn_is_reported() {
-    let code = prog(&[st(0x0F, 0x2100), st(0x07, 0x2105), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
-    let Some((r, img)) = shot("rd-mode7", &code) else { return };
-    assert!(r.out.contains("warning: graphics mode 7 is not drawn"), "{}", r.out);
+    let code = prog(&[st(0x0F, 0x2100), st(0x03, 0x2105), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
+    let Some((r, img)) = shot("rd-mode3", &code) else { return };
+    assert!(r.out.contains("warning: graphics mode 3 is not drawn"), "{}", r.out);
     assert_eq!(img.unwrap().rgb(4, 4), rgb(RED));
 
     let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x01, 0x212E), st(0x10, 0x2106)]);
@@ -1671,4 +1671,82 @@ fn mosaic_repeats_the_top_left_pixel_of_each_block() {
     // Size bits set but BG1 not enabled for the mosaic: the single pixel is alone.
     let Some(img) = case(0x30, "rd-mosaic-off") else { return };
     assert_eq!((img.rgb(0, 1) == rgb(GREEN), img.rgb(1, 1) == rgb(GREEN), img.rgb(0, 2) == rgb(GREEN)), (true, false, false));
+}
+
+/// Mode 7 with BG1 shown: the matrix a, b, c, d (8.8 fixed), `extra` writes, one tile (number 1) whose pixel (1,1) is
+/// colour 1 (green) at map cell (0,0), tile 0 with the same pixel, and `$211A` = `sel`.
+fn mode7_case(name: &str, sel: u8, matrix: [u16; 4], extra: Vec<Vec<u8>>) -> Option<Img> {
+    let two = |v: u16, reg: u16| [st(v as u8, reg), st((v >> 8) as u8, reg)].concat();
+    // VRAM word w: low byte = map entry w, high byte = pixel data of tile (w / 64) at position w % 64.
+    let code = prog(&[
+        st(0x0F, 0x2100),
+        st(0x07, 0x2105),
+        st(0x01, 0x212C),
+        st(sel, 0x211A),
+        two(matrix[0], 0x211B),
+        two(matrix[1], 0x211C),
+        two(matrix[2], 0x211D),
+        two(matrix[3], 0x211E),
+        cgram_set(0, &[0, GREEN]),
+        vram_words(0, &[0x0001]),
+        vram_words(64 + 9, &[0x0100]),
+        vram_words(9, &[0x0100]),
+        extra.concat(),
+    ]);
+    let (r, img) = shot(&format!("rd-m7-{name}"), &code)?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
+    img
+}
+
+#[test]
+fn mode_7_draws_the_background_through_the_matrix() {
+    let green = |img: &Img, x: usize, y: usize| img.rgb(x, y) == rgb(GREEN);
+    // Identity: texture pixel (1,1) shows at screen (1,1).
+    let Some(img) = mode7_case("identity", 0, [0x100, 0, 0, 0x100], vec![]) else { return };
+    assert!(green(&img, 1, 1) && !green(&img, 0, 0) && !green(&img, 2, 2) && !green(&img, 2, 1));
+    // Half step: every texture pixel covers 2x2 screen pixels.
+    let Some(img) = mode7_case("zoom", 0, [0x80, 0, 0, 0x80], vec![]) else { return };
+    assert!(green(&img, 2, 2) && green(&img, 3, 3) && green(&img, 2, 3) && !green(&img, 1, 1) && !green(&img, 4, 4));
+    // Flip X on the screen: x is 255 - x, so the texture pixel 1 is at screen x = 254.
+    let Some(img) = mode7_case("flip-x", 1, [0x100, 0, 0, 0x100], vec![]) else { return };
+    assert!(green(&img, 254, 1) && !green(&img, 1, 1));
+    // The scroll moves the picture: BG1HOFS = 1 shifts it one pixel left, so the pixel shows at x = 0.
+    let scroll = vec![st(0x01, 0x210D), st(0x00, 0x210D)];
+    let Some(img) = mode7_case("scroll", 0, [0x100, 0, 0, 0x100], scroll) else { return };
+    assert!(green(&img, 0, 1) && !green(&img, 1, 1));
+    // Outside the 1024x1024 area (BG1HOFS = -64 puts screen x = 1 at texture x = -63): bit 7 of $211A makes it
+    // transparent; otherwise the map wraps (tile 0 there, with its own green pixel at (1,1)) or tile 0 fills it (bit 6).
+    let left = vec![st(0xC0, 0x210D), st(0x1F, 0x210D)];
+    for (sel, name, want) in [(0x00, "wrap", true), (0x80, "transparent", false), (0xC0, "tile0", true)] {
+        let Some(img) = mode7_case(name, sel, [0x100, 0, 0, 0x100], left.clone()) else { return };
+        assert_eq!(green(&img, 1, 1), want, "$211A = {sel:02X}");
+    }
+}
+
+#[test]
+fn mode_7_shares_the_priority_with_sprites() {
+    // BG1 green pixel at (1,1), and sprite 0 (blue pixel at its (0,0)) at (1,0): the sprite goes over BG1 only with priority >= 2.
+    let case = |pri: u8, name: &str| {
+        let code = prog(&[
+            st(0x0F, 0x2100),
+            st(0x07, 0x2105),
+            st(0x11, 0x212C),
+            [st(0x00, 0x211B), st(0x01, 0x211B), st(0x00, 0x211C), st(0x00, 0x211C), st(0x00, 0x211D), st(0x00, 0x211D), st(0x00, 0x211E), st(0x01, 0x211E)].concat(),
+            cgram_set(0, &[0, GREEN]),
+            vram_words(0, &[0x0001]),
+            vram_words(64 + 9, &[0x0100]),
+            st(0x01, 0x2101),
+            vram_words(0x2000 + 16, &tile4(&[(0, 0, 1)])),
+            cgram_set(128 + 1, &[BLUE]),
+            oam_set(0, &[1, 0, 1, pri << 4]),
+        ]);
+        let (r, img) = shot(name, &code)?;
+        assert_eq!(r.code, 0, "{}", r.out);
+        img.map(|i| i.rgb(1, 1))
+    };
+    let Some(low) = case(1, "rd-m7-spr1") else { return };
+    assert_eq!(low, rgb(GREEN), "sprites of priority 1 are behind BG1");
+    let Some(high) = case(2, "rd-m7-spr2") else { return };
+    assert_eq!(high, rgb(BLUE), "sprites of priority 2 are in front of BG1");
 }

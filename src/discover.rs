@@ -142,8 +142,19 @@ enum Item {
     Other,
 }
 
-/// Entries kept in the abstract stack; the oldest is dropped past this, so the state space is finite.
-const MAX_STACK: usize = 16;
+/// Bytes kept in the abstract stack; the oldest is dropped past this, so the state space is finite.
+const MAX_STACK: usize = 24;
+
+/// Bytes a push or pull instruction moves with the widths `f` (the accumulator and index registers are 2 bytes wide
+/// when their width flag is clear).
+fn stack_bytes(mnemonic: &str, f: Flags) -> usize {
+    match mnemonic {
+        "PHA" | "PLA" => if f.m { 1 } else { 2 },
+        "PHX" | "PLX" | "PHY" | "PLY" => if f.x { 1 } else { 2 },
+        "PHD" | "PLD" | "PEA" | "PEI" | "PER" => 2,
+        _ => 1,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Path {
@@ -247,9 +258,11 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                 let mut nf = ins.next_flags(f);
                 match ins.mnemonic {
                     "PHP" | "PHA" | "PHX" | "PHY" | "PHB" | "PHD" | "PHK" | "PEA" | "PEI" | "PER" => {
-                        stack.push(if ins.mnemonic == "PHP" { Item::Flags(f) } else { Item::Other });
+                        for _ in 0..stack_bytes(ins.mnemonic, f) {
+                            stack.push(if ins.mnemonic == "PHP" { Item::Flags(f) } else { Item::Other });
+                        }
                         out.max_stack = out.max_stack.max(stack.len());
-                        if stack.len() > MAX_STACK {
+                        while stack.len() > MAX_STACK {
                             stack.remove(0);
                         }
                     }
@@ -260,7 +273,9 @@ pub fn discover(rom: &Rom, cfg: &Config, roots: &[(u32, Flags)]) -> Discovery {
                         }
                     },
                     "PLA" | "PLX" | "PLY" | "PLB" | "PLD" => {
-                        stack.pop();
+                        for _ in 0..stack_bytes(ins.mnemonic, f) {
+                            stack.pop();
+                        }
                     }
                     _ => {}
                 }
@@ -962,5 +977,19 @@ x=8");
         let d = discover(&rom, &cfg, &[(0x8000, Flags::RESET)]);
         assert_eq!(d.flags[&0x8003], Flags::RESET);
         assert_eq!(d.untracked_plp, BTreeSet::from([0x8002]));
+    }
+
+    #[test]
+    fn stack_instructions_move_bytes_so_a_wide_push_and_two_narrow_pulls_match() {
+        // PHP ; REP #$20 ; PHA (2 bytes) ; SEP #$20 ; PLA ; PLA (1 byte each) ; PLP ; 8009: NOP ; RTS
+        let rom = test_rom(&[(0x8000, &[0x08, 0xC2, 0x20, 0x48, 0xE2, 0x20, 0x68, 0x68, 0x28, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8009], Flags::RESET);
+        assert!(d.untracked_plp.is_empty());
+        // A 16-bit PLX takes the two bytes of a 16-bit PHX, not the flags below them.
+        let rom = test_rom(&[(0x8000, &[0x08, 0xC2, 0x10, 0xDA, 0xFA, 0x28, 0xEA, 0x60])]);
+        let d = discover(&rom, &Config::default(), &[(0x8000, Flags::RESET)]);
+        assert_eq!(d.flags[&0x8006], Flags::RESET);
+        assert!(d.untracked_plp.is_empty());
     }
 }

@@ -22,7 +22,7 @@
  * with returns to another context (a fibre of its own), as the ALttP intro does between NMI and IRQ.
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
  * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin, ppu_regs.bin and wram.bin. --screenshot draws
- * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG; the HDMA tables of the channels
+ * the final state of the PPU (modes 1 and 7 and sprites only) as a 256x224 PNG; the HDMA tables of the channels
  * enabled in $420C are replayed line by line (direct and indirect, repeat and non repeat) on top of that state; windows
  * ($2123-$212B, $212E/$212F, colour window rules of $2130) and the BG mosaic ($2106) are applied.
  *
@@ -194,6 +194,7 @@ static int joy_busy(void) {
 
 static void report(const char *cause);
 static void write_scroll(uint32_t off, uint8_t v);
+static void write_m7(uint32_t off, uint8_t v);
 
 static uint8_t rom_byte(uint32_t a) {
     uint32_t bank = (a >> 16) & 0x7F;
@@ -510,6 +511,7 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
             case 0x2117: vram_addr = (vram_addr & 0x00FF) | (uint32_t)(v & 0x7F) << 8; vram_prefetch = vram_word(); break;
             case 0x2118: vram_write(0, v); break;
             case 0x2119: vram_write(1, v); break;
+            case 0x211B: case 0x211C: case 0x211D: case 0x211E: case 0x211F: case 0x2120: write_m7(off, v); break;
             case 0x2121: cg_index = v; cg_write_half = 0; cg_read_half = 0; break;
             case 0x2122: cgram_write(v); break;
             case 0x4016:
@@ -557,8 +559,33 @@ static void bus_write8_raw(uint32_t a, uint8_t v) {
 static uint16_t bg_hofs[4], bg_vofs[4];
 static uint8_t bgofs_latch;
 
+/* Mode 7: the matrix ($211B-$211E, 8.8 fixed point), the centre ($211F/$2120) and the scroll ($210D/$210E) are 13 or 16
+ * bit values written low byte first through a shared latch. */
+static int16_t m7_a, m7_b, m7_c, m7_d, m7_x0, m7_y0, m7_hofs, m7_vofs;
+static uint8_t m7_latch;
+
+static int16_t sign13(int v) {
+    v &= 0x1FFF;
+    return (int16_t)(v & 0x1000 ? v - 0x2000 : v);
+}
+
+static void write_m7(uint32_t off, uint8_t v) {
+    int value = (int16_t)((v << 8) | m7_latch);
+    m7_latch = v;
+    switch (off) {
+    case 0x211B: m7_a = (int16_t)value; break;
+    case 0x211C: m7_b = (int16_t)value; break;
+    case 0x211D: m7_c = (int16_t)value; break;
+    case 0x211E: m7_d = (int16_t)value; break;
+    case 0x211F: m7_x0 = sign13(value); break;
+    default: m7_y0 = sign13(value); break;
+    }
+}
+
 static void write_scroll(uint32_t off, uint8_t v) {
     int bg = (int)((off - 0x210D) / 2);
+    if (off == 0x210D) { m7_hofs = sign13((v << 8) | m7_latch); m7_latch = v; }
+    if (off == 0x210E) { m7_vofs = sign13((v << 8) | m7_latch); m7_latch = v; }
     if ((off - 0x210D) % 2 == 0) {
         bg_hofs[bg] = (uint16_t)((v << 8) | (bgofs_latch & ~7) | ((bg_hofs[bg] >> 8) & 7));
     } else {
@@ -639,7 +666,29 @@ static void draw_sprites(void) {
     }
 }
 
-/* Layers front to back: kind 0 = sprites of priority n, 1 = BGn+1 with tile priority 1, 2 = BGn+1 with 0. */
+/* CGRAM index (0-255) of the pixel (x, y) of the mode 7 background, or -1 when it is transparent. */
+static int clip10(int v) { return v & 0x2000 ? v | ~0x3FF : v & 0x3FF; }
+
+static int m7_pixel(int x, int y) {
+    int sx = hw[0x211A] & 1 ? 255 - x : x, sy = hw[0x211A] & 2 ? 255 - y : y, sel = hw[0x211A] >> 6;
+    int hx = clip10(m7_hofs - m7_x0), vy = clip10(m7_vofs - m7_y0), px, py, tile;
+    int32_t gx = m7_a * (hx + sx) + m7_b * (vy + sy) + ((int32_t)m7_x0 << 8);
+    int32_t gy = m7_c * (hx + sx) + m7_d * (vy + sy) + ((int32_t)m7_y0 << 8);
+    int c;
+    px = gx >> 8;
+    py = gy >> 8;
+    if (px < 0 || px > 1023 || py < 0 || py > 1023) {
+        if (sel == 2) return -1;
+        tile = 0;
+        if (sel != 3) tile = vram[(((py >> 3 & 127) * 128 + (px >> 3 & 127)) * 2) & 0xFFFF];
+    } else {
+        tile = vram[(((py >> 3) * 128 + (px >> 3)) * 2) & 0xFFFF];
+    }
+    c = vram[((tile * 64 + (py & 7) * 8 + (px & 7)) * 2 + 1) & 0xFFFF];
+    return c ? c : -1;
+}
+
+/* Layers front to back: kind 0 = sprites of priority n, 1 = BGn+1 with tile priority 1, 2 = BGn+1 with 0, 3 = the mode 7 BG1. */
 typedef struct { int kind, n; } Layer;
 
 /* Layer ids reported by pixel_index: 0-2 = BG1-3, 4 = sprites, 5 = backdrop. */
@@ -675,6 +724,10 @@ static int pixel_index(const Layer *order, int count, int x, int y, int mode1, u
         if (order[i].kind == 0) {
             if (!(mask & 0x10)) continue;
             if (spr_col[y][x] >= 0 && spr_pri[y][x] == n && !((wmask & 0x10) && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x]; }
+        } else if (order[i].kind == 3) {
+            if (!(mask & 1) || ((wmask & 1) && win_area(0, x))) continue;
+            c = m7_pixel(x, y);
+            if (c >= 0) { *layer = 0; return c; }
         } else {
             if (!mode1 || !(mask >> n & 1)) continue;
             if ((wmask >> n & 1) && win_area(n, x)) continue;
@@ -804,6 +857,8 @@ typedef struct {
     uint8_t hw[0x40], cgram[512], fixed_col[3], bgofs_latch, cg_latch, cg_write_half, cg_read_half;
     uint32_t hw_writes[0x40], cg_index;
     uint16_t bg_hofs[4], bg_vofs[4];
+    int16_t m7[8];
+    uint8_t m7_latch;
 } PpuState;
 
 static void ppu_save(PpuState *st) {
@@ -813,6 +868,8 @@ static void ppu_save(PpuState *st) {
     memcpy(st->fixed_col, fixed_col, sizeof fixed_col);
     memcpy(st->bg_hofs, bg_hofs, sizeof bg_hofs);
     memcpy(st->bg_vofs, bg_vofs, sizeof bg_vofs);
+    st->m7[0] = m7_a; st->m7[1] = m7_b; st->m7[2] = m7_c; st->m7[3] = m7_d;
+    st->m7[4] = m7_x0; st->m7[5] = m7_y0; st->m7[6] = m7_hofs; st->m7[7] = m7_vofs; st->m7_latch = m7_latch;
     st->bgofs_latch = bgofs_latch; st->cg_latch = cg_latch; st->cg_write_half = cg_write_half;
     st->cg_read_half = cg_read_half; st->cg_index = cg_index;
 }
@@ -824,6 +881,8 @@ static void ppu_restore(const PpuState *st) {
     memcpy(fixed_col, st->fixed_col, sizeof fixed_col);
     memcpy(bg_hofs, st->bg_hofs, sizeof bg_hofs);
     memcpy(bg_vofs, st->bg_vofs, sizeof bg_vofs);
+    m7_a = st->m7[0]; m7_b = st->m7[1]; m7_c = st->m7[2]; m7_d = st->m7[3];
+    m7_x0 = st->m7[4]; m7_y0 = st->m7[5]; m7_hofs = st->m7[6]; m7_vofs = st->m7[7]; m7_latch = st->m7_latch;
     bgofs_latch = st->bgofs_latch; cg_latch = st->cg_latch; cg_write_half = st->cg_write_half;
     cg_read_half = st->cg_read_half; cg_index = st->cg_index;
 }
@@ -891,11 +950,13 @@ static const char *shot_path;
 static void screenshot(void) {
     static const Layer front_bg3_low[10] = {{0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {1, 2}, {0, 0}, {2, 2}};
     static const Layer front_bg3_high[10] = {{1, 2}, {0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {0, 0}, {2, 2}};
+    static const Layer mode7_order[5] = {{0, 3}, {0, 2}, {3, 0}, {0, 1}, {0, 0}};
     const Layer *order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
+    int count = 10;
     int mode = hw[0x2105] & 7, bright = hw[0x2100] & 15, blank = hw[0x2100] >> 7 & 1, x, y;
     uint8_t *rgb = (uint8_t *)malloc((size_t)SCREEN_W * SCREEN_H * 3);
     PpuState saved;
-    if (mode != 1) printf("warning: graphics mode %d is not drawn\n", mode);
+    if (mode != 1 && mode != 7) printf("warning: graphics mode %d is not drawn\n", mode);
     if (!rgb) return;
     draw_sprites();
     ppu_save(&saved);
@@ -904,16 +965,17 @@ static void screenshot(void) {
         hdma_line();
         blank = hw[0x2100] >> 7 & 1;
         bright = hw[0x2100] & 15;
-        order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
         mode = hw[0x2105] & 7;
+        order = mode == 7 ? mode7_order : (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
+        count = mode == 7 ? 5 : 10;
         for (x = 0; x < SCREEN_W; x++) {
-            int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1, hw[0x212C], hw[0x212E], &layer);
+            int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, count, x, y, mode == 1, hw[0x212C], hw[0x212E], &layer);
             uint8_t *p = rgb + ((size_t)y * SCREEN_W + (size_t)x) * 3;
             int c = idx < 0 ? 0 : cgram_color(idx), k;
             int in_colour_window = win_area(5, x), black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
             if (black == 3 || (black == 1 && !in_colour_window) || (black == 2 && in_colour_window)) c = 0;
             if (idx >= 0 && (hw[0x2131] & 0x3F) && (math == 0 || (math == 1 && in_colour_window) || (math == 2 && !in_colour_window))) {
-                int sub_idx = pixel_index(order, 10, x, y, mode == 1, hw[0x212D], hw[0x212F], &sub_layer);
+                int sub_idx = pixel_index(order, count, x, y, mode == 1, hw[0x212D], hw[0x212F], &sub_layer);
                 c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
             }
             for (k = 0; k < 3; k++) {
