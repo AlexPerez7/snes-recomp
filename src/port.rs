@@ -87,6 +87,7 @@ pub fn current_version(fast: bool) -> String {
         codegen::RUNTIME_SPC,
         codegen::PLAY_RUNTIME,
         codegen::PLAY_CFG,
+        codegen::PLAY_UI,
         include_str!("codegen.rs"),
         include_str!("discover.rs"),
         include_str!("graph.rs"),
@@ -682,6 +683,8 @@ fn pick_rom(cache: &Path) -> Option<PathBuf> {
 }
 
 fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>) -> i32 {
+    // the game starts in its cache folder, so the ROM must not be a relative path
+    let rom = std::path::absolute(&rom).unwrap_or(rom);
     let opts = Options { rom, cache, launch, fast, capture: false, game_args };
     let mut compiler = toolchain::find();
     if compiler.is_none() && !needs_no_build(&opts) {

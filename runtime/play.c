@@ -31,6 +31,7 @@
 #include <SDL.h>
 #include "snes_core.inc"
 #include "play_cfg.h"
+#include "play_ui.h"
 #ifdef _WIN32
 #include <windows.h>
 #ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
@@ -356,6 +357,8 @@ static void present(const uint8_t *fb) {
 static const char *present_shot_path;
 static int present_w = 256, present_h = SCREEN_H;
 
+static const uint8_t *shown_frame(void);
+
 static void present_shot(void) {
     SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, present_w, present_h, 24, SDL_PIXELFORMAT_RGB24);
     SDL_Renderer *sr, *keep_ren = ren;
@@ -367,7 +370,7 @@ static void present_shot(void) {
     tex = SDL_CreateTexture(sr, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, SCREEN_W, SCREEN_H);
     tex_pre = tex_ovl = NULL;
     pre_w = ovl_w = 0; ovl_sl = ovl_grid = -1;
-    present(fb_front);
+    present(shown_frame());
     pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
     if (pix && SDL_RenderReadPixels(sr, NULL, SDL_PIXELFORMAT_RGB24, pix, present_w * 3) == 0) {
         if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
@@ -401,69 +404,25 @@ static void set_fullscreen(int on) {
 
 /* ---- the menu (F1) ---- */
 
-/* A 5x7 bitmap font of the printable ASCII characters (32 to 126), drawn by hand for this program: seven rows per
- * character, bit 4 of a row is its leftmost pixel. */
-static const uint8_t font5x7[95][7] = {
-    {0x00,0x00,0x00,0x00,0x00,0x00,0x00}, {0x04,0x04,0x04,0x04,0x04,0x00,0x04}, {0x0A,0x0A,0x0A,0x00,0x00,0x00,0x00}, {0x0A,0x0A,0x1F,0x0A,0x1F,0x0A,0x0A},
-    {0x04,0x0F,0x14,0x0E,0x05,0x1E,0x04}, {0x18,0x19,0x02,0x04,0x08,0x13,0x03}, {0x0C,0x12,0x14,0x08,0x15,0x12,0x0D}, {0x04,0x04,0x08,0x00,0x00,0x00,0x00},
-    {0x02,0x04,0x08,0x08,0x08,0x04,0x02}, {0x08,0x04,0x02,0x02,0x02,0x04,0x08}, {0x00,0x04,0x15,0x0E,0x15,0x04,0x00}, {0x00,0x04,0x04,0x1F,0x04,0x04,0x00},
-    {0x00,0x00,0x00,0x00,0x0C,0x04,0x08}, {0x00,0x00,0x00,0x1F,0x00,0x00,0x00}, {0x00,0x00,0x00,0x00,0x00,0x0C,0x0C}, {0x01,0x01,0x02,0x04,0x08,0x10,0x10},
-    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}, {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}, {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}, {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E},
-    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}, {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E}, {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}, {0x1F,0x01,0x02,0x04,0x08,0x08,0x08},
-    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}, {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}, {0x00,0x0C,0x0C,0x00,0x0C,0x0C,0x00}, {0x00,0x0C,0x0C,0x00,0x0C,0x04,0x08},
-    {0x02,0x04,0x08,0x10,0x08,0x04,0x02}, {0x00,0x00,0x1F,0x00,0x1F,0x00,0x00}, {0x08,0x04,0x02,0x01,0x02,0x04,0x08}, {0x0E,0x11,0x01,0x02,0x04,0x00,0x04},
-    {0x0E,0x11,0x17,0x15,0x17,0x10,0x0E}, {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E},
-    {0x1C,0x12,0x11,0x11,0x11,0x12,0x1C}, {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}, {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10}, {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F},
-    {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, {0x07,0x02,0x02,0x02,0x02,0x12,0x0C}, {0x11,0x12,0x14,0x18,0x14,0x12,0x11},
-    {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, {0x11,0x1B,0x15,0x15,0x11,0x11,0x11}, {0x11,0x11,0x19,0x15,0x13,0x11,0x11}, {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E},
-    {0x1E,0x11,0x11,0x1E,0x10,0x10,0x10}, {0x0E,0x11,0x11,0x11,0x15,0x12,0x0D}, {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11}, {0x0F,0x10,0x10,0x0E,0x01,0x01,0x1E},
-    {0x1F,0x04,0x04,0x04,0x04,0x04,0x04}, {0x11,0x11,0x11,0x11,0x11,0x11,0x0E}, {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}, {0x11,0x11,0x11,0x15,0x15,0x15,0x0A},
-    {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11}, {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}, {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F}, {0x0E,0x08,0x08,0x08,0x08,0x08,0x0E},
-    {0x10,0x10,0x08,0x04,0x02,0x01,0x01}, {0x0E,0x02,0x02,0x02,0x02,0x02,0x0E}, {0x04,0x0A,0x11,0x00,0x00,0x00,0x00}, {0x00,0x00,0x00,0x00,0x00,0x00,0x1F},
-    {0x08,0x04,0x02,0x00,0x00,0x00,0x00}, {0x00,0x00,0x0E,0x01,0x0F,0x11,0x0F}, {0x10,0x10,0x16,0x19,0x11,0x11,0x1E}, {0x00,0x00,0x0E,0x10,0x10,0x11,0x0E},
-    {0x01,0x01,0x0D,0x13,0x11,0x11,0x0F}, {0x00,0x00,0x0E,0x11,0x1F,0x10,0x0E}, {0x06,0x09,0x08,0x1C,0x08,0x08,0x08}, {0x00,0x0F,0x11,0x11,0x0F,0x01,0x0E},
-    {0x10,0x10,0x16,0x19,0x11,0x11,0x11}, {0x04,0x00,0x0C,0x04,0x04,0x04,0x0E}, {0x02,0x00,0x06,0x02,0x02,0x12,0x0C}, {0x10,0x10,0x12,0x14,0x18,0x14,0x12},
-    {0x0C,0x04,0x04,0x04,0x04,0x04,0x0E}, {0x00,0x00,0x1A,0x15,0x15,0x15,0x15}, {0x00,0x00,0x16,0x19,0x11,0x11,0x11}, {0x00,0x00,0x0E,0x11,0x11,0x11,0x0E},
-    {0x00,0x00,0x1E,0x11,0x1E,0x10,0x10}, {0x00,0x00,0x0D,0x13,0x0F,0x01,0x01}, {0x00,0x00,0x16,0x19,0x10,0x10,0x10}, {0x00,0x00,0x0F,0x10,0x0E,0x01,0x1E},
-    {0x08,0x08,0x1C,0x08,0x08,0x09,0x06}, {0x00,0x00,0x11,0x11,0x11,0x13,0x0D}, {0x00,0x00,0x11,0x11,0x11,0x0A,0x04}, {0x00,0x00,0x11,0x11,0x15,0x15,0x0A},
-    {0x00,0x00,0x11,0x0A,0x04,0x0A,0x11}, {0x00,0x00,0x11,0x11,0x0F,0x01,0x0E}, {0x00,0x00,0x1F,0x02,0x04,0x08,0x1F}, {0x02,0x04,0x04,0x08,0x04,0x04,0x02},
-    {0x04,0x04,0x04,0x04,0x04,0x04,0x04}, {0x08,0x04,0x04,0x02,0x04,0x04,0x08}, {0x00,0x00,0x08,0x15,0x02,0x00,0x00},
-};
-
-#define MENU_COLS 42 /* characters of 6 pixels across the 256 of the picture */
+/* The look (font, panel, cursor) is in play_ui.h; this is what the menu holds and does. */
 static uint8_t fb_menu[SCREEN_H * SCREEN_W * 3];
+static Canvas cv = {fb_menu, SCREEN_W, SCREEN_H};
 
-static void put_px(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-    uint8_t *p;
-    if (x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) return;
-    p = &fb_menu[(y * SCREEN_W + x) * 3];
-    p[0] = r; p[1] = g; p[2] = b;
-}
-
-static void draw_text(int x, int y, const char *s, uint8_t r, uint8_t g, uint8_t b) {
-    for (; *s; s++, x += 6) {
-        int row, col, c = (unsigned char)*s;
-        if (c < 32 || c > 126) c = '?';
-        for (row = 0; row < 7; row++)
-            for (col = 0; col < 5; col++)
-                if (font5x7[c - 32][row] >> (4 - col) & 1) put_px(x + col, y + row, r, g, b);
-    }
-}
-
-enum { PG_MAIN, PG_IMAGE, PG_AUDIO, PG_CONTROLS, PG_PLAYER, PG_COUNT };
-static int menu_open, menu_page, menu_sel[PG_COUNT], menu_player, menu_capture = -1, menu_confirm;
+enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_COUNT };
+static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game"};
+static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad;
 static Bind menu_pending;
 static char menu_msg[80];
-static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID};
+static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS};
+static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Scanlines", "Grid", "FPS counter"};
 #define N_IMAGE ((int)(sizeof image_opts / sizeof image_opts[0]))
 
-static int menu_count(int page) {
-    switch (page) {
-    case PG_MAIN: return 4;
-    case PG_IMAGE: return N_IMAGE + 1;
-    case PG_AUDIO: return 3;
-    case PG_CONTROLS: return 3;
-    default: return 13;
+static int menu_count(int tab) {
+    switch (tab) {
+    case TAB_IMAGE: return N_IMAGE + 1;
+    case TAB_AUDIO: return 3;
+    case TAB_CONTROLS: return 13;
+    default: return 4;
     }
 }
 
@@ -484,16 +443,21 @@ static int aud_dev_index(void) {
 static SDL_AudioDeviceID adev;
 static int opt_mute;
 static void open_audio(void);
+static void srm_save(void);
 
 static void close_audio(void) {
     if (adev) { SDL_CloseAudioDevice(adev); adev = 0; }
 }
 
+static void set_audio_device(const char *name) {
+    snprintf(cfg.eff.audio_device, sizeof cfg.eff.audio_device, "%s", name);
+    snprintf(cfg.file.audio_device, sizeof cfg.file.audio_device, "%s", name);
+    if (!opt_mute && !opt_no_window) { close_audio(); open_audio(); }
+}
+
 static void menu_audio_device(int dir) {
     int n = aud_dev_count(), i = (aud_dev_index() + dir + n) % n;
-    snprintf(cfg.eff.audio_device, sizeof cfg.eff.audio_device, "%s", aud_dev_name(i));
-    snprintf(cfg.file.audio_device, sizeof cfg.file.audio_device, "%s", cfg.eff.audio_device);
-    if (!opt_mute && !opt_no_window) { close_audio(); open_audio(); }
+    set_audio_device(aud_dev_name(i));
 }
 
 static void apply_option(int opt) {
@@ -510,32 +474,64 @@ static void opt_change(int opt, int dir) {
     apply_option(opt);
 }
 
-static void menu_back(void) {
-    if (menu_page == PG_MAIN) { menu_open = 0; config_save(); }
-    else menu_page = menu_page == PG_PLAYER ? PG_CONTROLS : PG_MAIN;
+static void restore_opt(int opt) {
+    config_user_set(&cfg, opt, opt_defs[opt].def);
+    apply_option(opt);
 }
 
-/* Left or right on the item (dir -1 or +1), or Enter (dir 0 for the items that open something). */
+static void restore_image(void) {
+    int i;
+    for (i = 0; i < N_IMAGE; i++) restore_opt(image_opts[i]);
+    snprintf(menu_msg, sizeof menu_msg, "Image options restored");
+}
+
+static void restore_audio(void) {
+    restore_opt(O_VOLUME);
+    set_audio_device("");
+    snprintf(menu_msg, sizeof menu_msg, "Audio options restored");
+}
+
+static void restore_all(void) {
+    restore_image();
+    restore_audio();
+    bind_defaults();
+    snprintf(menu_msg, sizeof menu_msg, "Everything restored to the defaults");
+}
+
+static void menu_close(void) {
+    menu_open = 0;
+    config_save();
+}
+
+static void menu_tab_move(int d) {
+    menu_tab = (menu_tab + d + TAB_COUNT) % TAB_COUNT;
+    menu_msg[0] = 0;
+}
+
+/* Left or right on the row (dir -1 or +1), or Enter (dir 0: the rows that do something). */
 static void menu_change(int dir) {
-    int s = menu_sel[menu_page];
-    switch (menu_page) {
-    case PG_MAIN:
-        if (dir == 0) { if (s == 3) menu_back(); else menu_page = s == 0 ? PG_IMAGE : s == 1 ? PG_AUDIO : PG_CONTROLS; }
-        break;
-    case PG_IMAGE:
-        if (s == N_IMAGE) { if (dir == 0) menu_back(); }
+    int s = menu_sel[menu_tab];
+    menu_msg[0] = 0;
+    switch (menu_tab) {
+    case TAB_IMAGE:
+        if (s == N_IMAGE) { if (dir == 0) restore_image(); }
         else opt_change(image_opts[s], dir ? dir : 1);
         break;
-    case PG_AUDIO:
-        if (s == 0) opt_change(O_VOLUME, dir ? dir : 1);
+    case TAB_AUDIO:
+        if (s == 0) { if (dir) opt_change(O_VOLUME, dir); }
         else if (s == 1) menu_audio_device(dir ? dir : 1);
-        else if (dir == 0) menu_back();
+        else if (dir == 0) restore_audio();
         break;
-    case PG_CONTROLS:
-        if (dir == 0) { if (s == 2) menu_back(); else { menu_player = s; menu_page = PG_PLAYER; menu_sel[PG_PLAYER] = 0; } }
+    case TAB_CONTROLS:
+        if (s == 0) menu_player = (menu_player + (dir ? dir : 1) + 2) % 2;
+        else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, "Press a key or a controller button"); }
         break;
     default:
-        if (dir == 0) { if (s == 12) menu_back(); else { menu_capture = s; snprintf(menu_msg, sizeof menu_msg, "Press a key or a controller button"); } }
+        if (dir) break;
+        if (s == 0) menu_close();
+        else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, "Saved game written"); }
+        else if (s == 2) { menu_ask = 1; snprintf(menu_msg, sizeof menu_msg, "Enter restores everything, Esc cancels"); }
+        else stop(0, "quit from the menu");
         break;
     }
 }
@@ -556,12 +552,14 @@ static void menu_assign(int dev, int code) {
 }
 
 static void menu_move(int d) {
-    int n = menu_count(menu_page);
-    menu_sel[menu_page] = (menu_sel[menu_page] + d + n) % n;
+    int n = menu_count(menu_tab);
+    menu_sel[menu_tab] = (menu_sel[menu_tab] + d + n) % n;
+    menu_msg[0] = 0;
 }
 
 /* A key pressed while the menu is open, or while the menu is being opened (F1). */
 static void menu_key(SDL_Scancode sc) {
+    menu_by_pad = 0;
     if (menu_confirm) {
         if (sc == SDL_SCANCODE_RETURN) {
             bind_assign(binds, &nbinds, MAX_BINDS, menu_pending.dev, menu_pending.code, menu_pending.player, menu_pending.button, 1);
@@ -569,6 +567,11 @@ static void menu_key(SDL_Scancode sc) {
         } else if (sc == SDL_SCANCODE_ESCAPE) {
             menu_confirm = 0; menu_capture = -1; menu_msg[0] = 0;
         }
+        return;
+    }
+    if (menu_ask) {
+        if (sc == SDL_SCANCODE_RETURN) { menu_ask = 0; restore_all(); }
+        else if (sc == SDL_SCANCODE_ESCAPE) { menu_ask = 0; menu_msg[0] = 0; }
         return;
     }
     if (menu_capture >= 0) {
@@ -582,27 +585,32 @@ static void menu_key(SDL_Scancode sc) {
     case SDL_SCANCODE_LEFT: menu_change(-1); break;
     case SDL_SCANCODE_RIGHT: menu_change(1); break;
     case SDL_SCANCODE_RETURN: menu_change(0); break;
-    case SDL_SCANCODE_ESCAPE: menu_back(); break;
-    case SDL_SCANCODE_F1: menu_open = 0; config_save(); break;
+    case SDL_SCANCODE_Q: case SDL_SCANCODE_PAGEUP: menu_tab_move(-1); break;
+    case SDL_SCANCODE_W: case SDL_SCANCODE_PAGEDOWN: menu_tab_move(1); break;
+    case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F1: menu_close(); break;
     default: break;
     }
 }
 
 static void menu_pad(SDL_GameControllerButton b) {
-    if (menu_confirm) {
+    if (menu_confirm || menu_ask) {
         menu_key(b == SDL_CONTROLLER_BUTTON_A ? SDL_SCANCODE_RETURN : SDL_SCANCODE_ESCAPE);
+        menu_by_pad = 1;
         return;
     }
-    if (menu_capture >= 0) { menu_assign(BIND_PAD, b); return; }
+    if (menu_capture >= 0) { menu_assign(BIND_PAD, b); menu_by_pad = 1; return; }
     switch (b) {
     case SDL_CONTROLLER_BUTTON_DPAD_UP: menu_key(SDL_SCANCODE_UP); break;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN: menu_key(SDL_SCANCODE_DOWN); break;
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT: menu_key(SDL_SCANCODE_LEFT); break;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: menu_key(SDL_SCANCODE_RIGHT); break;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: menu_key(SDL_SCANCODE_Q); break;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: menu_key(SDL_SCANCODE_W); break;
     case SDL_CONTROLLER_BUTTON_A: menu_key(SDL_SCANCODE_RETURN); break;
     case SDL_CONTROLLER_BUTTON_B: menu_key(SDL_SCANCODE_ESCAPE); break;
-    default: break;
+    default: return;
     }
+    menu_by_pad = 1;
 }
 
 /* The keys and buttons of `button` for the menu line, e.g. "Space, Z | a". */
@@ -625,51 +633,126 @@ static void bind_text(char *out, size_t n, int player, int button) {
     }
 }
 
+/* Where the panel puts things (the picture is 256 by 224). */
+enum { PX = 10, PY = 6, PW = 236, PH = 214, ROW_X = 22, ROW_W = 212, ROW_Y = 52, ROW_H = 11, VAL_R = 228, VAL_W = 92 };
+
+/* One row. `kind`: 0 an action, 1 a value with arrows (`dimL`/`dimR` dim an arrow), 2 a bar at `pct`, 3 only text. */
+static void menu_row(int i, int on, const char *label, int kind, const char *value, int pct, int dimL, int dimR) {
+    int y = ROW_Y + i * ROW_H, bob = on ? (menu_tick / 10) % 2 : 0;
+    char fit[96];
+    if (on) cv_rect(&cv, ROW_X, y - 2, ROW_W, ROW_H - 1, 0x34489Cu);
+    if (on) ui_cursor(&cv, ROW_X + 3 + bob, y);
+    text_draw(&cv, ROW_X + 16, y, label, on ? UI_GOLD : UI_TEXT, 1);
+    if (kind == 1) {
+        int left = VAL_R - VAL_W - 4;
+        text_fit(fit, sizeof fit, value, VAL_W - 4);
+        ui_arrow(&cv, left, y, -1, dimL ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
+        text_center(&cv, left + 6, VAL_W - 4, y, fit, on ? UI_GOOD : UI_TEXT);
+        ui_arrow(&cv, VAL_R - 4, y, 1, dimR ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
+    } else if (kind == 2) {
+        ui_bar(&cv, VAL_R - 84 - 26, y, 84, 7, pct);
+        text_right(&cv, VAL_R, y, value, on ? UI_GOOD : UI_TEXT);
+    } else if (kind == 3) {
+        text_fit(fit, sizeof fit, value, VAL_W + 20);
+        text_right(&cv, VAL_R, y, fit, on ? UI_GOOD : UI_TEXT);
+    }
+}
+
+/* The value of an option as the menu shows it ("Off"/"On" for the yes-or-no ones). */
+static void opt_label(int opt, char *out, size_t n) {
+    const OptDef *d = &opt_defs[opt];
+    opt_format(d, cfg.eff.v[opt], out, n);
+    if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", cfg.eff.v[opt] ? "On" : "Off");
+    else if (opt == O_SCANLINES) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
+}
+
 /* The menu over the picture `fb`, into fb_menu. */
 static void menu_draw(const uint8_t *fb) {
-    static const char *titles[PG_COUNT] = {"OPTIONS", "IMAGE", "AUDIO", "CONTROLS", "PLAYER"};
-    char line[96], val[64];
-    int i, n = menu_count(menu_page), y = 30, s = menu_sel[menu_page];
-    for (i = 0; i < SCREEN_H * SCREEN_W * 3; i++) fb_menu[i] = (uint8_t)(fb[i] / 3);
-    snprintf(line, sizeof line, menu_page == PG_PLAYER ? "%s %d" : "%s", titles[menu_page], menu_player + 1);
-    draw_text(8, 10, line, 255, 255, 120);
-    draw_text(8, 20, "Arrows: choose, change  Enter  Esc: back", 140, 140, 140);
-    for (i = 0; i < n; i++, y += 10) {
-        const char *label = "", *v = "";
+    char val[96], line[96];
+    int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab], extra, used = 0;
+    const char *help;
+    ui_backdrop(&cv, fb);
+    ui_panel(&cv, PX, PY, PW, PH);
+    for (t = 0; t < TAB_COUNT; t++) used += text_w(tab_names[t]) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
+    extra = (ROW_W - 8 - used + 3) / TAB_COUNT;
+    text_draw2x(&cv, PX + (PW - text_w2x("OPTIONS")) / 2, PY + 7, "OPTIONS", UI_GOLD, UI_SHADOW);
+    ui_rule(&cv, PX + 10, PY + 25, PW - 20);
+    for (t = 0, x = ROW_X + 4; t < TAB_COUNT; t++) {
+        int on = t == menu_tab, w = text_w(tab_names[t]) + 12 + extra;
+        if (on) { cv_rect(&cv, x, PY + 30, w, 13, 0x4A64C8u); cv_rect(&cv, x, PY + 30, w, 1, 0xE8ECFAu); }
+        else cv_rect(&cv, x, PY + 33, w, 10, 0x141C50u);
+        text_center(&cv, x, w, PY + (on ? 33 : 34), tab_names[t], on ? UI_GOLD : UI_DIM);
+        x += w + 3;
+    }
+    for (i = 0; i < n; i++) {
         int on = i == s;
-        val[0] = 0;
-        switch (menu_page) {
-        case PG_MAIN: label = i == 0 ? "Image" : i == 1 ? "Audio" : i == 2 ? "Controls" : "Close"; break;
-        case PG_IMAGE:
-            if (i == N_IMAGE) { label = "Back"; break; }
-            label = opt_defs[image_opts[i]].key;
-            opt_format(&opt_defs[image_opts[i]], cfg.eff.v[image_opts[i]], val, sizeof val);
-            v = val;
+        switch (menu_tab) {
+        case TAB_IMAGE:
+            if (i == N_IMAGE) { menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0); break; }
+            {
+                const OptDef *d = &opt_defs[image_opts[i]];
+                int v = cfg.eff.v[image_opts[i]];
+                opt_label(image_opts[i], val, sizeof val);
+                menu_row(i, on, image_labels[i], 1, val, 0, !d->names && v <= d->lo, !d->names && v >= d->hi);
+            }
             break;
-        case PG_AUDIO:
-            if (i == 0) { label = "volume"; snprintf(val, sizeof val, "%d", cfg.eff.v[O_VOLUME]); v = val; }
-            else if (i == 1) { label = "device"; snprintf(val, sizeof val, "%.26s", cfg.eff.audio_device[0] ? cfg.eff.audio_device : "default"); v = val; }
-            else label = "Back";
+        case TAB_AUDIO:
+            if (i == 0) { snprintf(val, sizeof val, "%d", cfg.eff.v[O_VOLUME]); menu_row(i, on, "Volume", 2, val, cfg.eff.v[O_VOLUME], 0, 0); }
+            else if (i == 1) menu_row(i, on, "Output device", 1, cfg.eff.audio_device[0] ? cfg.eff.audio_device : "Default", 0, 0, 0);
+            else menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0);
             break;
-        case PG_CONTROLS: label = i == 0 ? "Player 1" : i == 1 ? "Player 2" : "Back"; break;
+        case TAB_CONTROLS:
+            if (i == 0) { snprintf(val, sizeof val, "Player %d", menu_player + 1); menu_row(i, on, "Controls of", 1, val, 0, 0, 0); }
+            else {
+                bind_text(val, sizeof val, menu_player, 0x8000 >> (i - 1));
+                menu_row(i, on, btn_names[i - 1], 3, menu_capture == i - 1 ? "..." : val, 0, 0, 0);
+            }
+            break;
         default:
-            if (i == 12) { label = "Back"; break; }
-            label = btn_names[i];
-            bind_text(val, sizeof val, menu_player, 0x8000 >> i);
-            v = menu_capture == i ? "..." : val;
+            menu_row(i, on, i == 0 ? "Resume" : i == 1 ? "Save game now" : i == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
             break;
         }
-        draw_text(8, y, on ? ">" : " ", 255, 255, 255);
-        draw_text(16, y, label, on ? 255 : 200, on ? 255 : 200, on ? 255 : 200);
-        draw_text(96, y, v, on ? 120 : 90, on ? 255 : 200, on ? 120 : 90);
     }
-    if (menu_msg[0]) draw_text(8, SCREEN_H - 14, menu_msg, 255, 140, 140);
+    if (menu_msg[0]) { text_fit(line, sizeof line, menu_msg, PW - 24); text_center(&cv, PX, PW, PY + PH - 26, line, UI_WARN); }
+    ui_rule(&cv, PX + 10, PY + PH - 17, PW - 20);
+    help = menu_capture >= 0 ? "Press the key or button   Esc: cancel"
+         : menu_by_pad ? "L/R: tabs   A: select   B: close"
+         : "Q/W: tabs   Enter: select   Esc: close";
+    text_center(&cv, PX, PW, PY + PH - 13, help, UI_DIM);
+    menu_tick++;
+}
+
+/* The frames per second, counted over a second of frames, for the `fps` option. */
+static int fps_val, fps_n;
+static uint64_t fps_t0;
+
+static void fps_tick(void) {
+    uint64_t now = SDL_GetPerformanceCounter();
+    if (!fps_t0) fps_t0 = now;
+    fps_n++;
+    if (now - fps_t0 >= perf_freq) {
+        fps_val = (int)((double)fps_n * (double)perf_freq / (double)(now - fps_t0) + 0.5);
+        fps_n = 0;
+        fps_t0 = now;
+    }
+}
+
+/* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and
+ * then drawn into fb_menu, so the picture itself is never touched). */
+static const uint8_t *shown_frame(void) {
+    char t[24];
+    if (menu_open) return fb_menu; /* the menu, already drawn (for the captures) */
+    if (!cfg.eff.v[O_FPS]) return fb_front;
+    memcpy(fb_menu, fb_front, sizeof fb_menu);
+    snprintf(t, sizeof t, "%d FPS", fps_val);
+    text_draw(&cv, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+    return fb_menu;
 }
 
 /* Any key: F1 opens or closes the menu; with the menu open, the keys drive it. */
 static void ui_key(SDL_Scancode sc) {
     if (menu_open) { menu_key(sc); return; }
-    if (sc == SDL_SCANCODE_F1) { menu_open = 1; menu_page = PG_MAIN; menu_capture = -1; menu_confirm = 0; menu_msg[0] = 0; }
+    if (sc == SDL_SCANCODE_F1) { menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = 0; menu_msg[0] = 0; menu_tick = 0; }
 }
 
 static void handle_events(void) {
@@ -870,12 +953,19 @@ static int menu_shot_page;
 
 static void play_frame(void) {
     if (++srm_frames >= 60) { srm_frames = 0; srm_save(); }
+    fps_tick();
     if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
     if (menu_shot_path && frames + 1 >= max_frames) {
         menu_open = 1;
-        menu_page = menu_shot_page;
+        menu_tab = menu_shot_page;
         menu_draw(fb_front);
         if (!write_png(menu_shot_path, fb_menu, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", menu_shot_path);
+        else {
+            uint32_t h = 2166136261u; /* FNV-1a of the picture, so the tests can tell two captures apart */
+            size_t i;
+            for (i = 0; i < sizeof fb_menu; i++) h = (h ^ fb_menu[i]) * 16777619u;
+            printf("menu-shot: %08x\n", (unsigned)h);
+        }
         menu_shot_path = NULL;
     }
     if (present_shot_path && frames + 1 >= max_frames) {
@@ -887,7 +977,7 @@ static void play_frame(void) {
         live_pad2 = 0;
         return;
     }
-    present(fb_front);
+    present(shown_frame());
     handle_events();
     fast = SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
     flush_audio();
@@ -896,7 +986,7 @@ static void play_frame(void) {
             SDL_Delay(20);
             handle_events();
             if (menu_open) { menu_draw(fb_front); present(fb_menu); }
-            else present(fb_front);
+            else present(shown_frame());
             t_next = SDL_GetPerformanceCounter();
         }
         if (adev) audio_silence(2);
@@ -986,7 +1076,7 @@ int main(int argc, char **argv) {
             cli_set[o] = 1; cli_val[o] = v;
         }
         else if (!strcmp(argv[i], "--menu-shot") && i + 1 < argc) menu_shot_path = argv[++i];
-        else if (!strcmp(argv[i], "--menu-page") && i + 1 < argc) { menu_shot_page = atoi(argv[++i]); if (menu_shot_page < 0 || menu_shot_page >= PG_COUNT) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--menu-page") && i + 1 < argc) { menu_shot_page = atoi(argv[++i]); if (menu_shot_page < 0 || menu_shot_page >= TAB_COUNT) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--menu-keys") && i + 1 < argc) {
             char *tok, list[1024];
             snprintf(list, sizeof list, "%s", argv[++i]);
