@@ -12,6 +12,19 @@ pub const RUNTIME_HEADER: &str = include_str!("../runtime/snes_rt.h");
 /// Runtime without video or audio, written next to the generated C by `codegen --all`.
 pub const HEADLESS_RUNTIME: &str = include_str!("../runtime/headless.c");
 
+/// Hardware core shared by the runtimes (bus, DMA, clock, contexts, report); included by `headless.c`.
+pub const RUNTIME_CORE: &str = include_str!("../runtime/snes_core.inc");
+
+/// Interactive frontend (SDL2 window and keyboard), written as `play/snes_play.c` by `codegen --all`.
+pub const PLAY_RUNTIME: &str = include_str!("../runtime/play.c");
+
+/// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
+pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
+
+/// PPU renderer and PNG writer, included by `snes_core.inc`.
+pub const RUNTIME_PPU: &str = include_str!("../runtime/snes_ppu.inc");
+pub const RUNTIME_SPC: &str = include_str!("../runtime/snes_spc.inc");
+
 pub fn func_name(entry: u32) -> String {
     format!("f_{:02X}_{:04X}", entry >> 16, entry & 0xFFFF)
 }

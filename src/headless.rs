@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, RUNTIME_HEADER};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_RUNTIME, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -69,6 +69,9 @@ fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen:
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
         ("snes_entry.c".into(), out.entry.clone().into_bytes()),
         ("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()),
+        ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
+        ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
+        ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
     files.extend(rom.map(|bytes| ("rom.sfc".to_string(), bytes)));
@@ -85,6 +88,55 @@ fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen:
             Run { code, out: e }
         }
     }
+}
+
+/// Like `run`, but builds the interactive frontend (`runtime/play.c`) with SDL2 and runs it with `args`
+/// (which should include `--no-window`). Skipped, returning `None`, when SDL2 or Visual Studio is missing.
+fn run_play(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[&str]) -> Option<Run> {
+    run_play_with(name, segments, roots, args, &[])
+}
+
+/// Like `run_play`, with `extra` files (name, contents) next to the ROM, e.g. a `rom.keys`.
+fn run_play_with(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[&str], extra: &[(&str, &[u8])]) -> Option<Run> {
+    run_play_times(name, segments, roots, args, extra, 1)
+}
+
+/// Like `run_play_with`, running the program `runs` times in a row in the same folder; the output is all of them.
+fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[&str], extra: &[(&str, &[u8])], runs: usize) -> Option<Run> {
+    let cc = crate::cctest::find()?;
+    let Some(sdl) = crate::cctest::sdl2_dir() else {
+        eprintln!("skipped {name}: no SDL2 development package (set SDL2_DIR or unpack it in out/sdl2)");
+        return None;
+    };
+    let mut all: Vec<(u32, &[u8])> = segments.to_vec();
+    all.extend(VECTORS);
+    let image_bytes = image(&all);
+    let rom_obj = crate::rom::Rom::from_bytes(image_bytes.clone()).unwrap();
+    let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
+    let d = discover(&rom_obj, &Config::default(), &r);
+    let g = Graph::build(&d, roots);
+    let out = Emitter::new(&d, &g).generate_all();
+    let mut files: Vec<(String, Vec<u8>)> = vec![
+        ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
+        ("snes_funcs.h".into(), out.header.clone().into_bytes()),
+        ("snes_entry.c".into(), out.entry.clone().into_bytes()),
+        ("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()),
+        ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
+        ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
+        ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("rom.sfc".into(), image_bytes),
+    ];
+    files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
+    files.extend(extra.iter().map(|(n, b)| (n.to_string(), b.to_vec())));
+    let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
+    Some(match cc.compile_run_sdl_times(name, &files, &["SNES_RT_TICK"], args, Some(&sdl), runs) {
+        Ok(out) => Run { code: 0, out },
+        Err(e) => {
+            let code = e.strip_prefix("exit Some(").and_then(|r| r.split(')').next()).and_then(|n| n.parse().ok()).unwrap_or_else(|| panic!("the build failed:
+{e}"));
+            Run { code, out: e }
+        }
+    })
 }
 
 #[test]
@@ -180,28 +232,28 @@ fn nmi_flag_is_read_once_and_vblank_only_ends_the_frame() {
     assert_eq!(r.reg(0x2136), Some("reads=0 writes=1 last=40"), "{}", r.out);
 }
 
+/// `LDA $2140 ; CMP #v ; BNE -7`: waits for port 0 of the sound CPU to show `v`.
+fn wait_port0(v: u8) -> Vec<u8> {
+    vec![0xAD, 0x40, 0x21, 0xC9, v, 0xD0, 0xF9]
+}
+
 #[test]
-fn audio_ports_answer_the_boot_handshake_and_then_echo() {
-    let code: &[u8] = &[
-        0xAD, 0x40, 0x21, 0x8D, 0x50, 0x21, // $2140 -> $2150 (AA)
-        0xAD, 0x41, 0x21, 0x8D, 0x51, 0x21, // $2141 -> $2151 (BB)
-        0xA9, 0xCC, 0x8D, 0x40, 0x21, // CC to port 0 starts the transfer
-        0xA9, 0x12, 0x8D, 0x41, 0x21, 0xA9, 0x34, 0x8D, 0x42, 0x21,
-        0xAD, 0x40, 0x21, 0x8D, 0x52, 0x21, // -> CC
-        0xAD, 0x41, 0x21, 0x8D, 0x53, 0x21, // -> 12
-        0xAD, 0x42, 0x21, 0x8D, 0x54, 0x21, // -> 34
-        0xA9, 0x00, 0x8D, 0x41, 0x21, 0xA9, 0x55, 0x8D, 0x40, 0x21, // a header with port 1 = 0 runs the program
-        0xA9, 0xFF, 0x8D, 0x40, 0x21, // FF asks for a new bank: the boot ROM answers AA BB again
-        0xAD, 0x40, 0x21, 0x8D, 0x55, 0x21, // -> AA
-        0xAD, 0x41, 0x21, 0x8D, 0x56, 0x21, // -> BB
-        0xA9, 0xCC, 0x8D, 0x40, 0x21, 0xA9, 0x77, 0x8D, 0x41, 0x21, // a new transfer starts and echoes again
-        0xAD, 0x41, 0x21, 0x8D, 0x57, 0x21, // -> 77
-        0x80, 0xFE,
-    ];
-    let Some(r) = run("hl-apu", &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--frames", "1", "--frame-blocks", "20"]) else { return };
+fn the_sound_cpu_answers_the_boot_handshake_takes_an_upload_and_runs_it() {
+    // The main CPU waits for $AA/$BB, uploads `MOV $F4,#$42 ; BRA $` to $0300 with the boot ROM protocol, and
+    // starts it: port 0 then shows $42.
+    let spc_prog = [0x8F, 0x42, 0xF4, 0x2F, 0xFE];
+    let mut parts = vec![wait_port0(0xAA), mv(0x2140, 0x2150), mv(0x2141, 0x2151)];
+    parts.extend([st(0x00, 0x2142), st(0x03, 0x2143), st(0x01, 0x2141), st(0xCC, 0x2140), wait_port0(0xCC)]);
+    for (i, b) in spc_prog.iter().enumerate() {
+        parts.extend([st(*b, 0x2141), st(i as u8, 0x2140), wait_port0(i as u8)]);
+    }
+    parts.extend([st(0x00, 0x2141), st(0x00, 0x2142), st(0x03, 0x2143), st(spc_prog.len() as u8 + 2, 0x2140), wait_port0(0x42), mv(0x2140, 0x2152)]);
+    let code = prog(&parts);
+    let Some(r) = run("hl-apu", &[(0x8000, code.as_slice())], &[0x8000], None, &["rom.sfc", "--frames", "3", "--frame-blocks", "200"]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
-    for (reg, want) in [(0x2150, "AA"), (0x2151, "BB"), (0x2152, "CC"), (0x2153, "12"), (0x2154, "34"), (0x2155, "AA"), (0x2156, "BB"), (0x2157, "77")] {
-        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}: {:?}\n{}", r.reg(reg), r.out);
+    for (reg, want) in [(0x2150, "AA"), (0x2151, "BB"), (0x2152, "42")] {
+        assert!(r.reg(reg).is_some_and(|l| l.ends_with(&format!("last={want}"))), "${reg:04X}: {:?}
+{}", r.reg(reg), r.out);
     }
 }
 
@@ -427,14 +479,16 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = Graph::build(&d, &addrs);
     let out = Emitter::new(&d, &g).generate_all();
-    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "200".into());
+    let frames = std::env::var("ALTTP_FRAMES").unwrap_or_else(|_| "260".into());
     let blocks = std::env::var("ALTTP_FRAME_BLOCKS").unwrap_or_else(|_| "20000".into());
     let dump = std::env::temp_dir().join(format!("snes-recomp-alttp-dump-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dump);
     std::fs::create_dir_all(&dump).unwrap();
     let dump_arg = dump.to_string_lossy().into_owned();
     let shot_arg = dump.join("shot.png").to_string_lossy().into_owned();
-    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg, "--screenshot", &shot_arg, "--trace-frames", "0-100000", "--watch", "11"]);
+    let wav_arg = dump.join("out.wav").to_string_lossy().into_owned();
+    let r = build_and_run(&cc, "alttp-headless", &out, Some(bytes), &["rom.sfc", "--frames", &frames, "--frame-blocks", &blocks, "--dump", &dump_arg, "--screenshot", &shot_arg, "--trace-frames", "0-100000", "--watch", "11", "--wav", &wav_arg]);
+    let wav = std::fs::read(dump.join("out.wav")).unwrap_or_default();
     let shot = std::fs::read(dump.join("shot.png")).ok().map(|b| decode_png(&b));
     eprintln!("exit code {}\n{}", r.code, r.out);
     let read = |f: &str| std::fs::read(dump.join(f)).unwrap_or_default();
@@ -449,6 +503,18 @@ fn alttp_boots_and_takes_its_first_nmis() {
     let distinct: std::collections::HashSet<[u8; 3]> = (0..shot.w * shot.h).map(|i| [shot.px[i * 3], shot.px[i * 3 + 1], shot.px[i * 3 + 2]]).collect();
     assert!(distinct.len() >= 3, "only {} colours in the screenshot", distinct.len());
     assert!(r.out.contains("== report =="), "{}", r.out);
+    // The audio: a WAV of 16 bit stereo at 32 kHz, one stereo sample per 1/32000 s of the run, with sound in it
+    // (the game uploads its sound program through the real boot ROM and the driver then plays).
+    let n_frames: f64 = frames.parse().unwrap();
+    let samples = n_frames / 60.0988 * 32000.0;
+    assert!(wav.len() > 44 && &wav[0..4] == b"RIFF" && &wav[8..16] == b"WAVEfmt ", "no WAV header ({} bytes)", wav.len());
+    assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 2, "stereo");
+    assert_eq!(u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]), 32000, "32 kHz");
+    assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "16 bits");
+    let data = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize;
+    assert_eq!(data, wav.len() - 44, "the data size of the header");
+    assert!(((data / 4) as f64 - samples).abs() < 600.0, "{} samples, expected about {samples}", data / 4);
+    assert!(wav[44..].chunks(2).any(|b| b != [0, 0]), "the audio is silent");
     // The reset code forces blank, the audio upload goes through the handshake, and NMI gets enabled.
     assert!(r.reg(0x2100).is_some(), "{}", r.out);
     assert!(r.reg(0x2140).is_some_and(|l| l.contains("reads=") && !l.contains("reads=0 ")), "{}", r.out);
@@ -1045,6 +1111,332 @@ fn scroll_registers_take_two_writes_and_move_the_background() {
 }
 
 #[test]
+fn the_interactive_frontend_without_a_window_draws_the_same_picture_as_the_headless_runtime() {
+    let mut parts = scroll_scene();
+    parts.extend([st(0x04, 0x210D), st(0x00, 0x210D)]);
+    let code = prog(&parts);
+    let dir = std::env::temp_dir().join(format!("snes-recomp-play-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.png").to_string_lossy().into_owned();
+    let Some(r) = run_play("play-nowindow", &[(0x8000, &code)], &[0x8000], &["rom.sfc", "--no-window", "--frames", "1", "--frame-blocks", "20", "--screenshot", &path]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let play = std::fs::read(dir.join("p.png")).expect("no screenshot from snes_play");
+    let _ = std::fs::remove_dir_all(&dir);
+    let Some((_, head)) = shot("play-vs-headless", &code) else { return };
+    let play = decode_png(&play);
+    let head = head.unwrap();
+    assert!(play.px == head.px, "the two runtimes drew different pictures");
+}
+
+#[test]
+fn the_interactive_frontend_rejects_a_missing_rom_and_bad_options() {
+    let code = prog(&[st(0x00, 0x2100)]);
+    let Some(r) = run_play("play-missing", &[(0x8000, &code)], &[0x8000], &["missing.sfc", "--no-window"]) else { return };
+    assert_eq!(r.code, 2, "{}", r.out);
+    let Some(r) = run_play("play-badopt", &[(0x8000, &code)], &[0x8000], &["rom.sfc", "--no-window", "--bogus"]) else { return };
+    assert_eq!(r.code, 2, "{}", r.out);
+}
+
+#[test]
+fn a_live_source_and_press_add_up_in_the_automatic_read() {
+    // $4200 = 1, then each vblank: LDA $4219 -> $2134 ; LDA $4218 -> $2135 (as in the --press test)
+    let code = prog(&[st(0x01, 0x4200), vec![0xAD, 0x12, 0x42, 0x10, 0xFB], mv(0x4219, 0x2134), mv(0x4218, 0x2135), vec![0x80, 0xED]]);
+    let seg = [(0x8000, code.as_slice())];
+    let base = ["rom.sfc", "--no-window", "--frames", "4", "--frame-blocks", "50"];
+    // RIGHT is held by the source, A by --press: both show.
+    let args: Vec<&str> = base.iter().copied().chain(["--hold", "RIGHT", "--press", "A@0-9"]).collect();
+    let Some(r) = run_play("play-hold", &seg, &[0x8000], &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=01")), "RIGHT (bit 0) in $4219
+{}", r.out);
+    assert!(r.reg(0x2135).is_some_and(|l| l.ends_with("last=80")), "A (bit 7) in $4218
+{}", r.out);
+    // Without --hold only --press counts; a wrong name is a usage error.
+    let args: Vec<&str> = base.iter().copied().chain(["--press", "A@0-9"]).collect();
+    let Some(r) = run_play("play-nohold", &seg, &[0x8000], &args) else { return };
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+    let args: Vec<&str> = base.iter().copied().chain(["--hold", "FIRE"]).collect();
+    let Some(r) = run_play("play-badhold", &seg, &[0x8000], &args) else { return };
+    assert_eq!(r.code, 2, "{}", r.out);
+}
+
+#[test]
+fn a_keys_file_next_to_the_rom_changes_the_keyboard_map() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let keys = b"# my keys
+Space = A
+F = Q
+NoSuchKey = B
+X = FIRE
+";
+    let Some(r) = run_play_with("play-keys", &seg, &[0x8000], &["rom.sfc", "--print-keys"], &[("rom.keys", keys)]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let lines: Vec<&str> = r.out.lines().collect();
+    assert!(lines.contains(&"Space = A"), "{}", r.out);
+    assert!(!lines.contains(&"S = A"), "A loses its default key
+{}", r.out);
+    assert!(lines.contains(&"X = B") && lines.contains(&"Up = UP"), "the other defaults stay
+{}", r.out);
+    // `F = Q` is not a button name, so L keeps its default; the two bad lines are ignored (warnings go to stderr)
+    assert!(lines.contains(&"Q = L") && !lines.iter().any(|l| l.starts_with("F =")), "{}", r.out);
+    assert_eq!(lines.len(), 12, "12 bindings in all\n{}", r.out);
+}
+
+/// `LDA $70:0000 ; STA $2134` (what the game finds in the SRAM).
+fn read_sram() -> Vec<u8> {
+    vec![0xAF, 0x00, 0x00, 0x70, 0x8D, 0x34, 0x21]
+}
+
+#[test]
+fn the_sram_is_saved_to_a_srm_file_and_found_again() {
+    // First run: read $70:0000 (shown in $2134), then write $5A there. The second run finds the $5A.
+    let code = prog(&[read_sram(), vec![0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70]]);
+    let seg = [(0x8000, code.as_slice())];
+    let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50"];
+    let Some(r) = run_play_times("play-srm", &seg, &[0x8000], &args, &[], 2) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let seen: Vec<&str> = r.out.lines().filter(|l| l.starts_with("  $2134 ")).map(|l| l.rsplit("last=").next().unwrap()).collect();
+    assert_eq!(seen, ["00", "5A"], "{}", r.out);
+    assert_eq!(r.out.matches("sram: saved").count(), 1, "saved once, in the run that changed it
+{}", r.out);
+    assert_eq!(r.out.matches("sram: loaded").count(), 1, "loaded by the second run only
+{}", r.out);
+}
+
+#[test]
+fn a_srm_of_the_wrong_size_is_ignored_and_one_without_changes_is_not_rewritten() {
+    let seg_read = [(0x8000, prog(&[read_sram()]))];
+    let seg = [(seg_read[0].0, seg_read[0].1.as_slice())];
+    let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50"];
+    let mut good = vec![0u8; 0x8000];
+    good[0] = 0x33;
+    let Some(r) = run_play_times("play-srm-ok", &seg, &[0x8000], &args, &[("rom.srm", &good)], 2) else { return };
+    assert_eq!(r.out.matches("last=33").count(), 2, "{}", r.out);
+    assert!(!r.out.contains("sram: saved"), "no change, no rewrite
+{}", r.out);
+    let Some(r) = run_play_times("play-srm-bad", &seg, &[0x8000], &args, &[("rom.srm", &[0x44u8; 100])], 1) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")), "the short file is not used
+{}", r.out);
+    assert!(!r.out.contains("sram: loaded"), "{}", r.out);
+}
+
+fn tile8(pixels: &[(usize, usize, u8)]) -> Vec<u16> {
+    let mut t = vec![0u16; 32];
+    for &(x, y, c) in pixels {
+        let bit = 0x80u16 >> x;
+        for plane in 0..8 {
+            if c >> plane & 1 == 1 {
+                t[(plane / 2) * 8 + y] |= bit << ((plane % 2) * 8);
+            }
+        }
+    }
+    t
+}
+
+#[test]
+fn mode_0_has_four_backgrounds_of_two_bits_with_a_palette_region_each() {
+    // Tile 1 of BG1 and BG3, tile 2 of BG2 and tile 1 of BG4 each have colour 1 at a different pixel of the first row.
+    let code = prog(&[
+        ppu_base(0x0F),
+        st(0x00, 0x2105),
+        st(0x1C, 0x210A),
+        st(0x32, 0x210C),
+        vram_words(8, &tile2(&[(0, 0, 1)])),
+        vram_words(16, &tile2(&[(1, 0, 1)])),
+        vram_words(0x2008, &tile2(&[(2, 0, 1)])),
+        vram_words(0x3008, &tile2(&[(3, 0, 1)])),
+        vram_words(0x1000, &[1]),
+        vram_words(0x1400, &[2]),
+        vram_words(0x1800, &[1]),
+        vram_words(0x1C00, &[1]),
+        cgram_set(1, &[RED]),
+        cgram_set(33, &[GREEN]),
+        cgram_set(65, &[BLUE]),
+        cgram_set(97, &[YELLOW]),
+    ]);
+    let Some((r, img)) = shot("rd-mode0", &code) else { return };
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
+    let img = img.unwrap();
+    assert_eq!(img.rgb(0, 0), rgb(RED));
+    assert_eq!(img.rgb(1, 0), rgb(GREEN));
+    assert_eq!(img.rgb(2, 0), rgb(BLUE));
+    assert_eq!(img.rgb(3, 0), rgb(YELLOW));
+    assert_eq!(img.rgb(4, 0), rgb(0));
+}
+
+#[test]
+fn mode_3_has_a_background_of_eight_bits_in_front_of_one_of_four() {
+    // BG1 (8 bits, colour $C8 at pixel 0) and BG2 (4 bits, palette 0 colour 3 at pixel 1) in the first row.
+    let code = prog(&[
+        ppu_base(0x03),
+        st(0x03, 0x2105),
+        st(0x40, 0x210B),
+        vram_words(32, &tile8(&[(0, 0, 0xC8)])),
+        vram_words(0x4010, &tile4(&[(1, 0, 3)])),
+        vram_words(0x1000, &[1]),
+        vram_words(0x1400, &[1]),
+        cgram_set(0xC8, &[RED]),
+        cgram_set(3, &[GREEN]),
+    ]);
+    let Some((r, img)) = shot("rd-mode3", &code) else { return };
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
+    let img = img.unwrap();
+    assert_eq!(img.rgb(0, 0), rgb(RED));
+    assert_eq!(img.rgb(1, 0), rgb(GREEN));
+}
+
+#[test]
+fn mode_2_scrolls_a_column_of_eight_pixels_by_the_entry_of_the_third_background() {
+    // BG1 shows tile 1 (colour 1 at its top left pixel) in map column 1, so at x = 8. BG3's first entry gives the
+    // column starting at x = 8 a horizontal offset of 8 for BG1 (bit 13), which moves it onto the empty column 2.
+    let tile = vram_words(16, &tile4(&[(0, 0, 1)]));
+    let pal = cgram_set(0, &[RED, GREEN]);
+    let plain = prog(&[ppu_base(0x01), st(0x02, 0x2105), tile.clone(), vram_words(0x1001, &[1]), pal.clone()]);
+    let Some((r, img)) = shot("rd-mode2-plain", &plain) else { return };
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
+    assert_eq!(img.unwrap().rgb(8, 0), rgb(GREEN));
+    let shifted = prog(&[ppu_base(0x01), st(0x02, 0x2105), tile, vram_words(0x1001, &[1]), vram_words(0x1800, &[0x2008]), pal]);
+    let Some((_, img)) = shot("rd-mode2-offset", &shifted) else { return };
+    let img = img.unwrap();
+    assert_eq!(img.rgb(8, 0), rgb(RED));
+    // The entry does not apply to BG2 (bit 14 is clear), and the first column (x < 8) is never shifted.
+    assert_eq!(img.rgb(0, 0), rgb(RED));
+}
+
+#[test]
+fn mode_5_blends_the_two_columns_of_each_pixel_with_the_character_pair_of_an_entry() {
+    // Entry 1 of BG1 (4 bits) is a pair: character 1 on the left 8 pixels of 512 and character 2 on the right 8. Both
+    // have colour 1 at their top left pixel, so columns 0 and 8 of the 512 are set. The main screen (right column of each
+    // pair) has none of them, the subscreen (left column) does: a picture pixel is the blend of colour and backdrop.
+    let code = prog(&[
+        ppu_base(0x01),
+        st(0x05, 0x2105),
+        st(0x01, 0x212D),
+        vram_words(16, &tile4(&[(0, 0, 1)])),
+        vram_words(32, &tile4(&[(0, 0, 1)])),
+        vram_words(0x1000, &[1]),
+        cgram_set(0, &[0]),
+        cgram_set(1, &[0x001F]),
+    ]);
+    let Some((r, img)) = shot("rd-mode5", &code) else { return };
+    assert!(!r.out.contains("graphics mode"), "{}", r.out);
+    let img = img.unwrap();
+    // Column 0 of the 512 is the left one of picture pixel 0 (on the subscreen): half red. Pixel 4 (column 8, character 2) too.
+    let half = img.rgb(0, 0);
+    assert!(half[0] > 100 && half[0] < 160 && half[1] == 0, "{half:?}");
+    assert_eq!(img.rgb(4, 0), half);
+    assert_eq!(img.rgb(1, 0), rgb(0));
+}
+
+#[test]
+fn only_the_first_32_sprites_of_a_line_are_drawn() {
+    // Sprites 0-31 are 8x8, one every 8 pixels on one line (palette 2); sprite 32 (palette 3) sits on X = 0 as well.
+    // First sprite 0 is moved off the line, so 32 sprites touch it and all are drawn; then it is moved back and sprite 32 is left out.
+    let mut oam = Vec::new();
+    for i in 0..32u16 {
+        oam.extend([(i * 8) as u8, 20, 1, 0x04]);
+    }
+    oam.extend([0, 20, 1, 0x06]);
+    oam[1] = 100;
+    let code = prog(&[
+        ppu_base(0x10),
+        sprite_tile(1, &[(0, 0, 3)]),
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(128 + 3 * 16 + 3, &[BLUE]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &oam),
+    ]);
+    let Some((r, img)) = shot("rd-spr-limit", &code) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let img = img.unwrap();
+    // The line holds sprites 1..32: all drawn, and sprite 32 (palette 3) is in front of nothing at X = 0.
+    assert_eq!(img.rgb(8, 21), rgb(GREEN));
+    assert_eq!(img.rgb(0, 21), rgb(BLUE));
+    // Now sprite 0 is back: 33 sprites touch the line and the one with the highest index is left out.
+    oam[1] = 20;
+    let code = prog(&[
+        ppu_base(0x10),
+        sprite_tile(1, &[(0, 0, 3)]),
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(128 + 3 * 16 + 3, &[BLUE]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &oam),
+    ]);
+    let Some((_, img)) = shot("rd-spr-limit2", &code) else { return };
+    let img = img.unwrap();
+    assert_eq!(img.rgb(0, 21), rgb(GREEN));
+    assert_eq!(img.rgb(8, 21), rgb(GREEN));
+}
+
+#[test]
+fn no_graphics_mode_is_reported_as_not_drawn() {
+    for mode in 0..8u8 {
+        let code = prog(&[st(0x0F, 0x2100), st(mode, 0x2105), st(0x11, 0x212C), st(0x01, 0x212E), st(0x11, 0x2106)]);
+        let Some((r, _)) = shot(&format!("rd-warn-mode{mode}"), &code) else { return };
+        assert!(!r.out.contains("warning:"), "mode {mode}: {}", r.out);
+    }
+}
+
+/// Like `shot` but with 2620 blocks per frame (ten per line) and `frames` frames, to time writes within the frame.
+fn timed_shot(name: &str, code: &[u8], frames: &str) -> Option<(Run, Img)> {
+    let dir = std::env::temp_dir().join(format!("snes-recomp-shot-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("s.png").to_string_lossy().into_owned();
+    let r = run(name, &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--frames", frames, "--frame-blocks", "2620", "--screenshot", &path])?;
+    let img = std::fs::read(dir.join("s.png")).ok().map(|b| decode_png(&b));
+    let _ = std::fs::remove_dir_all(dir);
+    Some((r, img.expect("no screenshot")))
+}
+
+/// BG1 with tile 1 (colour 1 at its top left pixel) at tile rows 5 and 17, so lines 40 and 136 show it every 8 pixels.
+fn scroll_scene() -> Vec<Vec<u8>> {
+    let mut row5 = vec![0u16; 32];
+    row5.iter_mut().for_each(|w| *w = 1);
+    vec![
+        ppu_base(0x01),
+        vram_words(16, &tile4(&[(0, 0, 1)])),
+        vram_words(0x1000 + 5 * 32, &row5),
+        vram_words(0x1000 + 17 * 32, &row5),
+        cgram_set(0, &[RED, GREEN]),
+    ]
+}
+
+#[test]
+fn a_scroll_written_in_the_middle_of_the_frame_only_moves_the_lines_below() {
+    // After a delay of about 1280 blocks (line 90 of a frame of 2620 blocks, ten per line) the horizontal scroll becomes 4.
+    let mut parts = scroll_scene();
+    parts.push(vec![0x18, 0xFB, 0xC2, 0x10, 0xA2, 0x00, 0x05, 0xCA, 0xD0, 0xFD]); // CLC XCE ; REP #$10 ; LDX #$0500 ; DEX ; BNE
+    parts.extend([st(0x04, 0x210D), st(0x00, 0x210D)]);
+    let Some((r, img)) = timed_shot("rd-midscroll", &prog(&parts), "1") else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    // Line 40 was drawn before the write: the tile starts at x = 0. Line 136 after it: at x = 4.
+    assert_eq!((img.rgb(0, 40), img.rgb(4, 40)), (rgb(GREEN), rgb(RED)));
+    assert_eq!((img.rgb(0, 136), img.rgb(4, 136)), (rgb(RED), rgb(GREEN)));
+}
+
+#[test]
+fn a_write_in_the_vblank_applies_from_the_first_line_of_the_next_frame() {
+    // The scroll is written right at the start, in the vertical blank of frame 1: every line has it.
+    let mut parts = scroll_scene();
+    parts.extend([st(0x04, 0x210D), st(0x00, 0x210D)]);
+    let Some((_, img)) = timed_shot("rd-vblankscroll", &prog(&parts), "1") else { return };
+    assert_eq!((img.rgb(0, 40), img.rgb(4, 40)), (rgb(RED), rgb(GREEN)));
+    assert_eq!((img.rgb(0, 136), img.rgb(4, 136)), (rgb(RED), rgb(GREEN)));
+}
+
+#[test]
+fn the_same_run_gives_the_same_picture_byte_for_byte() {
+    let mut parts = scroll_scene();
+    parts.extend([vec![0x18, 0xFB, 0xC2, 0x10, 0xA2, 0x00, 0x05, 0xCA, 0xD0, 0xFD], st(0x04, 0x210D), st(0x00, 0x210D)]);
+    let code = prog(&parts);
+    let (Some((_, a)), Some((_, b))) = (timed_shot("rd-repro-a", &code, "3"), timed_shot("rd-repro-b", &code, "3")) else { return };
+    assert!(a.px == b.px, "the two runs drew different pictures");
+}
+
+#[test]
 fn tile_priority_orders_the_backgrounds_and_the_bit_of_bg3() {
     // BG1 and BG2 both have a tile with colour 1 at (0,0): BG1 uses palette 0, BG2 palette 1; BG3 (2 bits)
     // has colour 1 of palette 2.
@@ -1226,9 +1618,9 @@ fn colour_math_can_use_the_subscreen() {
 
 #[test]
 fn what_is_not_drawn_is_reported() {
-    let code = prog(&[st(0x0F, 0x2100), st(0x03, 0x2105), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
-    let Some((r, img)) = shot("rd-mode3", &code) else { return };
-    assert!(r.out.contains("warning: graphics mode 3 is not drawn"), "{}", r.out);
+    let code = prog(&[st(0x0F, 0x2100), st(0x05, 0x2105), st(0x01, 0x2133), cgram_set(0, &[RED]), st(0x11, 0x212C)]);
+    let Some((r, img)) = shot("rd-interlace", &code) else { return };
+    assert!(r.out.contains("warning: interlace ($2133=01) is not applied"), "{}", r.out);
     assert_eq!(img.unwrap().rgb(4, 4), rgb(RED));
 
     let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x01, 0x212E), st(0x10, 0x2106)]);
@@ -1538,7 +1930,7 @@ fn hdma_changes_a_register_per_group_of_lines() {
     let code = prog(&[ppu_base(0x00), st(0x20, 0x2131), table, hdma_channel0(0x00, 0x32)]);
     let Some((r, img)) = shot("rd-hdma-direct", &code) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
-    assert!(r.out.contains("hdma replayed:"), "{}", r.out);
+    assert!(r.out.contains("hdma line transfers:"), "{}", r.out);
     let img = img.unwrap();
     assert_eq!(img.rgb(5, 0), rgb(RED));
     assert_eq!(img.rgb(5, 9), rgb(RED));

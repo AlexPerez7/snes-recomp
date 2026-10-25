@@ -11,6 +11,8 @@ mod graph;
 mod headless;
 mod opcodes;
 mod rom;
+#[cfg(test)]
+mod spctest;
 
 use config::{parse_addr, Config};
 use disasm::{fmt_addr, Flags};
@@ -174,6 +176,12 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
     write("snes_funcs.h".into(), &out.header)?;
     write("snes_entry.c".into(), &out.entry)?;
     write("snes_headless.c".into(), codegen::HEADLESS_RUNTIME)?;
+    write("snes_core.inc".into(), codegen::RUNTIME_CORE)?;
+    write("snes_ppu.inc".into(), codegen::RUNTIME_PPU)?;
+    write("snes_spc.inc".into(), codegen::RUNTIME_SPC)?;
+    std::fs::create_dir_all(dir.join("play")).map_err(|e| format!("{}: {e}", dir.display()))?;
+    write("play/snes_play.c".into(), codegen::PLAY_RUNTIME)?;
+    write("build_play.bat".into(), &codegen::BUILD_PLAY_BAT.replace('\r', "").replace('\n', "\r\n"))?; // cmd.exe wants CRLF
     let mut lines = out.header.lines().count();
     for (bank, text) in &out.banks {
         write(format!("rom_{bank:02X}.c"), text)?;
