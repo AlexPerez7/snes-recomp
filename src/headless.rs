@@ -1040,11 +1040,18 @@ fn rgb(c: u16) -> [u8; 3] {
 
 /// Run `code` at 00:8000 for one short frame asking for a screenshot; returns the run and the decoded image.
 fn shot(name: &str, code: &[u8]) -> Option<(Run, Option<Img>)> {
+    shot_with(name, code, &[])
+}
+
+/// `shot` with more options for the runtime (e.g. `--wide 32`).
+fn shot_with(name: &str, code: &[u8], extra: &[&str]) -> Option<(Run, Option<Img>)> {
     let dir = std::env::temp_dir().join(format!("snes-recomp-shot-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("s.png").to_string_lossy().into_owned();
-    let r = run(name, &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--frames", "1", "--frame-blocks", "20", "--screenshot", &path])?;
+    let mut args = vec!["rom.sfc", "--frames", "1", "--frame-blocks", "20", "--screenshot", path.as_str()];
+    args.extend_from_slice(extra);
+    let r = run(name, &[(0x8000, code)], &[0x8000], None, &args)?;
     let img = std::fs::read(dir.join("s.png")).ok().map(|b| decode_png(&b));
     let _ = std::fs::remove_dir_all(dir);
     Some((r, img))
@@ -2277,6 +2284,20 @@ int main(void) {
     cfg_store(&s, &ini);
     CHECK(cfg_apply(&s, &ini) == 0 && s.v[O_SCALE] == 3 && s.v[O_VOLUME] == 100);
 
+    /* wide: 0 by default, a multiple of 8 (rounded down), and out of 0-96 is invalid */
+    settings_defaults(&s);
+    CHECK(s.v[O_WIDE] == 0);
+    for (i = 0; i < 4; i++) {
+        static const char *const text[4] = {"72", "69", "500", "7x"};
+        static const int want[4] = {72, 64, 0, 0}, bad[4] = {0, 0, 1, 1};
+        int v = -1;
+        CHECK(opt_parse(&opt_defs[O_WIDE], text[i], &v) == !bad[i]);
+        if (!bad[i]) CHECK(v == want[i]);
+    }
+    ini_free(&ini);
+    ini_add(&ini, "wide = 500");
+    CHECK(cfg_apply(&s, &ini) == 1 && s.v[O_WIDE] == 0);
+
     /* the command line wins over the file for this run, and the file keeps its value */
     settings_defaults(&s);
     config_init(&cfg, &s);
@@ -2299,17 +2320,19 @@ int main(void) {
     CHECK(keys_migrate(&ini, "missing.keys") == -1);
 
     /* layout */
-    r = view_rect(1920, 1080, ASPECT_43, SCALING_FIT, 224);
+    r = view_rect(1920, 1080, ASPECT_43, SCALING_FIT, 224, 256);
     CHECK(r.w == 1440 && r.h == 1080 && r.x == 240 && r.y == 0);
-    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 224);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 224, 256);
     CHECK(r.w == 768 && r.h == 672 && r.x == 116 && r.y == 114);
-    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 208);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_INTEGER, 208, 256);
     CHECK(r.w == 768 && r.h == 624);
-    r = view_rect(1000, 900, ASPECT_87, SCALING_FIT, 224);
+    r = view_rect(1000, 900, ASPECT_87, SCALING_FIT, 224, 256);
     CHECK(r.w == 1000 && r.h == 875 && r.y == 12);
-    r = view_rect(200, 100, ASPECT_87, SCALING_INTEGER, 224);  /* not even 1x fits: fitted */
+    r = view_rect(200, 100, ASPECT_87, SCALING_INTEGER, 224, 256);  /* not even 1x fits: fitted */
     CHECK(r.h == 100 && r.w == 114);
-    r = view_rect(800, 600, ASPECT_FREE, SCALING_INTEGER, 224);
+    r = view_rect(1920, 1080, ASPECT_87, SCALING_INTEGER, 224, 400);  /* wide = 72: 4x of 400 x 224 */
+    CHECK(r.w == 1600 && r.h == 896 && r.x == 160 && r.y == 92);
+    r = view_rect(800, 600, ASPECT_FREE, SCALING_INTEGER, 224, 256);
     CHECK(r.x == 0 && r.y == 0 && r.w == 800 && r.h == 600);
 
     /* effects */
@@ -2552,8 +2575,8 @@ fn restoring_a_tab_only_changes_that_tab() {
 scanlines = 40
 volume = 50
 ";
-    // Image: nine rows of options, then "Restore defaults" (nine Downs); Enter; Escape
-    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
+    // Image: ten rows of options, then "Restore defaults" (ten Downs); Enter; Escape
+    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
     let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = nearest") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
@@ -2631,4 +2654,191 @@ fn the_documented_options_are_the_ones_of_the_default_config() {
         }
     }
     assert!(keys > 10 + 48, "the default file lists the options and the key map ({keys} keys)\n{}", r.out);
+}
+
+// ---- Wide field (--wide N) ----
+
+/// The same scene at E = 0 and at E = `e`: both pictures, after checking that the columns `e..e+256` of the wide one are the narrow one.
+fn wide_pair(name: &str, code: &[u8], e: usize) -> Option<(Img, Img)> {
+    let (r, narrow) = shot(&format!("{name}-n"), code)?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    let (r, wide) = shot_with(&format!("{name}-w"), code, &["--wide", &e.to_string()])?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    let (narrow, wide) = (narrow.unwrap(), wide.unwrap());
+    assert_eq!((narrow.w, wide.w, wide.h), (256, 256 + 2 * e, 224));
+    for y in 0..224 {
+        for x in 0..256 {
+            assert_eq!(wide.rgb(x + e, y), narrow.rgb(x, y), "the picture of the console changed at ({x},{y}) with --wide {e}");
+        }
+    }
+    Some((narrow, wide))
+}
+
+#[test]
+fn a_wide_screenshot_has_the_columns_asked_for_and_keeps_the_picture_in_the_middle() {
+    let code = prog(&[ppu_base(0x01), vram_words(16, &tile4(&[(0, 0, 1)])), vram_words(0x1000, &[0x0001]), cgram_set(0, &[RED, GREEN])]);
+    for e in [8usize, 64, 96] {
+        let Some((_, wide)) = wide_pair(&format!("wd-size-{e}"), &code, e) else { return };
+        // Only one map column holds a tile, so the free columns right of the picture show the backdrop.
+        assert_eq!(wide.rgb(wide.w - 1, 100), rgb(RED));
+    }
+}
+
+#[test]
+fn a_bad_wide_value_is_refused_before_running_anything() {
+    let code = prog(&[st(0x0F, 0x2100)]);
+    for bad in ["5", "104", "-8", "x", ""] {
+        let Some(r) = run("wd-bad", &[(0x8000, &code)], &[0x8000], None, &["rom.sfc", "--wide", bad]) else { return };
+        assert_eq!(r.code, 2, "--wide {bad:?}: {}", r.out);
+        assert!(r.out.contains("--wide"), "{}", r.out);
+    }
+}
+
+#[test]
+fn backgrounds_go_on_through_their_map_in_the_extra_columns() {
+    // Tile 1 has colour 1 at (0,0). It sits at the first and at the last column of the 32x32 map of BG1.
+    let tile = vram_words(16, &tile4(&[(0, 0, 1)]));
+    let map = [vram_words(0x1000, &[0x0001]), vram_words(0x1000 + 31, &[0x0001])].concat();
+    let code = prog(&[ppu_base(0x01), tile, map, cgram_set(0, &[RED, GREEN])]);
+    let e = 32;
+    let Some((_, wide)) = wide_pair("wd-bg", &code, e) else { return };
+    assert_eq!(wide.rgb(e, 0), rgb(GREEN), "column 0 of the picture");
+    assert_eq!(wide.rgb(e - 8, 0), rgb(GREEN), "the last map column shows left of column 0");
+    assert_eq!(wide.rgb(e - 7, 0), rgb(RED));
+    assert_eq!(wide.rgb(e + 256, 0), rgb(GREEN), "the first map column shows right of column 255");
+    assert_eq!(wide.rgb(e + 257, 0), rgb(RED));
+}
+
+#[test]
+fn a_mosaic_and_an_offset_per_tile_background_do_not_change_the_picture_of_the_console() {
+    // Mosaic 4 and a scroll that is not a multiple of 8.
+    let tile = vram_words(16, &tile4(&[(0, 0, 1), (3, 2, 1), (7, 7, 1)]));
+    let map = vram_words(0x1000, &(0..64u16).map(|i| if i % 3 == 0 { 0x0001 } else { 0 }).collect::<Vec<_>>());
+    let code = prog(&[ppu_base(0x01), st(0x31, 0x2106), tile, map, cgram_set(0, &[RED, GREEN]), st(0x05, 0x210D), st(0x00, 0x210D)]);
+    wide_pair("wd-mosaic", &code, 32);
+    // Mode 2 with offset per tile: BG3's map moves the columns of BG1.
+    let tile = vram_words(16, &tile4(&[(0, 0, 1)]));
+    let code = prog(&[
+        ppu_base(0x01),
+        st(0x02, 0x2105),
+        tile,
+        vram_words(0x1000, &[0x0001, 0x0001, 0x0001]),
+        vram_words(0x1800, &[0x2008, 0x2010, 0x2018]),
+        cgram_set(0, &[RED, GREEN]),
+        st(0x03, 0x210D),
+        st(0x00, 0x210D),
+    ]);
+    wide_pair("wd-opt", &code, 32);
+}
+
+#[test]
+fn windows_in_the_extra_columns_take_the_window_of_the_edge_of_the_picture() {
+    // BG1 is solid green; its window ($2126/$2127) hides it where the window is.
+    let solid = vram_words(0, &tile4(&(0..8).flat_map(|y| (0..8).map(move |x| (x, y, 1u8))).collect::<Vec<_>>()));
+    let scene = |l: u8, r: u8| {
+        prog(&[ppu_base(0x01), solid.clone(), cgram_set(0, &[RED, GREEN]), st(0x02, 0x2123), st(0x01, 0x212E), st(l, 0x2126), st(r, 0x2127)])
+    };
+    let e = 16;
+    // Window over columns 0-40: the extra columns on the left are inside it, the ones on the right are not.
+    let Some((_, wide)) = wide_pair("wd-win-edge", &scene(0, 40), e) else { return };
+    assert_eq!(wide.rgb(0, 50), rgb(RED));
+    assert_eq!(wide.rgb(e - 1, 50), rgb(RED));
+    assert_eq!(wide.rgb(e + 41, 50), rgb(GREEN));
+    assert_eq!(wide.rgb(wide.w - 1, 50), rgb(GREEN));
+    // Window over columns 100-200: no extra column is inside it.
+    let Some((_, wide)) = wide_pair("wd-win-mid", &scene(100, 200), e) else { return };
+    assert_eq!(wide.rgb(0, 50), rgb(GREEN));
+    assert_eq!(wide.rgb(wide.w - 1, 50), rgb(GREEN));
+    assert_eq!(wide.rgb(e + 150, 50), rgb(RED));
+}
+
+#[test]
+fn a_sprite_left_of_the_picture_is_drawn_whole_in_the_extra_columns() {
+    // Sprite 0: 8x8 at X = -16 (9 bits: 496), Y = 20, tile 1 with colour 3 at (0,0) and (7,0), palette 2.
+    let code = prog(&[
+        ppu_base(0x10),
+        sprite_tile(1, &[(0, 0, 3), (7, 0, 3)]),
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &[0xF0, 20, 1, 0x04]),
+        oam_set(0x100, &[1]),
+    ]);
+    let e = 32;
+    let Some((_, wide)) = wide_pair("wd-spr-left", &code, e) else { return };
+    assert_eq!(wide.rgb(e - 16, 21), rgb(GREEN));
+    assert_eq!(wide.rgb(e - 9, 21), rgb(GREEN));
+    assert_eq!(wide.rgb(e - 17, 21), rgb(RED));
+    assert_eq!(wide.rgb(e - 8, 21), rgb(RED));
+}
+
+#[test]
+fn a_wider_field_loses_the_same_sprite_slices_as_the_picture_of_the_console() {
+    // Ten 32x32 sprites 24 pixels apart put 40 slices on a line (the console keeps 34); the eleventh starts in the extra columns.
+    let mut oam = Vec::new();
+    for i in 0..10u16 {
+        oam.extend([(i * 24) as u8, 20, 1, 0x04]);
+    }
+    oam.extend([0xE8, 20, 1, 0x06]); // X = 488 = -24
+    let tiles: Vec<u8> = (1..5).flat_map(|t| sprite_tile(t, &[(0, 0, 3)])).collect();
+    let code = prog(&[
+        ppu_base(0x10),
+        st(0xA1, 0x2101),
+        tiles,
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(128 + 3 * 16 + 3, &[BLUE]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &oam),
+        oam_set(0x100, &[0, 0, 0x10]),
+    ]);
+    let Some((narrow, wide)) = wide_pair("wd-spr-limit", &code, 64) else { return };
+    let shown = |img: &Img, e: usize| (0..256).filter(|&x| img.rgb(x + e, 21) != rgb(RED)).count();
+    assert_eq!(shown(&narrow, 0), shown(&wide, 64));
+    assert!(shown(&narrow, 0) < 44, "some slices must have been dropped");
+}
+
+#[test]
+fn the_c_code_of_a_game_moves_a_sprite_into_the_extra_columns_on_the_right() {
+    // Sprite 0 is at X = 0 in the OAM; the hook of the game puts it 256 pixels to the right. Sprite 1 has X = 300 (reads as -212).
+    let scene = [
+        ppu_base(0x10),
+        sprite_tile(1, &[(0, 0, 3)]),
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &[0, 20, 1, 0x04, 0x2C, 40, 1, 0x04]),
+        oam_set(0x100, &[0b0100]),
+    ]
+    .concat();
+    let with_call = |call: bool| {
+        let mut c = scene.clone();
+        if call {
+            c.extend([0x20, 0x00, 0x81]);
+        }
+        c.extend([0x80, 0xFE]);
+        c
+    };
+    let hook = "#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {\n    (void)c;\n    ppu_sprite_xoff(1, 99);\n    ppu_sprite_xoff_clear();\n    ppu_sprite_xoff(0, 256);\n}\n";
+    let e = 32;
+    let dir = std::env::temp_dir().join(format!("snes-recomp-xoff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut images = Vec::new();
+    for (name, call) in [("with", true), ("without", false)] {
+        let path = dir.join(format!("{name}.png")).to_string_lossy().into_owned();
+        let code = with_call(call);
+        let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50", "--wide", "32", "--screenshot", path.as_str()];
+        let segs: [(u32, &[u8]); 2] = [(0x8000, &code), (0x8100, &[0x60])];
+        let Some(r) = run_hooked(&format!("xoff-{name}"), false, &segs, &[0x8000, 0x8100], HOOK_CFG, hook, &args) else { return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        images.push(decode_png(&std::fs::read(&path).unwrap()));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let (with, without) = (&images[0], &images[1]);
+    // With the offset, sprite 0 shows at column 256 of the picture: the first extra column on the right.
+    assert_eq!(with.rgb(e + 256, 21), rgb(GREEN));
+    assert_eq!(with.rgb(e, 21), rgb(RED), "sprite 0 left its place in the OAM");
+    // Without any, nothing changes: sprite 0 is at X = 0 and the one with X = 300 is off to the left, not at 300 - 256.
+    assert_eq!(without.rgb(e, 21), rgb(GREEN));
+    assert_eq!(without.rgb(e + 256, 21), rgb(RED));
+    assert_eq!(without.rgb(e + 44, 41), rgb(RED));
+    assert_eq!(with.rgb(e + 44, 41), rgb(RED));
 }

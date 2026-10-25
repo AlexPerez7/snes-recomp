@@ -173,14 +173,17 @@ static uint32_t ui_mix(uint32_t a, uint32_t b, int t, int max) {
     return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)bl;
 }
 
+/* One pixel of `src` darkened and tinted blue into `dst`, as the backdrop of the menu. */
+static void ui_dim_pixel(uint8_t *dst, const uint8_t *src) {
+    dst[0] = (uint8_t)(src[0] / 4);
+    dst[1] = (uint8_t)(src[1] / 4);
+    dst[2] = (uint8_t)(src[2] / 4 + 16);
+}
+
 /* The picture `src` (same size as the canvas) darkened and tinted blue, as the backdrop of the menu. */
 static void ui_backdrop(Canvas *c, const uint8_t *src) {
     size_t i, n = (size_t)c->w * c->h;
-    for (i = 0; i < n; i++) {
-        c->px[i * 3] = (uint8_t)(src[i * 3] / 4);
-        c->px[i * 3 + 1] = (uint8_t)(src[i * 3 + 1] / 4);
-        c->px[i * 3 + 2] = (uint8_t)(src[i * 3 + 2] / 4 + 16);
-    }
+    for (i = 0; i < n; i++) ui_dim_pixel(c->px + i * 3, src + i * 3);
 }
 
 /* A panel: night-blue gradient, a double border (light outside, dark inside), a gold dot in each corner. */

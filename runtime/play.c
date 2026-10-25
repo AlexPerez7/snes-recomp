@@ -281,7 +281,9 @@ static uint16_t read_pad(int player) {
 
 static uint64_t st_present;
 static SDL_Texture *tex_pre, *tex_ovl; /* the integer prescale of `sharp`; the screen effects */
-static int pre_w, pre_h, ovl_w, ovl_h, ovl_lines, ovl_sl = -1, ovl_grid = -1;
+static int pre_w, pre_h, ovl_w, ovl_h, ovl_lines, ovl_sl = -1, ovl_grid = -1, ovl_src_w, tex_w;
+static uint8_t fb_show[SCREEN_H * SCREEN_W_MAX * 3]; /* the picture with the menu or the counter drawn on it */
+static int show_w = SCREEN_W;                         /* width of the picture that shown_frame() returned */
 static uint8_t *ovl_buf;
 static size_t ovl_cap;
 
@@ -289,29 +291,36 @@ static int view_lines(void) {
     return SCREEN_H - 2 * cfg.eff.v[O_OVERSCAN];
 }
 
-/* Draws the 256x224 picture `fb` in the window with the options: aspect, scaling, filter, overscan and effects. */
+/* Draws the picture `fb` (show_w x 224, as shown_frame() set it) in the window with the options: aspect, scaling, filter,
+ * overscan and effects. The texture has the size of the picture, so that the filters do not read what lies beyond it. */
 static void present(const uint8_t *fb) {
-    int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER];
+    int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER], pw = show_w;
     SDL_Rect src, dst;
     Rect r;
     uint64_t p0 = SDL_GetPerformanceCounter();
+    if (!tex || tex_w != pw) {
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, pw, SCREEN_H);
+        tex_w = pw;
+        if (!tex) { fprintf(stderr, "error: cannot make the picture texture: %s\n", SDL_GetError()); return; }
+    }
     SDL_GetRendererOutputSize(ren, &w, &h);
-    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines);
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, pw);
     dst.x = r.x; dst.y = r.y; dst.w = r.w; dst.h = r.h;
-    src.x = 0; src.y = cfg.eff.v[O_OVERSCAN]; src.w = SCREEN_W; src.h = lines;
-    SDL_UpdateTexture(tex, NULL, fb, SCREEN_W * 3);
+    src.x = 0; src.y = cfg.eff.v[O_OVERSCAN]; src.w = pw; src.h = lines;
+    SDL_UpdateTexture(tex, NULL, fb, pw * 3);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
     if (filter == FILTER_SHARP) {
         /* scale up by a whole factor with nearest, then down to the final size with bilinear: the edges of the
          * pixels stay sharp and the factor that is not whole is smoothed */
-        int k = (dst.w + SCREEN_W - 1) / SCREEN_W;
+        int k = (dst.w + pw - 1) / pw;
         if (k < 1) k = 1;
         if (k > 8) k = 8;
-        if (!tex_pre || pre_w != SCREEN_W * k || pre_h != lines * k) {
+        if (!tex_pre || pre_w != pw * k || pre_h != lines * k) {
             if (tex_pre) SDL_DestroyTexture(tex_pre);
-            tex_pre = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_TARGET, SCREEN_W * k, lines * k);
-            pre_w = SCREEN_W * k;
+            tex_pre = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_TARGET, pw * k, lines * k);
+            pre_w = pw * k;
             pre_h = lines * k;
         }
         if (tex_pre) {
@@ -331,19 +340,19 @@ static void present(const uint8_t *fb) {
     }
     if (cfg.eff.v[O_SCANLINES] > 0 || cfg.eff.v[O_GRID]) {
         int sl = cfg.eff.v[O_SCANLINES], grid = cfg.eff.v[O_GRID];
-        if (!tex_ovl || ovl_w != dst.w || ovl_h != dst.h || ovl_lines != lines || ovl_sl != sl || ovl_grid != grid) {
+        if (!tex_ovl || ovl_w != dst.w || ovl_h != dst.h || ovl_lines != lines || ovl_src_w != pw || ovl_sl != sl || ovl_grid != grid) {
             size_t need = (size_t)dst.w * dst.h * 4;
             if (need > ovl_cap) { free(ovl_buf); ovl_buf = (uint8_t *)malloc(need); ovl_cap = ovl_buf ? need : 0; }
             if (tex_ovl) SDL_DestroyTexture(tex_ovl);
             tex_ovl = NULL;
-            if (ovl_buf && overlay_build(ovl_buf, dst.w, dst.h, SCREEN_W, lines, sl, grid)) {
+            if (ovl_buf && overlay_build(ovl_buf, dst.w, dst.h, pw, lines, sl, grid)) {
                 tex_ovl = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, dst.w, dst.h);
                 if (tex_ovl) {
                     SDL_UpdateTexture(tex_ovl, NULL, ovl_buf, dst.w * 4);
                     SDL_SetTextureBlendMode(tex_ovl, SDL_BLENDMODE_BLEND);
                 }
             }
-            ovl_w = dst.w; ovl_h = dst.h; ovl_lines = lines; ovl_sl = sl; ovl_grid = grid;
+            ovl_w = dst.w; ovl_h = dst.h; ovl_lines = lines; ovl_src_w = pw; ovl_sl = sl; ovl_grid = grid;
         }
         if (tex_ovl) SDL_RenderCopy(ren, tex_ovl, NULL, &dst);
     }
@@ -364,19 +373,23 @@ static void present_shot(void) {
     SDL_Renderer *sr, *keep_ren = ren;
     SDL_Texture *keep_tex = tex, *keep_pre = tex_pre, *keep_ovl = tex_ovl;
     uint8_t *pix;
-    int lines = view_lines();
+    int lines = view_lines(), keep_tex_w = tex_w, shown_w;
+    const uint8_t *shown;
     if (!surf || !(sr = SDL_CreateSoftwareRenderer(surf))) { fprintf(stderr, "error: present-shot: %s\n", SDL_GetError()); return; }
     ren = sr;
-    tex = SDL_CreateTexture(sr, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, SCREEN_W, SCREEN_H);
+    tex = NULL; /* present() makes one for the software renderer */
+    tex_w = 0;
     tex_pre = tex_ovl = NULL;
     pre_w = ovl_w = 0; ovl_sl = ovl_grid = -1;
-    present(shown_frame());
+    shown = shown_frame();
+    shown_w = show_w;
+    present(shown);
     pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
     if (pix && SDL_RenderReadPixels(sr, NULL, SDL_PIXELFORMAT_RGB24, pix, present_w * 3) == 0) {
         if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
-        if (present_w == SCREEN_W && present_h == lines) {
-            size_t diff = 0, i, n = (size_t)SCREEN_W * lines * 3;
-            const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * SCREEN_W * 3;
+        if (present_w == shown_w && present_h == lines) {
+            size_t diff = 0, i, n = (size_t)shown_w * lines * 3;
+            const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * shown_w * 3;
             for (i = 0; i < n; i++) diff += pix[i] != src[i];
             if (diff) printf("present-shot: differs from the picture in %u bytes\n", (unsigned)diff);
             else printf("present-shot: identical to the picture\n");
@@ -385,16 +398,16 @@ static void present_shot(void) {
     free(pix);
     if (tex_pre) SDL_DestroyTexture(tex_pre);
     if (tex_ovl) SDL_DestroyTexture(tex_ovl);
-    SDL_DestroyTexture(tex);
+    if (tex) SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(sr);
     SDL_FreeSurface(surf);
-    ren = keep_ren; tex = keep_tex; tex_pre = keep_pre; tex_ovl = keep_ovl;
+    ren = keep_ren; tex = keep_tex; tex_w = keep_tex_w; tex_pre = keep_pre; tex_ovl = keep_ovl;
 }
 
 static void save_picture(void) {
     char name[64];
     sprintf(name, "snes_%03d.png", ++shot_n);
-    if (write_png(name, fb_front, SCREEN_W, SCREEN_H)) printf("picture saved as %s\n", name);
+    if (write_png(name, fb_front, fb_front_w, SCREEN_H)) printf("picture saved as %s\n", name);
 }
 
 static void set_fullscreen(int on) {
@@ -413,8 +426,8 @@ static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "
 static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad;
 static Bind menu_pending;
 static char menu_msg[80];
-static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS};
-static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Scanlines", "Grid", "FPS counter"};
+static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS};
+static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter"};
 #define N_IMAGE ((int)(sizeof image_opts / sizeof image_opts[0]))
 
 static int menu_count(int tab) {
@@ -463,6 +476,7 @@ static void menu_audio_device(int dir) {
 static void apply_option(int opt) {
     if (opt == O_FULLSCREEN) set_fullscreen(cfg.eff.v[O_FULLSCREEN]);
     if (opt == O_VSYNC && ren) SDL_RenderSetVSync(ren, cfg.eff.v[O_VSYNC]);
+    if (opt == O_WIDE) ppu_set_wide(cfg.eff.v[O_WIDE]);
 }
 
 static void opt_change(int opt, int dir) {
@@ -737,16 +751,38 @@ static void fps_tick(void) {
     }
 }
 
-/* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and
- * then drawn into fb_menu, so the picture itself is never touched). */
+/* The menu over the picture, into fb_show. The menu is a 256x224 canvas (fb_menu) over the 256 central columns, the picture
+ * of the console; the extra columns of a wider picture are darkened like the rest of the backdrop. */
+static void menu_compose(void) {
+    static uint8_t mid[SCREEN_H * SCREEN_W * 3];
+    int w = fb_front_w, e = (w - SCREEN_W) / 2, x, y;
+    for (y = 0; y < SCREEN_H; y++) memcpy(mid + (size_t)y * SCREEN_W * 3, fb_front + ((size_t)y * w + e) * 3, SCREEN_W * 3);
+    menu_draw(mid);
+    for (y = 0; y < SCREEN_H; y++) {
+        const uint8_t *src = fb_front + (size_t)y * w * 3;
+        uint8_t *dst = fb_show + (size_t)y * w * 3;
+        for (x = 0; x < e; x++) {
+            ui_dim_pixel(dst + (size_t)x * 3, src + (size_t)x * 3);
+            ui_dim_pixel(dst + (size_t)(w - 1 - x) * 3, src + (size_t)(w - 1 - x) * 3);
+        }
+        memcpy(dst + (size_t)e * 3, fb_menu + (size_t)y * SCREEN_W * 3, SCREEN_W * 3);
+    }
+}
+
+/* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and then
+ * drawn into fb_show, so the picture itself is never touched), or the menu over it. Sets show_w to its width. */
 static const uint8_t *shown_frame(void) {
     char t[24];
-    if (menu_open) return fb_menu; /* the menu, already drawn (for the captures) */
+    show_w = fb_front_w;
+    if (menu_open) { menu_compose(); return fb_show; }
     if (!cfg.eff.v[O_FPS]) return fb_front;
-    memcpy(fb_menu, fb_front, sizeof fb_menu);
+    memcpy(fb_show, fb_front, (size_t)SCREEN_H * show_w * 3);
     snprintf(t, sizeof t, "%d FPS", fps_val);
-    text_draw(&cv, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
-    return fb_menu;
+    {
+        Canvas cw = {fb_show, show_w, SCREEN_H};
+        text_draw(&cw, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+    }
+    return fb_show;
 }
 
 /* Any key: F1 opens or closes the menu; with the menu open, the keys drive it. */
@@ -958,7 +994,7 @@ static void play_frame(void) {
     if (menu_shot_path && frames + 1 >= max_frames) {
         menu_open = 1;
         menu_tab = menu_shot_page;
-        menu_draw(fb_front);
+        menu_compose();
         if (!write_png(menu_shot_path, fb_menu, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", menu_shot_path);
         else {
             uint32_t h = 2166136261u; /* FNV-1a of the picture, so the tests can tell two captures apart */
@@ -985,8 +1021,7 @@ static void play_frame(void) {
         while (paused || menu_open) {
             SDL_Delay(20);
             handle_events();
-            if (menu_open) { menu_draw(fb_front); present(fb_menu); }
-            else present(shown_frame());
+            present(shown_frame());
             t_next = SDL_GetPerformanceCounter();
         }
         if (adev) audio_silence(2);
@@ -1005,14 +1040,13 @@ static int open_window(void) {
     }
     for (i = 0; i < 21; i++) title[i] = rom_size > 0x7FD5 && rom[0x7FC0 + i] >= 32 && rom[0x7FC0 + i] < 127 ? (char)rom[0x7FC0 + i] : ' ';
     title[21] = 0;
-    ww = (int)(SCREEN_W * scale * (cfg.eff.v[O_ASPECT] == ASPECT_43 ? 7.0 / 6.0 : 1.0) + 0.5);
+    ww = (int)((SCREEN_W + 2 * cfg.eff.v[O_WIDE]) * scale * (cfg.eff.v[O_ASPECT] == ASPECT_43 ? 7.0 / 6.0 : 1.0) + 0.5);
     wh = SCREEN_H * scale;
     win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
                            SDL_WINDOW_RESIZABLE | (cfg.eff.v[O_FULLSCREEN] ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     fullscreen = cfg.eff.v[O_FULLSCREEN];
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    if (!win || !(ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0))) ||
-        !(tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, SCREEN_W, SCREEN_H))) {
+    if (!win || !(ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0)))) {
         fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
         return 0;
     }
@@ -1106,6 +1140,7 @@ int main(int argc, char **argv) {
     SDL_SetMainReady();
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
+    ppu_set_wide(cfg.eff.v[O_WIDE]);
     srm_load(path);
     if (opt_print_keys) {
         for (i = 0; i < nbinds; i++)

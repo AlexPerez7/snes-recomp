@@ -2,8 +2,13 @@
 
 /* ---- Screenshot: background and sprite renderer, PNG writer ---- */
 
-#define SCREEN_W 256
+#define SCREEN_W 256 /* the picture of the console; the field can be wider by WIDE_MAX pixels on each side */
 #define SCREEN_H 224
+#define WIDE_MAX 96
+#define SCREEN_W_MAX (SCREEN_W + 2 * WIDE_MAX)
+
+static int wide_x0;              /* E: extra pixels drawn on each side of the picture (0-WIDE_MAX, a multiple of 8) */
+static int screen_w = SCREEN_W;  /* 256 + 2E: width of the rows drawn now (fb_back's row stride) */
 
 /* The result of the last write to each scroll register pair; they are written twice with a shared latch. */
 static uint16_t bg_hofs[4], bg_vofs[4];
@@ -83,7 +88,7 @@ static void offset_per_tile(int mode, int bg, int x, uint16_t *hofs, uint16_t *v
     int col = (x + (*hofs & 7)) >> 3, tsz3 = (hw[0x2105] >> 6 & 1) ? 16 : 8;
     int bit = bg == 0 ? 0x2000 : 0x4000, tx, ty;
     uint32_t eh, ev;
-    if (col < 1) return;
+    if (x >= 0 && col < 1) return;
     tx = ((bg_hofs[2] & 0x3FF) / tsz3) + col - 1;
     ty = (bg_vofs[2] & 0x3FF) / tsz3;
     if (mode == 4) {
@@ -136,8 +141,13 @@ static int bg_pixel(int mode, int bg, int x, int y, int pri) {
     return pal * 4 + c + (mode == 0 ? bg * 32 : 0);
 }
 
-static int16_t spr_col[SCREEN_H][SCREEN_W];
-static uint8_t spr_pri[SCREEN_H][SCREEN_W];
+/* Sprite pixels by line; the column of screen x is x + WIDE_MAX, so that it does not depend on E. */
+static int16_t spr_col[SCREEN_H][SCREEN_W_MAX];
+static uint8_t spr_pri[SCREEN_H][SCREEN_W_MAX];
+static int16_t spr_xoff[128]; /* added to the X of each sprite (ppu_sprite_xoff) */
+
+void ppu_sprite_xoff(int i, int dx) { if (i >= 0 && i < 128) spr_xoff[i] = (int16_t)dx; }
+void ppu_sprite_xoff_clear(void) { memset(spr_xoff, 0, sizeof spr_xoff); }
 
 /* Fills row `row` of spr_col/spr_pri with the sprites that cover it (a lower index is in front of a higher one). As on the
  * console, only the first 32 sprites (by index) that touch the line are kept, and only 34 eight pixel slices of them are
@@ -159,6 +169,7 @@ static void draw_sprites_row(int row) {
         int hi = oam[512 + list[k] / 4] >> ((list[k] % 4) * 2) & 3;
         int w = (hi & 2) ? large_w[sel] : small_w[sel], x = oam[list[k] * 4] | (hi & 1) << 8, s0, used = 0;
         if (x >= 256) x -= 512;
+        x += spr_xoff[list[k]];
         for (s0 = 0; s0 < w / 8; s0++) {
             int sx = x + s0 * 8;
             if (sx > -8 && sx < 256) used++;
@@ -175,20 +186,22 @@ static void draw_sprites_row(int row) {
         uint32_t table = name_base + ((attr & 1) ? name_gap : 0);
         int dy = (row - y - 1) & 0xFF, iy = (attr & 0x80) ? h - 1 - dy : dy, kept = first_slice[k], slice;
         if (x >= 256) x -= 512;
-        /* slices are fetched left to right on the screen; the ones past the budget are not drawn */
+        x += spr_xoff[idx];
+        /* slices are fetched left to right on the screen; the ones past the budget are not drawn. Only the slices over the
+         * picture of the console count: the ones in the extra columns are free, so a wider field loses no other sprite. */
         for (slice = 0; slice < w / 8; slice++) {
             int sx0 = x + slice * 8, ix0 = (attr & 0x40) ? w - 8 - slice * 8 : slice * 8;
-            if (sx0 <= -8 || sx0 >= 256) continue;
-            if (kept-- <= 0) continue;
+            if (sx0 <= -8 - wide_x0 || sx0 >= SCREEN_W + wide_x0) continue;
+            if (sx0 > -8 && sx0 < SCREEN_W && kept-- <= 0) continue;
             for (dx = 0; dx < 8; dx++) {
                 int sx = sx0 + dx, ix = ix0 + ((attr & 0x40) ? 7 - dx : dx), c;
                 uint32_t sub;
-                if (sx < 0 || sx >= SCREEN_W) continue;
+                if (sx < -wide_x0 || sx >= SCREEN_W + wide_x0) continue;
                 sub = (uint32_t)((((tile >> 4) + iy / 8) & 0xF) << 4 | (((tile & 0xF) + ix / 8) & 0xF));
                 c = tile_pixel(((table + sub * 16) * 2) & 0xFFFF, 4, ix & 7, iy & 7);
                 if (!c) continue;
-                spr_col[row][sx] = (int16_t)(128 + (attr >> 1 & 7) * 16 + c);
-                spr_pri[row][sx] = (uint8_t)(attr >> 4 & 3);
+                spr_col[row][sx + WIDE_MAX] = (int16_t)(128 + (attr >> 1 & 7) * 16 + c);
+                spr_pri[row][sx + WIDE_MAX] = (uint8_t)(attr >> 4 & 3);
             }
         }
     }
@@ -228,6 +241,8 @@ typedef struct { int kind, n; } Layer;
 static int win_area(int layer, int x) {
     static const uint16_t sel_reg[6] = {0x2123, 0x2123, 0x2124, 0x2124, 0x2125, 0x2125};
     int nib = hw[sel_reg[layer]] >> ((layer & 1) * 4) & 15;
+    if (x < 0) x = 0; /* the extra columns of a wider field take the window of the edge of the picture */
+    else if (x > SCREEN_W - 1) x = SCREEN_W - 1;
     int log = layer < 4 ? hw[0x212A] >> (layer * 2) & 3 : layer == 4 ? hw[0x212B] & 3 : hw[0x212B] >> 2 & 3;
     int in1 = x >= hw[0x2126] && x <= hw[0x2127], in2 = x >= hw[0x2128] && x <= hw[0x2129];
     int en1 = nib >> 1 & 1, en2 = nib >> 3 & 1;
@@ -251,7 +266,7 @@ static int pixel_index(const Layer *order, int count, int x, int xc, int y, int 
         int n = order[i].n;
         if (order[i].kind == 0) {
             if (!(mask & 0x10)) continue;
-            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n && !((wmask & 0x10) && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x]; }
+            if (spr_col[y][x + WIDE_MAX] >= 0 && spr_pri[y][x + WIDE_MAX] == n && !((wmask & 0x10) && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x + WIDE_MAX]; }
         } else if (order[i].kind == 3) {
             if (!(mask & 1) || ((wmask & 1) && win_area(0, x))) continue;
             c = m7_pixel(x, y);
@@ -261,8 +276,8 @@ static int pixel_index(const Layer *order, int count, int x, int xc, int y, int 
             if ((wmask >> n & 1) && win_area(n, x)) continue;
             if (hw[0x2106] >> n & 1 && hw[0x2106] >> 4) {
                 /* mosaic: the block of (size) x (size) pixels shows the colour at its top left; vertical blocks start at line 1 */
-                int size = (hw[0x2106] >> 4) + 1;
-                c = bg_pixel(mode, n, xc - xc % (size * (mode == 5 || mode == 6 ? 2 : 1)), y < 1 ? y : (y - 1) / size * size + 1, order[i].kind == 1);
+                int size = (hw[0x2106] >> 4) + 1, span = size * (mode == 5 || mode == 6 ? 2 : 1);
+                c = bg_pixel(mode, n, xc - ((xc % span) + span) % span, y < 1 ? y : (y - 1) / size * size + 1, order[i].kind == 1);
             } else {
                 c = bg_pixel(mode, n, xc, y, order[i].kind == 1);
             }
@@ -445,7 +460,8 @@ static void hdma_line(void) {
 
 static const char *shot_path;
 
-/* One scanline of the picture from the PPU state as it is now: RGB triples into `out` (SCREEN_W of them). */
+/* One scanline of the picture from the PPU state as it is now: RGB triples into `out` (screen_w of them, from column -E to
+ * 255+E). */
 static void render_row(int y, uint8_t *out) {
     static const Layer mode0[12] = {{0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {1, 2}, {1, 3}, {0, 0}, {2, 2}, {2, 3}};
     static const Layer mode1_low[10] = {{0, 3}, {1, 0}, {1, 1}, {0, 2}, {2, 0}, {2, 1}, {0, 1}, {1, 2}, {0, 0}, {2, 2}};
@@ -464,12 +480,12 @@ static void render_row(int y, uint8_t *out) {
     default: order = mode2_5; count = 8; break;
     }
     draw_sprites_row(y);
-    for (x = 0; x < SCREEN_W; x++) {
+    for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
         /* The main screen pixel; in the modes 5 and 6 it is the right one of the two 512-pixel columns of x, and the left
          * one comes from the subscreen. */
         int hires = mode == 5 || mode == 6, xc = hires ? 2 * x + 1 : x;
         int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, count, x, xc, y, mode, hw[0x212C], hw[0x212E], &layer);
-        uint8_t *p = out + (size_t)x * 3;
+        uint8_t *p = out + (size_t)(x + wide_x0) * 3;
         int c = idx < 0 ? 0 : cgram_color(idx), k, left = -1;
         int in_colour_window = win_area(5, x), black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
         if (black == 3 || (black == 1 && !in_colour_window) || (black == 2 && in_colour_window)) c = 0;
@@ -499,7 +515,9 @@ static void render_row(int y, uint8_t *out) {
  * (the last fifth of the line). The picture is drawn lazily: nothing happens until the game writes a PPU register (or the
  * frame ends), and then the rows that came due before that moment are drawn with the state the registers had until it. */
 
-static uint8_t fb_back[SCREEN_H * SCREEN_W * 3], fb_front[SCREEN_H * SCREEN_W * 3];
+/* Rows are packed: the stride is the width of the frame (256 + 2E), which fb_front_w remembers for fb_front. */
+static uint8_t fb_back[SCREEN_H * SCREEN_W_MAX * 3], fb_front[SCREEN_H * SCREEN_W_MAX * 3];
+static int fb_front_w = SCREEN_W;
 static int fb_have;           /* fb_front holds a complete picture */
 static int ppu_row;           /* next row to draw in this frame */
 static int ppu_inited;        /* HDMA has been set up for this frame */
@@ -522,7 +540,7 @@ static void ppu_catch_up(void) {
     }
     while (ppu_inited && ppu_row < SCREEN_H && tick_in_frame >= ppu_ready(ppu_row)) {
         hdma_line();
-        render_row(ppu_row, fb_back + (size_t)ppu_row * SCREEN_W * 3);
+        render_row(ppu_row, fb_back + (size_t)ppu_row * screen_w * 3);
         ppu_row++;
     }
     ppu_hold--;
@@ -534,13 +552,28 @@ static void ppu_sync(void) {
     if (!ppu_hold && tick_in_frame >= ppu_next) ppu_catch_up();
 }
 
+static int wide_next;         /* the E asked for, taken at the start of the next frame */
+
+/* Asks for E extra pixels on each side (0-WIDE_MAX, a multiple of 8). It takes effect at once if no row of this frame has
+ * been drawn yet, otherwise when the frame ends. */
+static void ppu_set_wide(int e) {
+    wide_next = e;
+    if (ppu_row == 0) {
+        wide_x0 = e;
+        screen_w = SCREEN_W + 2 * e;
+    }
+}
+
 /* The frame clock wrapped (tick == frame_len): finish the rows still due, keep the picture and start over. */
 static void ppu_frame_end(void) {
     ppu_catch_up();
     if (ppu_row == SCREEN_H) {
-        memcpy(fb_front, fb_back, sizeof fb_front);
+        memcpy(fb_front, fb_back, (size_t)SCREEN_H * screen_w * 3);
+        fb_front_w = screen_w;
         fb_have = 1;
     }
+    wide_x0 = wide_next;
+    screen_w = SCREEN_W + 2 * wide_next;
     ppu_row = 0;
     ppu_inited = 0;
     ppu_update_next();
@@ -559,5 +592,5 @@ static void screenshot(void) {
         img = fb_back;
     }
     if (hdma_transfers) printf("hdma line transfers: %u\n", (unsigned)hdma_transfers);
-    if (!write_png(shot_path, img, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", shot_path);
+    if (!write_png(shot_path, img, fb_have ? fb_front_w : screen_w, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", shot_path);
 }

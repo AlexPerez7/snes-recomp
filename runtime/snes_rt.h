@@ -37,6 +37,11 @@ void bus_write8(uint32_t addr, uint8_t value);
 static inline uint8_t wram_read8(uint32_t off) { return bus_read8(0x7E0000u + (off & 0x1FFFFu)); }
 static inline void wram_write8(uint32_t off, uint8_t v) { bus_write8(0x7E0000u + (off & 0x1FFFFu), v); }
 uint16_t joy1_state(void);
+/* Sprite `i` (0-127) is drawn `dx` pixels to the right (negative: left) of the X its OAM entry says, until it is changed. It is
+ * how a game puts a sprite in the extra columns on the right of a wider field, since the X of the OAM cannot say 256 to 511
+ * (it reads as negative, as on the console). `ppu_sprite_xoff_clear` sets all 128 back to 0. */
+void ppu_sprite_xoff(int i, int dx);
+void ppu_sprite_xoff_clear(void);
 /* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
 int game_opt(const char *key, int def);
 

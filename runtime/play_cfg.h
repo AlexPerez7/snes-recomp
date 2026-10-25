@@ -11,14 +11,15 @@
 
 /* ---- the options ---- */
 
-enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_COUNT };
+enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_COUNT };
 enum { ASPECT_43, ASPECT_87, ASPECT_FREE };
 enum { SCALING_INTEGER, SCALING_FIT };
 enum { FILTER_NEAREST, FILTER_BILINEAR, FILTER_SHARP };
 
 /* `names` is "a|b|c" for the options that take a word (the value is the index of the word), NULL for a number
- * between lo and hi. `step` is how much the menu changes a number with one key press. */
-typedef struct { const char *key; int def, lo, hi; const char *names; int step; } OptDef;
+ * between lo and hi. `step` is how much the menu changes a number with one key press; `unit` (when above 1) is the
+ * multiple a number is rounded down to when it is read. */
+typedef struct { const char *key; int def, lo, hi; const char *names; int step, unit; } OptDef;
 static const OptDef opt_defs[O_COUNT] = {
     {"fullscreen", 0, 0, 1, "false|true", 1},
     {"vsync", 0, 0, 1, "false|true", 1},
@@ -31,6 +32,7 @@ static const OptDef opt_defs[O_COUNT] = {
     {"grid", 0, 0, 1, "false|true", 1},
     {"fps", 0, 0, 1, "false|true", 1},
     {"volume", 100, 0, 100, NULL, 5},
+    {"wide", 0, 0, 96, NULL, 8, 8}, /* extra pixels of picture on each side of the 256 of the console */
 };
 
 typedef struct { int v[O_COUNT]; char audio_device[200]; } Settings;
@@ -79,6 +81,7 @@ static int opt_parse(const OptDef *d, const char *s, int *out) {
     if (!*s) return 0;
     v = strtol(s, &end, 10);
     if (*end || v < d->lo || v > d->hi) return 0;
+    if (d->unit > 1) v -= v % d->unit;
     *out = (int)v;
     return 1;
 }
@@ -291,11 +294,11 @@ static int keys_migrate(Ini *ini, const char *path) {
 
 typedef struct { int x, y, w, h; } Rect;
 
-/* Where the picture of 256 x `lines` pixels goes in an area of aw x ah: 4:3 shows it with pixels 7/6 wider than
+/* Where the picture of `picw` x `lines` pixels (256 + 2 * wide wide) goes in an area of aw x ah: 4:3 shows it with pixels 7/6 wider than
  * tall (as a television did), 8:7 with square pixels, and `free` stretches it over the whole area. `integer`
  * scaling uses the largest whole factor that fits (the whole area, as `fit`, if not even 1x fits). */
-static Rect view_rect(int aw, int ah, int aspect, int scaling, int lines) {
-    double px = aspect == ASPECT_43 ? 7.0 / 6.0 : 1.0, bw = 256 * px, bh = lines, k;
+static Rect view_rect(int aw, int ah, int aspect, int scaling, int lines, int picw) {
+    double px = aspect == ASPECT_43 ? 7.0 / 6.0 : 1.0, bw = picw * px, bh = lines, k;
     Rect r;
     if (aspect == ASPECT_FREE) { r.x = r.y = 0; r.w = aw; r.h = ah; return r; }
     k = aw / bw < ah / bh ? aw / bw : ah / bh;
