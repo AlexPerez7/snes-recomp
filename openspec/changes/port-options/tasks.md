@@ -8,7 +8,7 @@
 
 ## 2. Opciones de imagen
 
-- [ ] 2.1 Pantalla completa sin bordes y F11, con `fullscreen` en la configuración. Verificación: manual (captura antes y después) y el juego sigue en el mismo fotograma.
+- [x] 2.1 Pantalla completa sin bordes y F11, con `fullscreen` en la configuración. Verificación: manual (captura antes y después) y el juego sigue en el mismo fotograma.
 - [x] 2.2 Aspecto 4:3, 8:7 y free, y escalado `integer` y `fit`, con las barras negras. Verificación: test con función pura que, dadas dimensiones de área y aspecto, devuelve el rectángulo (casos de los escenarios).
 - [x] 2.3 Filtros `nearest`, `bilinear` y `sharp`. Verificación: capturas a 1,5x y 2,5x comparadas a ojo, guardadas en `out/`.
 - [x] 2.4 Recorte de márgenes (`overscan`). Verificación: la imagen mostrada tiene 208 líneas con `overscan = 8`.
