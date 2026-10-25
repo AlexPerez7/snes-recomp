@@ -14,8 +14,8 @@
 
 ## 3. Franjas negras en el motor
 
-- [ ] 3.1 Añadir `ppu_wide_blank(int left, int right)` y `ppu_wide_blank_clear()` a `runtime/snes_rt.h` y dibujarlas en `runtime/snes_ppu.inc` (negro en lugar de la PPU, limitadas a `E` y sin tocar los 256 px originales); verificar con tests en `src/headless.rs` de los escenarios de la spec (franja a la izquierda, franja mayor que `E`, sin franjas y con `E = 0` idéntico)
-- [ ] 3.2 Documentarlas en el comentario de `snes_rt.h`, en CLAUDE.md y en el README del motor si habla de `wide`; verificar que `cargo test` pasa
+- [x] 3.1 Añadir `ppu_wide_blank(int left, int right)` y `ppu_wide_blank_clear()` a `runtime/snes_rt.h` y dibujarlas en `runtime/snes_ppu.inc` (negro en lugar de la PPU, limitadas a `E` y sin tocar los 256 px originales); verificar con tests en `src/headless.rs` de los escenarios de la spec (franja a la izquierda, franja mayor que `E`, sin franjas y con `E = 0` idéntico)
+- [x] 3.2 Documentarlas en el comentario de `snes_rt.h`, en CLAUDE.md y en el README del motor si habla de `wide`; verificar que `cargo test` pasa
 
 ## 4. Exterior y salas en `alttp-recomp`
 

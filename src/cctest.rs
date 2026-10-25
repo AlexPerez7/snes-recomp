@@ -112,7 +112,7 @@ impl Compiler {
         for d in defines {
             cmd.arg(format!("-D{d}"));
         }
-        let build = cmd.args(sources).output().map_err(|e| e.to_string())?;
+        let build = cmd.args(sources).arg("-lm").output().map_err(|e| e.to_string())?;
         if !build.status.success() {
             return Err(String::from_utf8_lossy(&build.stderr).into_owned());
         }
