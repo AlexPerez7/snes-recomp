@@ -18,11 +18,11 @@ El runtime SHALL ofrecer al C del juego una función que devuelva el ensanche `E
 - **THEN** la consulta devuelve 72 a partir del fotograma en que el cambio se aplica
 
 ### Requirement: Franjas en blanco pedidas por el juego
-El runtime SHALL ofrecer al C del juego una función para fijar cuántos píxeles de la zona nueva de cada lado, contados desde el borde de la imagen original, se dibujan en negro en lugar de lo que dibujaría la PPU, y una forma de quitarlas. Sin franjas fijadas la imagen MUST ser la de siempre. Una franja MUST NOT superar `E` píxeles ni afectar a la imagen original de 256 píxeles.
+El runtime SHALL ofrecer al C del juego una función para fijar cuántos píxeles de la zona nueva de cada lado, contados desde el borde exterior de la imagen hacia el centro, se dibujan en negro en lugar de lo que dibujaría la PPU, y una forma de quitarlas. Sin franjas fijadas la imagen MUST ser la de siempre. Una franja MUST NOT superar `E` píxeles ni afectar a la imagen original de 256 píxeles.
 
 #### Scenario: Franja a la izquierda
 - **WHEN** el C del juego fija 24 píxeles de franja a la izquierda y `E = 32`
-- **THEN** las columnas 8 a 31 de la imagen (contadas desde el borde izquierdo de la zona nueva) son negras, las columnas 0 a 7 muestran lo que dibuja la PPU y la imagen original no cambia
+- **THEN** las columnas 0 a 23 de la imagen (las exteriores, contadas desde el borde izquierdo) son negras, las columnas 24 a 31 muestran lo que dibuja la PPU y la imagen original no cambia
 
 #### Scenario: Franja mayor que E
 - **WHEN** el C del juego fija 64 píxeles con `E = 32`

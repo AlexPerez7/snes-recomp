@@ -2861,12 +2861,12 @@ void game_hook(Cpu *c) {{
     let Some(over) = shot("over", "ppu_wide_blank(64, 64);") else { return };
     let Some(none) = shot("none", "ppu_wide_blank(5, 5); ppu_wide_blank_clear();") else { return };
     let _ = std::fs::remove_dir_all(&dir);
-    // 24 to the left: columns 8 to 31 are black and 0 to 7 show the backdrop; 8 to the right: columns 288 to 295.
-    for x in 0..8 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
-    for x in 8..32 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
+    // 24 to the left: columns 0 to 23 (the outer ones) are black and 24 to 31 show the backdrop; 8 to the right: columns 312 to 319.
+    for x in 0..24 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
+    for x in 24..32 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
     for x in 32..288 { assert_eq!(some.rgb(x, 21), rgb(RED), "the picture changed at {x}"); }
-    for x in 288..296 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
-    for x in 296..320 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
+    for x in 288..312 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
+    for x in 312..320 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
     // More than E is cut to E: the extra columns are black and the picture is not.
     for x in (0..32).chain(288..320) { assert_eq!(over.rgb(x, 21), [0, 0, 0], "x = {x}"); }
     for x in 32..288 { assert_eq!(over.rgb(x, 21), rgb(RED), "the picture changed at {x}"); }

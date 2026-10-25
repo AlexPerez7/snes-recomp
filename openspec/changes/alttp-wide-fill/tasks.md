@@ -9,8 +9,8 @@
 
 - [x] 2.1 Confirmar con volcados de VRAM que en el borde del área la zona envuelta del tilemap muestra el lado opuesto, y anotar las variables de cámara y los límites del área
 - [x] 2.2 Investigar la transición entre áreas y la cuadrícula Map16 y decidir entre precarga y franjas negras (decidido: franjas negras; la precarga queda como trabajo futuro en design.md)
-- [ ] 2.3 Comprobar en la ROM que `$0604`/`$0606` son los límites izquierdo y derecho (no `$0600`/`$0602`, que son los verticales: ya comprobado, falta el borde real y un área de 1024 px) de la cámara del exterior (con áreas de 512 y de 1024 px) y que `$E2` es la X de la cámara; verificar con `--watch` y capturas `--wide 96` en el borde izquierdo y en el derecho de un área
-- [ ] 2.4 Contrastar `$1B` como indicador de interior con una captura de exterior y otra de interior, y localizar una rutina que se ejecute cada fotograma en ambos casos para enganchar el cálculo de franjas; anotar ambas en design.md
+- [x] 2.3 Comprobar en la ROM que `$0604`/`$0606` son los límites izquierdo y derecho (no `$0600`/`$0602`, que son los verticales: comprobado en bordes de áreas de 512 px; un área de 1024 px no se ha visto en juego, solo que el código del juego recalcula los límites por área con ±$100/±$200) de la cámara del exterior (con áreas de 512 y de 1024 px) y que `$E2` es la X de la cámara; verificar con `--watch` y capturas `--wide 96` en el borde izquierdo y en el derecho de un área
+- [x] 2.4 Contrastar `$1B` como indicador de interior con una captura de exterior y otra de interior, y localizar una rutina que se ejecute cada fotograma en ambos casos para enganchar el cálculo de franjas; anotar ambas en design.md
 
 ## 3. Franjas negras en el motor
 
@@ -19,14 +19,14 @@
 
 ## 4. Exterior y salas en `alttp-recomp`
 
-- [ ] 4.1 Escribir `games/alttp_usa/widefill.c` con un gancho (declarado en `games/alttp_usa.toml`) que cada fotograma calcule las franjas del exterior con los límites de 2.3 (`$0604`/`$0606`) y las del interior (completas) con `$1B`, y las fije con `ppu_wide_blank`; verificar con `--wide 72` en el borde izquierdo y derecho de un área del exterior, y en una sala y una cueva
+- [x] 4.1 Escribir `games/alttp_usa/widefill.c` con un gancho (declarado en `games/alttp_usa.toml`) que cada fotograma calcule las franjas del exterior con los límites de 2.3 (`$0604`/`$0606`) y las del interior (completas) con `$1B`, y las fije con `ppu_wide_blank`; verificar con `--wide 72` en el borde izquierdo y derecho de un área del exterior, y en una sala y una cueva
 - [ ] 4.2 Comprobar `E = 96`, una transición entre áreas y la entrada y salida de una cueva; verificar con capturas que no queda basura en ningún fotograma de la transición y medir el tiempo con `--stats`
 - [ ] 4.3 Comprobar `E = 0`: verificar que la captura es idéntica byte a byte a la de antes del gancho
 
 ## 5. Cierre
 
 - [ ] 5.1 Añadir a `scripts/check.ps1` de `alttp-recomp` una prueba con `--wide` (borde de exterior e interior) y documentar la opción en su README; verificar que el script pasa
-- [ ] 5.2 Ejecutar `snes-recomp scan` sobre `alttp-recomp` antes de cualquier push y `cargo test` en el motor con `SNES_GAME_PROFILE` y `SNES_GAME_ROM`; verificar que ambos terminan sin fallos
+- [x] 5.2 Ejecutar `snes-recomp scan` sobre `alttp-recomp` antes de cualquier push y `cargo test` en el motor con `SNES_GAME_PROFILE` y `SNES_GAME_ROM`; verificar que ambos terminan sin fallos
 
 ## Workflow follow-up
 

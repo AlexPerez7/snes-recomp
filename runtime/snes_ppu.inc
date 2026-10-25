@@ -149,7 +149,7 @@ static int16_t spr_xoff[128]; /* added to the X of each sprite (ppu_sprite_xoff)
 void ppu_sprite_xoff(int i, int dx) { if (i >= 0 && i < 128) spr_xoff[i] = (int16_t)dx; }
 void ppu_sprite_xoff_clear(void) { memset(spr_xoff, 0, sizeof spr_xoff); }
 
-static int wide_blank_l, wide_blank_r; /* pixels of the extra columns drawn black, from the picture outwards (ppu_wide_blank) */
+static int wide_blank_l, wide_blank_r; /* pixels of the extra columns drawn black, from the outer edge of the field inwards (ppu_wide_blank) */
 
 void ppu_wide_blank(int left, int right) {
     wide_blank_l = left < 0 ? 0 : left;
@@ -489,7 +489,7 @@ static void render_row(int y, uint8_t *out) {
     }
     draw_sprites_row(y);
     for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
-        if ((x < 0 && -x <= wide_blank_l) || (x >= SCREEN_W && x - SCREEN_W < wide_blank_r)) {
+        if ((x < 0 && x + wide_x0 < wide_blank_l) || (x >= SCREEN_W && x - SCREEN_W >= wide_x0 - wide_blank_r)) {
             uint8_t *q = out + (size_t)(x + wide_x0) * 3;
             q[0] = q[1] = q[2] = 0;
             continue;
