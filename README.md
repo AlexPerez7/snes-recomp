@@ -69,7 +69,7 @@ cargo test
 `snes-port` construye el juego en tu máquina a partir de **tu** ROM y lo arranca. No se distribuye ningún juego: el ejecutable se genera aquí, la primera vez (unas decenas de segundos con MSVC; algo más con gcc), y las siguientes arranca al instante.
 
 ```
-snes-port roms\alttp_usa.sfc                       # construye (si hace falta) y juega; también vale arrastrar la ROM sobre snes-port.exe
+snes-port roms\alttp_usa.sfc                       # construye (si hace falta) y juega; también vale arrastrar la ROM sobre snes-port.exe, o abrirlo con doble clic para elegirla en una ventana (recuerda la última carpeta)
 snes-port roms\alttp_usa.sfc -- --scale 3 --mute   # lo que va tras -- se pasa al juego
 snes-port roms\alttp_usa.sfc --no-launch           # solo construye
 snes-port clean [roms\alttp_usa.sfc]               # borra la caché de esa ROM (o toda); nunca toca ROMs ni partidas
