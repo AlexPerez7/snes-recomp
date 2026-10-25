@@ -62,5 +62,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 - Las tablas de saltos que se añadan a un perfil (`games/*.toml` de un repositorio de juego) se comprueban a mano contra el ROM real.
 - El C generado deriva del ROM: va a `out/` (ignorado) y nunca se sube.
 - Los tests que necesitan compilador o el ROM se omiten solos si faltan; en esta máquina se usa Visual Studio Build Tools.
+- Dónde se trabaja: el flujo OpenSpec y todo lo que toque el runtime, el generador o los tests viven en este repositorio (`openspec/` solo existe aquí; las capturas y la investigación sobre la ROM también salen de aquí). El C propio de un juego, su perfil `.toml`, su `scripts/check.ps1` y su README van en el repositorio del juego (`..lttp-recomp`), que no tiene `openspec/`; se commitea y se sube cada repositorio por separado.
+- Cambio abierto: `alttp-wide-fill` (zona nueva de la pantalla ancha en ALttP: franjas negras donde no hay mapa cargado, con `ppu_wide()` y `ppu_wide_blank()` ya hechos en el motor). Averiguado: el Map16 del área vecina no está en WRAM hasta la transición (`7E:2000-3FFF`, 64x64 entradas), por eso se tapa en negro en vez de precargar; la precarga real queda como trabajo futuro, con los datos en su `design.md`.
 - Los cambios se hacen con OpenSpec: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Contexto del proyecto en `openspec/config.yaml`.
 - Artefactos de OpenSpec y documentación, en español.

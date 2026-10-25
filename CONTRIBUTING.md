@@ -55,7 +55,7 @@ Un error de la PPU o del sonido se prueba mejor con una prueba que compile un tr
 
 El motor no incrusta ningún juego. Para añadir uno:
 
-1. Crea un repositorio `<juego>-recomp` con `games/<id>.toml` (`[game]` con `id`, `name` y `crc32`, más `[[entry]]` y `[[table]]`) y, si quieres ganchos propios, `games/<id>/*.c`. Mira `alttp-recomp` como ejemplo.
+1. Crea un repositorio `<juego>-recomp` con `games/<id>.toml` (`[game]` con `id`, `name` y `crc32`, más `[[entry]]` y `[[table]]`) y, si quieres ganchos propios, `games/<id>/*.c`. Mira `alttp-recomp` como ejemplo. El C propio incluye `snes_rt.h` y dispone de `wram_read8/wram_write8`, `joy1_state()`, `game_opt()`, `ppu_sprite_xoff()` para colocar sprites en las columnas extra de la pantalla ancha, `ppu_wide()` para leer el ensanche vigente y `ppu_wide_blank()` para tapar en negro lo que el juego no tenga cargado ahí.
 2. Pruébalo con `snes-recomp discover <rom> --game games/<id>.toml --unresolved` hasta que no queden saltos indirectos sin tabla.
 3. Si el juego necesita algo que el motor no ofrece (un registro, un modo de la PPU, un chip de la cartucha), abre aquí un issue o una propuesta con ese hueco concreto.
 
