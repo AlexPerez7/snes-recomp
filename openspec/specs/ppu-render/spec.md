@@ -7,7 +7,7 @@ Dibujar la imagen que la PPU mostraría con el estado final de sus registros y m
 ## Requirements
 
 ### Requirement: Captura de la imagen final
-El runtime SHALL escribir con `--screenshot <fichero>`, al terminar la ejecución y también cuando se detiene por un fallo, un PNG de 256×224 píxeles con la imagen del estado final de la PPU, y MUST no escribir nada si no se pide. El fichero SHALL ser un PNG válido de 8 bits por canal RGB que cualquier lector de imágenes pueda abrir.
+El runtime SHALL escribir con `--screenshot <fichero>`, al terminar la ejecución y también cuando se detiene por un fallo, un PNG de 256×224 píxeles con el último fotograma completo que dibujó la PPU (o, si no llegó a completarse ninguno, el estado de ese momento), y MUST no escribir nada si no se pide. El fichero SHALL ser un PNG válido de 8 bits por canal RGB que cualquier lector de imágenes pueda abrir.
 
 #### Scenario: Captura pedida
 - **WHEN** se ejecuta con `--screenshot s.png`
@@ -105,11 +105,11 @@ El runtime SHALL componer las capas del modo 1, de delante hacia atrás, en este
 - **THEN** se ve el de BG3
 
 ### Requirement: Límites declarados
-El runtime SHALL avisar en el informe cuando la imagen use una función que no dibuja: un modo gráfico distinto del 1, ventanas, mosaico, o una región de color math que depende de ventanas. MUST dibujar en esos casos las capas que sí sabe dibujar y no inventar el resto.
+El runtime SHALL avisar en el informe cuando la imagen use una función que no dibuja, que tras este cambio se reducen al entrelazado y a las resoluciones de alta resolución de `$2133`. MUST dibujar en esos casos lo que sí sabe dibujar y no inventar el resto. La captura SHALL usar el mismo dibujador por línea que el ejecutable interactivo y mostrar el último fotograma completo; si la ejecución se detiene antes de acabar el primero, SHALL dibujar las líneas que faltan con el estado de ese momento.
 
 #### Scenario: Otro modo gráfico
-- **WHEN** `$2105` selecciona el modo 7
-- **THEN** el informe indica que el modo 7 no se dibuja y la imagen contiene solo el color de fondo y los sprites
+- **WHEN** `$2105` selecciona el modo 0, 2, 3, 4, 5, 6 o 7
+- **THEN** la captura dibuja las capas de ese modo y el informe no avisa de modo no dibujado
 
 #### Scenario: Color math
 - **WHEN** `$2131` tiene alguna capa activada y los bits 4-5 de `$2130` valen 0 o 3
@@ -117,7 +117,11 @@ El runtime SHALL avisar en el informe cuando la imagen use una función que no d
 
 #### Scenario: Color math con ventana
 - **WHEN** los bits 4-5 de `$2130` piden una región que depende de la ventana de color
-- **THEN** el informe avisa de que esa región no se aplica
+- **THEN** la región se aplica y el informe no avisa
+
+#### Scenario: Entrelazado
+- **WHEN** `$2133` activa el entrelazado de imagen
+- **THEN** el informe avisa de que el entrelazado no se aplica
 
 ### Requirement: Color math
 El runtime SHALL aplicar el color math de `$2130-$2132` a cada píxel de la pantalla principal: tomar como segundo operando el color fijo de `$2132`, o la subpantalla (capas de `$212D`) si el bit 1 de `$2130` está activo y esta aporta un píxel; sumar o restar (bit 7 de `$2131`) por canal de color con saturación a 0 y 31; y dividir por 2 si el bit 6 de `$2131` está activo. SHALL aplicarlo solo a las capas elegidas en `$2131` (bits 0-5, con el color de fondo en el bit 5), y la región de `$2130` bits 4-5 (siempre aplicar y nunca aplicar) MUST respetarse; el color math opera sobre los 5 bits de la CGRAM y el brillo se aplica después.
