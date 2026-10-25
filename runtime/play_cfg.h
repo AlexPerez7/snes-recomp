@@ -11,7 +11,7 @@
 
 /* ---- the options ---- */
 
-enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_VOLUME, O_COUNT };
+enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_COUNT };
 enum { ASPECT_43, ASPECT_87, ASPECT_FREE };
 enum { SCALING_INTEGER, SCALING_FIT };
 enum { FILTER_NEAREST, FILTER_BILINEAR, FILTER_SHARP };
@@ -29,6 +29,7 @@ static const OptDef opt_defs[O_COUNT] = {
     {"overscan", 0, 0, 8, NULL, 1},
     {"scanlines", 0, 0, 100, NULL, 10},
     {"grid", 0, 0, 1, "false|true", 1},
+    {"fps", 0, 0, 1, "false|true", 1},
     {"volume", 100, 0, 100, NULL, 5},
 };
 

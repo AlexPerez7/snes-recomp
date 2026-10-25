@@ -109,7 +109,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 
 - Cualquier mando SDL funciona, también conectado en caliente: el primero es el jugador 1 y el segundo el jugador 2. `--print-keys` lista el teclado del jugador 1.
 - Las opciones viven en `config.ini` junto a la ROM: se crea con los valores por defecto la primera vez, conserva comentarios y claves que no conoce, y se relee al arrancar. La línea de comandos manda sobre el fichero solo en esa ejecución (`--scale N`, `--fullscreen`, `--opt CLAVE=VALOR`, repetible). Un `<rom>.keys` antiguo se importa una vez, si aún no hay `config.ini`.
-- F1 abre un menú (teclado o mando: cruceta, A confirma, B vuelve) que pausa la emulación, aplica los cambios al instante y los guarda al cerrarlo. En «Controls» se elige jugador y botón y se pulsa la tecla o el botón del mando que se quiere asignar; si ya está en uso avisa y ofrece reemplazar (Intro) o cancelar (Esc).
+- F1 abre un menú con aspecto de menú de juego (tipografía y marco propios) que pausa la emulación, aplica los cambios al instante y los guarda al cerrarlo. Cuatro pestañas: **Image** (pantalla completa, VSync, aspecto, escalado, filtro, recorte, scanlines, rejilla, contador de fps), **Audio** (volumen y dispositivo de salida), **Controls** (jugador y botón: se pulsa la tecla o el botón del mando que se quiere asignar; si ya está en uso avisa y ofrece reemplazar con Intro o cancelar con Esc) y **Game** (continuar, guardar la partida ahora, restaurar todo a los valores por defecto, salir). Cada pestaña de opciones tiene su «Restore defaults». Teclado: flechas para moverse y cambiar el valor, Intro elige, Q/W (o RePág/AvPág) cambian de pestaña, Esc o F1 cierran. Mando: cruceta, A elige, B cierra, L/R cambian de pestaña.
 
 | Clave | Valores (por defecto el primero) | Efecto |
 |---|---|---|
@@ -122,6 +122,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `overscan` | `0` (0 a 8) | líneas recortadas arriba y abajo |
 | `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |
 | `grid` | `false`, `true` | rejilla entre los píxeles de la consola |
+| `fps` | `false`, `true` | muestra los fotogramas por segundo en la esquina de la imagen |
 | `volume` | `100` (0 a 100) | volumen maestro |
 | `audio_device` | vacío = el del sistema | nombre del dispositivo de salida |
 | `p1.key.A`, `p2.pad.B`… | nombres de tecla o de botón de SDL separados por comas | asignación por jugador (`key` teclado, `pad` mando) y botón (`B Y SELECT START UP DOWN LEFT RIGHT A X L R`) |

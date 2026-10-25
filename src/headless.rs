@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_RUNTIME, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -122,6 +122,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("snes_entry.c".into(), out.entry.clone().into_bytes()),
         ("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()),
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
+        ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
@@ -2291,6 +2292,108 @@ fn the_port_options_logic_reads_saves_lays_out_and_assigns() {
     }
 }
 
+/// The C program that checks `runtime/play_ui.h` (font, text measure and fit, panel pieces) against guard bytes. With an
+/// argument it also writes the alphabet and a panel as a PPM picture, to look at.
+const PLAY_UI_TEST: &str = r##"
+#include "play_ui.h"
+#define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+#define W 64
+#define H 40
+#define GUARD 256
+
+static int guards_ok(const uint8_t *buf, size_t n) {
+    size_t i;
+    for (i = 0; i < GUARD; i++) if (buf[i] != 0xA5 || buf[GUARD + n + i] != 0xA5) return 0;
+    return 1;
+}
+
+int main(int argc, char **argv) {
+    static uint8_t mem[GUARD + W * H * 3 + GUARD];
+    Canvas c; int ch, sum, i, lo, hi; char out[64];
+    memset(mem, 0xA5, sizeof mem);
+    memset(mem + GUARD, 0, W * H * 3);
+    c.px = mem + GUARD; c.w = W; c.h = H;
+
+    /* every printable character has a shape, fits the grid and moves the pen at least 2 pixels */
+    for (ch = 32; ch <= 126; ch++) {
+        glyph_ink(ch, &lo, &hi);
+        CHECK(glyph_adv(ch) >= 2);
+        if (ch != ' ') CHECK(hi >= lo && hi - lo + 1 <= 6);
+    }
+    CHECK(glyph_adv(' ') == 3);
+    CHECK(glyph_adv('i') < glyph_adv('W') && glyph_adv('l') < glyph_adv('m')); /* proportional */
+    /* the measure is the sum of the advances and what is drawn does not go past it */
+    for (sum = 0, i = 0; "Hello, Link!"[i]; i++) sum += glyph_adv((unsigned char)"Hello, Link!"[i]);
+    CHECK(text_w("Hello, Link!") == sum && text_w("") == 0);
+    CHECK(text_w2x("Hi") == 2 * text_w("Hi"));
+    memset(c.px, 0, W * H * 3);
+    text_draw(&c, 2, 2, "Hello", UI_TEXT, 0);
+    { int maxx = -1, x, y; for (y = 0; y < H; y++) for (x = 0; x < W; x++) if (c.px[(y * W + x) * 3]) if (x > maxx) maxx = x;
+      CHECK(maxx >= 2 && maxx < 2 + text_w("Hello")); }
+
+    /* fitting: short text is kept, long text ends in "..." and fits, tiny widths still terminate */
+    text_fit(out, sizeof out, "Speakers", 100); CHECK(!strcmp(out, "Speakers"));
+    text_fit(out, sizeof out, "Realtek High Definition Audio (Front)", 90);
+    CHECK(text_w(out) <= 90 && strlen(out) > 3 && !strcmp(out + strlen(out) - 3, "..."));
+    text_fit(out, sizeof out, "Realtek High Definition Audio (Front)", 1);
+    CHECK(strlen(out) <= 3);
+    text_fit(out, 8, "abcdefghijklmnop", 1000); CHECK(strlen(out) < 8);
+
+    /* nothing is written outside the canvas, however the pieces are placed */
+    for (i = -40; i < 80; i += 7) {
+        text_draw(&c, i, i / 2, "Zelda: A Link", UI_TEXT, 1);
+        text_draw2x(&c, i, 3 - i, "Menu", UI_GOLD, UI_SHADOW);
+        ui_panel(&c, i, i / 3, 50, 30);
+        ui_rule(&c, i, 5, 40);
+        ui_bar(&c, i, 9, 30, 6, 50);
+        ui_cursor(&c, i, i / 4);
+        ui_arrow(&c, i, 20, -1, UI_TEXT); ui_arrow(&c, i + 8, 20, 1, UI_DIM);
+        text_center(&c, i, 30, 30, "Mid", UI_TEXT); text_right(&c, i + 40, 12, "Right", UI_TEXT);
+    }
+    CHECK(guards_ok(mem, W * H * 3));
+
+    /* the panel paints its corners gold and the bar fills in proportion */
+    memset(c.px, 0, W * H * 3);
+    ui_panel(&c, 0, 0, 40, 30);
+    CHECK(c.px[(1 * W + 1) * 3] == 0xF8 && c.px[(1 * W + 1) * 3 + 1] == 0xD8);
+    memset(c.px, 0, W * H * 3);
+    ui_bar(&c, 0, 0, 52, 6, 50);
+    { int x, filled = 0; for (x = 1; x < 51; x++) if (c.px[(2 * W + x) * 3 + 1] > 0x80) filled++; CHECK(filled == 25); }
+
+    if (argc > 1) { /* a picture of the alphabet and a panel, for the eyes */
+        enum { PW = 256, PH = 120 };
+        static uint8_t pic[PW * PH * 3];
+        Canvas p; FILE *f; int x, y;
+        p.px = pic; p.w = PW; p.h = PH;
+        for (i = 0; i < PW * PH; i++) { pic[i * 3] = 0x30; pic[i * 3 + 1] = 0x60; pic[i * 3 + 2] = 0x30; }
+        ui_panel(&p, 4, 4, 248, 112);
+        text_draw2x(&p, 14, 10, "OPTIONS", UI_GOLD, UI_SHADOW);
+        ui_rule(&p, 12, 28, 232);
+        text_draw(&p, 12, 34, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", UI_TEXT, 1);
+        text_draw(&p, 12, 46, "abcdefghijklmnopqrstuvwxyz", UI_TEXT, 1);
+        text_draw(&p, 12, 58, "0123456789 .,:;!?'\"-+/()[]%&", UI_TEXT, 1);
+        ui_cursor(&p, 12, 74); text_draw(&p, 24, 72, "Volume", UI_GOLD, 1); ui_bar(&p, 120, 73, 80, 8, 60);
+        text_draw(&p, 24, 84, "Filter", UI_TEXT, 1); ui_arrow(&p, 120, 85, -1, UI_TEXT); text_draw(&p, 128, 84, "bilinear", UI_GOOD, 1); ui_arrow(&p, 180, 85, 1, UI_DIM);
+        text_draw(&p, 24, 96, "Realtek High Definition", UI_DIM, 1);
+        f = fopen(argv[1], "wb");
+        fprintf(f, "P6\n%d %d\n255\n", PW, PH);
+        for (y = 0; y < PH; y++) for (x = 0; x < PW; x++) fwrite(pic + (y * PW + x) * 3, 1, 3, f);
+        fclose(f);
+    }
+    printf("ok\n");
+    return 0;
+}
+"##;
+
+#[test]
+fn the_menu_font_and_panel_pieces_measure_fit_and_stay_inside_the_canvas() {
+    let cc = crate::need_compiler!();
+    match cc.compile_run("play-ui", &[("play_ui.h", PLAY_UI), ("t.c", PLAY_UI_TEST)], &[]) {
+        Ok(out) => assert!(out.trim_end().ends_with("ok"), "{out}"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 /// Runs the interactive frontend on a program that only loops, without a window, for `frames` frames with `args` and
 /// the files `extra` next to the ROM (a `config.ini`, for one); `--print-config` is added, so the output ends with the
 /// lines of the config file as it was left.
@@ -2308,8 +2411,8 @@ fn config_lines(r: &Run) -> Vec<&str> {
 
 #[test]
 fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults() {
-    // F1 opens the menu; Enter on Image; four Downs reach `filter`; Right makes it bilinear; Escape twice closes and saves
-    let keys = "F1,Return,Down,Down,Down,Down,Right,Escape,Escape";
+    // F1 opens the menu on Image; four Downs reach `filter`; Right makes it bilinear; Escape closes and saves
+    let keys = "F1,Down,Down,Down,Down,Right,Escape";
     let Some(r) = run_menu("menu-filter", &["--menu-keys", keys], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let l = config_lines(&r);
@@ -2335,21 +2438,99 @@ fn the_command_line_wins_over_the_config_file_without_changing_it() {
 
 #[test]
 fn the_menu_remaps_a_key_and_asks_before_taking_one_that_is_in_use() {
-    // Controls (two Downs and Enter), Player 1 (Enter), button A is the ninth line, Enter starts the capture
-    let to_a = "F1,Down,Down,Return,Return,Down,Down,Down,Down,Down,Down,Down,Down,Return";
-    let Some(r) = run_menu("menu-remap", &["--menu-keys", &format!("{to_a},Space,Escape,Escape,Escape")], &[]) else { return };
+    // Controls (W twice from Image), Player 1 is already chosen, button A is the ninth line after it, Enter starts the capture
+    let to_a = "F1,W,W,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return";
+    let Some(r) = run_menu("menu-remap", &["--menu-keys", &format!("{to_a},Space,Escape")], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let l = config_lines(&r);
     assert!(l.contains(&"p1.key.A = Space"), "{}", r.out);
     assert!(l.contains(&"p1.key.START = Return") && l.contains(&"p1.key.B = X"), "{}", r.out);
     // Return is START's: Escape cancels and leaves things as they were
-    let Some(r) = run_menu("menu-conflict", &["--menu-keys", &format!("{to_a},Return,Escape,Escape,Escape,Escape")], &[]) else { return };
+    let Some(r) = run_menu("menu-conflict", &["--menu-keys", &format!("{to_a},Return,Escape,Escape")], &[]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"p1.key.A = S") && l.contains(&"p1.key.START = Return"), "{}", r.out);
     // Enter replaces: A gets Return and START is left without a key
-    let Some(r) = run_menu("menu-replace", &["--menu-keys", &format!("{to_a},Return,Return,Escape,Escape,Escape")], &[]) else { return };
+    let Some(r) = run_menu("menu-replace", &["--menu-keys", &format!("{to_a},Return,Return,Escape")], &[]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"p1.key.A = Return") && l.contains(&"p1.key.START = "), "{}", r.out);
+}
+
+#[test]
+fn the_game_tab_saves_now_restores_everything_and_quits() {
+    // Game is the fourth tab: W three times from Image. Down once is "Save game now".
+    let code = [0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70, 0x80, 0xFE];
+    let seg = [(0x8000, code.as_slice())];
+    let all = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config", "--menu-keys", "F1,W,W,W,Down,Return,Escape"];
+    let Some(r) = run_play_with("menu-save-now", &seg, &[0x8000], &all, &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let saved = r.out.find("sram: saved").expect(&r.out);
+    let config = r.out.find("# Options of snes_play").expect(&r.out);
+    assert!(saved < config, "the saved game is written when the menu asks, not when the program ends
+{}", r.out);
+    // Restore all defaults (Down twice, Enter, Enter to confirm) over a config that changed things
+    let ini = b"filter = sharp
+volume = 50
+scanlines = 40
+p1.key.A = Space
+";
+    let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
+    // Escape instead of the second Enter cancels the restoring
+    let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
+    // Quit (the fourth row) ends the program without closing the menu by hand
+    let Some(r) = run_menu("menu-quit", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+}
+
+#[test]
+fn restoring_a_tab_only_changes_that_tab() {
+    let ini = b"filter = sharp
+scanlines = 40
+volume = 50
+";
+    // Image: nine rows of options, then "Restore defaults" (nine Downs); Enter; Escape
+    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
+    let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = nearest") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
+    // Audio: Restore is the third row of the second tab
+    let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"volume = 100") && l.contains(&"filter = sharp") && l.contains(&"scanlines = 40"), "{}", r.out);
+}
+
+#[test]
+fn the_fps_counter_changes_the_picture_only_when_it_is_on() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let base = ["rom.sfc", "--no-window", "--frames", "5", "--frame-blocks", "20", "--present-shot", "p.png", "--present-size", "256x224"];
+    let Some(r) = run_play("play-fps-off", &seg, &[0x8000], &base) else { return };
+    assert!(r.out.contains("present-shot: identical to the picture"), "{}", r.out);
+    let args: Vec<&str> = base.iter().copied().chain(["--opt", "fps=true"]).collect();
+    let Some(r) = run_play("play-fps-on", &seg, &[0x8000], &args) else { return };
+    assert!(r.out.contains("present-shot: differs from the picture"), "{}", r.out);
+}
+
+#[test]
+fn the_menu_picture_is_the_same_every_time_and_goes_through_the_presenter() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let base = ["rom.sfc", "--no-window", "--frames", "5", "--frame-blocks", "20", "--menu-shot", "m.png", "--menu-page", "2"];
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let Some(a) = run_play("play-menushot-a", &seg, &[0x8000], &base) else { return };
+    let Some(b) = run_play("play-menushot-b", &seg, &[0x8000], &base) else { return };
+    assert!(hash(&a.out).is_some() && hash(&a.out) == hash(&b.out), "{}
+{}", a.out, b.out);
+    let other: Vec<&str> = base.iter().copied().take(base.len() - 1).chain(["3"]).collect();
+    let Some(c) = run_play("play-menushot-c", &seg, &[0x8000], &other) else { return };
+    assert!(hash(&c.out).is_some() && hash(&c.out) != hash(&a.out), "another tab looks different
+{}", c.out);
+    // with a filter and the whole window area the menu is presented like the game picture
+    let args: Vec<&str> = base.iter().copied().chain(["--present-shot", "p.png", "--present-size", "600x450", "--opt", "filter=sharp", "--opt", "scaling=fit"]).collect();
+    let Some(r) = run_play("play-menushot-sharp", &seg, &[0x8000], &args) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("present-shot: 600x450"), "{}", r.out);
 }
 
 #[test]
