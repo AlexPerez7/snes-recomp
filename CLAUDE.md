@@ -1,6 +1,6 @@
 # snes-recomp
 
-Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. Este repositorio es el **motor** (público, MIT) y no incrusta ningún juego: cada juego es un perfil `games/<id>.toml` (+ `games/<id>/*.c`) en su propio repositorio. Primer juego: *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`), en el repositorio hermano `alttp-recomp` (`..\alttp-recomp` en esta máquina).
+Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. Este repositorio es el **motor** (público, MIT) y no incrusta ningún juego: cada juego es un perfil `games/<id>.toml` (+ `games/<id>/*.c`) en su propio repositorio. Primer juego: *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`), en el repositorio hermano `alttp-recomp` (`..\alttp-recomp` en esta máquina). Ambos son públicos: https://github.com/AlexPerez7/snes-recomp y https://github.com/AlexPerez7/alttp-recomp; antes de cada push, `scan` de lo que se sube.
 
 ## Comandos
 
