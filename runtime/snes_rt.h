@@ -45,8 +45,8 @@ void ppu_sprite_xoff_clear(void);
 /* E, the extra pixels the picture is drawn with on each side (0 to 96, a multiple of 8; 0 is the 256x224 picture of the console).
  * It follows the value in force, so it changes when a new E takes effect, not when it is asked for. */
 int ppu_wide(void);
-/* The first `left` pixels to the left of the picture and the first `right` pixels to its right (of the extra columns of a wider
- * field) are drawn black instead of what the PPU would draw; each is cut to E and the 256 pixels of the console are never touched.
+/* The outermost `left` pixels of the left extra columns and the outermost `right` pixels of the right ones (of a wider field, counted
+ * from its edge inwards, so what lies beyond the end of a map is hidden and what lies next to the picture is kept) are drawn black instead of what the PPU would draw; each is cut to E and the 256 pixels of the console are never touched.
  * It is how a game hides what it has not loaded there. `ppu_wide_blank_clear` is `ppu_wide_blank(0, 0)`. */
 void ppu_wide_blank(int left, int right);
 void ppu_wide_blank_clear(void);

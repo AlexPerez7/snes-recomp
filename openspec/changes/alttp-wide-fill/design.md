@@ -55,3 +55,12 @@ Investigación de la transición entre áreas (2.3, en curso; área 2C hacia 2B,
 
 - **Precarga real del exterior (opción A):** descomprimir el vecino con las rutinas del juego, construir las columnas con la rutina de `02:F3xx-F4xx`, subirlas al tilemap y guardar y restaurar la cuadrícula Map16 de `7E:2000-3FFF`. Datos de partida: la sección sobre la transición entre áreas.
 - Piezas 3 y 4 (activar enemigos y objetos fuera de los 256 px y sprites a la derecha con `ppu_sprite_xoff`).
+
+## Resultados de la comprobación en la ROM (tareas 2.3, 2.4 y 4.1)
+
+- Límites horizontales: `$0604` (mínimo) y `$0606` (máximo) de la X de la cámara; `$0600`/`$0602` son los verticales. `$E2` es la X de la cámara (ya comprobado en `0x2C`: 2048..2304; en `0x2B`: 1536..1792).
+- Durante la transición entre áreas (`$10 = 9`, `$11 = 6`) los límites aún son los del área anterior y la cámara los rebasa, así que el lado del que se sale queda negro entero hasta que el juego actualiza los límites; no queda basura.
+- La franja se cuenta desde el borde exterior hacia la imagen (lo que hay más allá del final del mapa), no desde la imagen: se corrigió `ppu_wide_blank` en el motor al probar el caso parcial.
+- Interior: `$1B != 0` ⇒ franjas completas; se probó en la casa de Link. Salida de la casa a `0x2C` sin basura en ningún fotograma.
+- Gancho por fotograma: `after` en `00:80B5` (el enrutador de módulos que llama el bucle principal una vez por fotograma tras esperar al NMI). En los módulos menores que 6 (título, selección de partida, nombre) se quitan las franjas.
+- Sin medir: tiempo con `--stats`, cuevas, `E = 0` byte a byte contra una versión sin gancho, y un área de 1024 px.
