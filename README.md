@@ -39,6 +39,7 @@ ROM ──► carga y cabecera ──► descubrimiento de código ──► gra
 | Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32, MSVC/gcc/clang o TinyCC descargado con consentimiento |
 | Opciones de port (menú F1, `config.ini`, filtros) | hecho |
 | Perfiles de juego (entradas, tablas, ganchos y C propio) | hecho: viven en el repositorio de cada juego |
+| Pantalla ancha (`wide`, hasta 96 px por lado) | hecho en el motor, con API para el C del juego; el relleno específico de ALttP (franjas negras donde no hay mapa) está en curso en el cambio `alttp-wide-fill` y la precarga real del exterior queda como trabajo futuro |
 
 Validación: más de 200 pruebas (algunas compilan y ejecutan el C generado; las que necesitan compilador, SDL2 o la ROM se omiten solas si faltan) y suites de *fuzz* de 30 000 fotogramas por mazmorras, overworld y Mundo Oscuro sin paradas ni *stubs* ejecutados.
 
@@ -126,7 +127,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `scaling` | `integer`, `fit` | múltiplos enteros, o relleno del área disponible |
 | `filter` | `nearest`, `bilinear`, `sharp` | `sharp` escala por un factor entero y suaviza solo el resto |
 | `overscan` | `0` (0 a 8) | líneas recortadas arriba y abajo |
-| `wide` | `0` (0 a 96, de 8 en 8) | píxeles de imagen extra a cada lado de los 256 de la consola; la zona nueva muestra lo que dibuja la PPU (los fondos continúan por su mapa), así que puede verse vacía o con restos hasta que el juego la rellene |
+| `wide` | `0` (0 a 96, de 8 en 8) | píxeles de imagen extra a cada lado de los 256 de la consola; la zona nueva muestra lo que dibuja la PPU (los fondos continúan por su mapa), así que puede verse vacía o con restos; el C de un juego puede leer el valor (`ppu_wide()`) y tapar en negro lo que no tenga cargado (`ppu_wide_blank()`) |
 | `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |
 | `grid` | `false`, `true` | rejilla entre los píxeles de la consola |
 | `fps` | `false`, `true` | muestra los fotogramas por segundo en la esquina de la imagen |
