@@ -41,6 +41,21 @@ Hoy `codegen --all` escribe el C en un directorio y el usuario compila a mano co
 
 `codegen --all` y la compilación manual siguen funcionando como hoy. El subcomando nuevo se añade sin romper nada; el paquete de distribución se produce con un script de release y se prueba en una máquina limpia (sin ROM, sin caché).
 
+## Measurements (task 3.1)
+
+Hecho el 2026-10-25 en la máquina de desarrollo (Windows 11, MSVC 2022 Build Tools, TinyCC 0.9.27). Código: `codegen --all` de ALttP, 427 370 líneas de C en 23 ficheros. Tiempo de construcción del runtime sin vídeo (`snes_headless.c`, mismo código del juego); fps medidos sin límite de ritmo en 1200 fotogramas del título y en 7000 del overworld.
+
+| Compilador | Construcción | fps título | fps overworld |
+|---|---|---|---|
+| MSVC `/O2 /MP` | 40 s | 234 | 234 |
+| MSVC `/O1 /MP` | 20 s | 227 | – |
+| MSVC `/Od /MP` | 2 s | 143 | – |
+| TinyCC 0.9.27 (un solo hilo) | 0,7 s | 118 | 121 |
+
+El frontal con SDL2 y TinyCC: 115 fps con `--no-window` (MSVC `/O2`: 244 fps) y 60 fps sostenidos con ventana real. Hacen falta tres ajustes: definir `DECLSPEC=` y `SDLCALL=` vacíos (las cabeceras de SDL2 usan una sintaxis que TinyCC no entiende), generar `SDL2.def` con `tcc -impdef SDL2.dll` y no usar `commdlg.h` (que TinyCC no trae: el diálogo de elegir ROM se omite, y el constructor siempre pasa la ROM por argumento).
+
+**Decisión:** TinyCC 0.9.27 es el compilador portátil de último recurso. Compila en menos de un segundo y da casi el doble del ritmo necesario (60 fps), aunque la mitad que MSVC `/O2`; en un equipo mucho más lento que el de desarrollo podría quedarse corto, y entonces conviene instalar un compilador de verdad (el programa lo dice). Se descarga de `https://download.savannah.gnu.org/releases/tinycc/tcc-0.9.27-win64-bin.zip` (489 586 bytes, SHA-256 `34a721949a2583fdff725312da092fa0f5f1f284b702e6f811c6954714faabb2`, calculado al descargarlo por primera vez desde la fuente oficial) a `<caché>/toolchain/`. Los compiladores del sistema siguen teniendo prioridad.
+
 ## Open Questions
 
-- Elección final del compilador portátil de último recurso (se resuelve midiendo rendimiento y tamaño en las tareas).
+- (Resuelta) Compilador portátil de último recurso: TinyCC, ver «Measurements».

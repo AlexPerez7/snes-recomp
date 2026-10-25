@@ -11,18 +11,18 @@
 
 - [x] 2.1 Comprobar que el ejecutable y los ficheros de la caché no contienen secuencias de 32 bytes de la ROM. Verificación: test que escanea la caché de prueba.
 - [x] 2.2 Que el `.srm` vaya junto a la ROM y `snes-port clean [rom]` borre solo la caché. Verificación: test que crea un `.srm`, ejecuta `clean` y comprueba que el `.srm` y la ROM siguen.
-- [ ] 2.3 Garantizar que no hay conexiones de red cuando hay compilador local (la descarga solo existe en la ruta sin compilador). Verificación: revisión de código más test que ejecuta con la red del proceso inhabilitada en la ruta local.
+- [x] 2.3 Garantizar que no hay conexiones de red cuando hay compilador local (la descarga solo existe en la ruta sin compilador). Verificación: revisión de código más test que ejecuta con la red del proceso inhabilitada en la ruta local.
 
 ## 3. Compilador de último recurso
 
-- [ ] 3.1 Medir TinyCC frente a clang/MSVC en tiempo de construcción y fps del juego. Verificación: tabla de medidas en `design.md` y decisión registrada.
-- [ ] 3.2 Descarga con SHA-256 fijado, consentimiento explícito y descarte si el hash no coincide. Verificación: test con un servidor local que sirve un fichero alterado y comprueba el rechazo.
+- [x] 3.1 Medir TinyCC frente a clang/MSVC en tiempo de construcción y fps del juego. Verificación: tabla de medidas en `design.md` y decisión registrada.
+- [x] 3.2 Descarga con SHA-256 fijado, consentimiento explícito y descarte si el hash no coincide. Verificación: test con un servidor local que sirve un fichero alterado y comprueba el rechazo.
 
 ## 4. Distribución
 
-- [ ] 4.1 Script `release` que arma el zip (programa, runtime, `games/*.toml`, docs, licencias) y falla si encuentra `.sfc`, `.smc`, `.srm` o C generado. Verificación: ejecutarlo con un fichero de prueba prohibido y ver el fallo; sin él, el zip se crea.
-- [ ] 4.2 Prueba en una máquina o carpeta limpia (sin caché ni ROM en el árbol) siguiendo solo el README. Verificación: nota con los pasos y el resultado en `out/release-notes.md`.
-- [ ] 4.3 Documentar el uso y el modelo «trae tu ROM» en `README.md` y `CLAUDE.md`. Verificación: los comandos documentados se ejecutan tal cual.
+- [x] 4.1 Script `release` que arma el zip (programa, runtime, `games/*.toml`, docs, licencias) y falla si encuentra `.sfc`, `.smc`, `.srm` o C generado. Verificación: ejecutarlo con un fichero de prueba prohibido y ver el fallo; sin él, el zip se crea.
+- [x] 4.2 Prueba en una máquina o carpeta limpia (sin caché ni ROM en el árbol) siguiendo solo el README. Verificación: nota con los pasos y el resultado en `out/release-notes.md`.
+- [x] 4.3 Documentar el uso y el modelo «trae tu ROM» en `README.md` y `CLAUDE.md`. Verificación: los comandos documentados se ejecutan tal cual.
 
 ## Workflow follow-up
 

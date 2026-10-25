@@ -5,6 +5,7 @@ mod config;
 mod crc32;
 mod disasm;
 mod discover;
+mod download;
 mod games;
 mod graph;
 #[cfg(test)]

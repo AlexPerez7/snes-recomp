@@ -8,7 +8,7 @@
 use crate::crc32::crc32;
 use crate::rom::Rom;
 use crate::toolchain::{self, Compiler};
-use crate::{codegen, config::Config, discover, games, graph};
+use crate::{codegen, config::Config, discover, download, games, graph};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,7 +30,7 @@ fn fail<T>(code: i32, message: impl Into<String>) -> Result<T, Failure> {
 
 pub const USAGE: &str = "\
 usage:
-  snes-port <rom> [--cache <dir>] [--no-launch] [--fast] [-- <game options>]
+  snes-port <rom> [--cache <dir>] [--no-launch] [--fast] [--download-compiler] [-- <game options>]
   snes-port clean [<rom>] [--cache <dir>]
 
 Builds the game from your own ROM, on this machine, the first time (a few minutes) and starts it; the next times
@@ -41,7 +41,8 @@ the ROM onto snes-port.exe.
 Everything after `--` goes to the game (see its options in the README).
 clean deletes the cache of that ROM, or the whole cache; it never touches ROMs or saved games.
 Needs a C compiler (Visual Studio Build Tools, clang or gcc) and the SDL2 development files (SDL2_DIR, or the sdl2
-folder next to this program).";
+folder next to this program). Without a compiler it offers to download TinyCC (about 480 KiB, SHA-256 checked) into
+the cache; --download-compiler agrees beforehand. With a compiler on the machine nothing is ever downloaded.";
 
 // ---- the cache ----
 
@@ -228,6 +229,37 @@ fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<()
             }
             std::fs::copy(lib.join("SDL2.dll"), dir.join("SDL2.dll")).map_err(|e| format!("SDL2.dll: {e}"))?;
             let _ = std::fs::remove_dir_all(dir.join("obj"));
+            Ok(())
+        }
+        Compiler::Tcc(tcc) => {
+            // TinyCC links against the import definitions of the DLL, not against SDL2.lib; its headers need two
+            // empty macros and it has no globbing, so the sources are listed
+            let dll = sdl.join("lib").join("x64").join("SDL2.dll");
+            std::fs::copy(&dll, dir.join("SDL2.dll")).map_err(|e| format!("SDL2.dll: {e}"))?;
+            let def = Command::new(tcc).current_dir(dir).args(["-impdef", "SDL2.dll"]).output().map_err(|e| e.to_string())?;
+            if !def.status.success() {
+                return Err(tail(&String::from_utf8_lossy(&def.stderr)));
+            }
+            let mut sources: Vec<String> = std::fs::read_dir(dir)
+                .map_err(|e| e.to_string())?
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.ends_with(".c") && (n.starts_with("rom_") || n == "snes_entry.c"))
+                .collect();
+            sources.push("play/snes_play.c".to_string());
+            let out = Command::new(tcc)
+                .current_dir(dir)
+                .args(["-DDECLSPEC=", "-DSDLCALL=", "-D_CRT_SECURE_NO_WARNINGS", "-DSNES_RT_TICK", "-I."])
+                .arg(format!("-I{}", sdl.join("include").display()))
+                .args(&sources)
+                .args(["-L.", "-lSDL2", "-o"])
+                .arg(exe_name())
+                .output()
+                .map_err(|e| e.to_string())?;
+            if !out.status.success() {
+                return Err(tail(&(String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr))));
+            }
+            let _ = std::fs::remove_file(dir.join("SDL2.def"));
             Ok(())
         }
         Compiler::Gnu(cc) => {
@@ -514,11 +546,45 @@ fn cache_has(cache: &Path, name: &str) -> bool {
     cache.join(name).join(COMPLETE).exists()
 }
 
+/// True when the game of `opts.rom` is already built (or the ROM is not one that can be built), so no compiler is needed.
+fn needs_no_build(opts: &Options) -> bool {
+    let Ok(rom) = Rom::load(&opts.rom) else { return true };
+    let crc = rom.crc32();
+    games::identify(crc).is_none() || cache_has(&opts.cache, &cache_name(crc, &current_version(opts.fast)))
+}
+
+/// The last resort when the machine has no C compiler: the portable one in the cache, or, if the user agrees
+/// (`--download-compiler`, or `y` at the question), downloaded into it with its SHA-256 checked.
+fn portable_compiler(cache: &Path, yes: bool, input: &mut dyn std::io::BufRead) -> Option<Compiler> {
+    use download::TINYCC;
+    if let Some(exe) = download::installed(cache, &TINYCC) {
+        return Some(Compiler::Tcc(exe));
+    }
+    eprintln!("No C compiler found on this machine.");
+    eprintln!(
+        "{} ({} KiB) can be downloaded from {} and kept in {}. Nothing about your ROM is sent; it is the only download.",
+        TINYCC.name,
+        TINYCC.size / 1024,
+        TINYCC.url,
+        download::toolchain_dir(cache).display()
+    );
+    if !yes && !download::confirm("Download it now?", input) {
+        return None;
+    }
+    match download::install(cache, &TINYCC) {
+        Ok(exe) => Some(Compiler::Tcc(exe)),
+        Err(e) => {
+            eprintln!("error: {e}");
+            None
+        }
+    }
+}
+
 /// `snes-port ...` as the user types it; returns the exit code.
 pub fn main(args: &[String]) -> i32 {
     let mut rom: Option<PathBuf> = None;
     let mut cache: Option<PathBuf> = None;
-    let (mut launch, mut fast, mut clean_cmd) = (true, false, false);
+    let (mut launch, mut fast, mut clean_cmd, mut download_yes) = (true, false, false, false);
     let mut game_args = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -536,6 +602,7 @@ pub fn main(args: &[String]) -> i32 {
             },
             "--no-launch" => launch = false,
             "--fast" => fast = true,
+            "--download-compiler" => download_yes = true,
             "clean" if rom.is_none() && !clean_cmd => clean_cmd = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -548,7 +615,9 @@ pub fn main(args: &[String]) -> i32 {
             }
         }
     }
+    // absolute: the build runs scripts from inside its folders
     let cache = cache.unwrap_or_else(default_cache_dir);
+    let cache = std::path::absolute(&cache).unwrap_or(cache);
     if clean_cmd {
         let crc = match &rom {
             Some(p) => match Rom::load(p) {
@@ -576,7 +645,11 @@ pub fn main(args: &[String]) -> i32 {
         return 1;
     };
     let opts = Options { rom, cache, launch, fast, capture: false, game_args };
-    match build_port(&opts, toolchain::find(), find_sdl2()) {
+    let mut compiler = toolchain::find();
+    if compiler.is_none() && !needs_no_build(&opts) {
+        compiler = portable_compiler(&opts.cache, download_yes, &mut std::io::stdin().lock());
+    }
+    match build_port(&opts, compiler, find_sdl2()) {
         Ok(o) => o.game.map_or(0, |(code, _)| code),
         Err(f) => {
             eprintln!("{}", f.message);
@@ -751,6 +824,7 @@ mod tests {
         std::fs::copy(&real, &rom_path).unwrap();
         let rom_bytes = std::fs::read(&rom_path).unwrap();
         let cache = dir.join("cache");
+        let requests = download::network_requests();
         let mut o = opts(&rom_path, &cache);
         o.game_args = ["--no-window", "--frames", "300", "--mute"].map(String::from).to_vec();
         // first run: builds, and the game runs its 300 frames
@@ -767,6 +841,8 @@ mod tests {
         let second = build_port(&o, toolchain::find(), Some(sdl)).unwrap_or_else(|f| panic!("{}", f.message));
         assert!(!second.built.rebuilt && second.game.is_some_and(|g| g.0 == 0));
         assert!(t.elapsed().as_secs() < 30, "the second run starts at once");
+        // with a compiler on the machine, neither run touched the network (2.3)
+        assert_eq!(download::network_requests(), requests);
         // the saved game stays next to the ROM and `clean` does not touch it or the ROM (2.2)
         std::fs::write(dir.join("alttp.srm"), b"my saved game").unwrap();
         let gone = clean(&cache, Some(crc32(&rom_bytes))).unwrap();
@@ -774,6 +850,25 @@ mod tests {
         assert!(!first.built.dir.exists());
         assert_eq!(std::fs::read(dir.join("alttp.srm")).unwrap(), b"my saved game");
         assert_eq!(std::fs::read(&rom_path).unwrap(), rom_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The portable compiler path (3.2), when `SNES_TCC_EXE` names a TinyCC (the download itself is tested in `download`).
+    #[test]
+    fn it_builds_the_game_with_tinycc() {
+        let (Some(real), Some(sdl), Ok(tcc)) = (real_rom(), find_sdl2(), std::env::var("SNES_TCC_EXE")) else {
+            eprintln!("skipped: needs the ROM, SDL2 and SNES_TCC_EXE");
+            return;
+        };
+        let dir = temp("tcc");
+        let rom_path = dir.join("alttp.sfc");
+        std::fs::copy(&real, &rom_path).unwrap();
+        let mut o = opts(&rom_path, &dir.join("cache"));
+        o.game_args = ["--no-window", "--frames", "200", "--mute"].map(String::from).to_vec();
+        let r = build_port(&o, Some(Compiler::Tcc(PathBuf::from(tcc))), Some(sdl)).unwrap_or_else(|f| panic!("{}", f.message));
+        let (code, out) = r.game.expect("started");
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("frames: 200"), "{out}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

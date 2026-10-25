@@ -64,6 +64,7 @@ impl Compiler {
         let result = match self {
             Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args, runs),
             Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines, args, sdl, runs),
+            Compiler::Tcc(_) => Err("TinyCC is only used by snes-port".to_string()),
         };
         let _ = std::fs::remove_dir_all(&dir);
         result

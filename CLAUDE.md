@@ -6,6 +6,8 @@ Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. P
 
 ```
 cargo test                                          # tests unitarios
+cargo run --release --bin snes-port -- roms/alttp_usa.sfc [--cache D] [--no-launch] [--fast] [--download-compiler] [-- OPCIONES_DEL_JUEGO]   # construye el juego desde la ROM del usuario (caché <crc32>-<versión>) y lo arranca; `snes-port clean [rom]` borra la caché
+powershell -File scripts\release.ps1   # out\release\snes-port-<v>-win64.zip; falla si hay .sfc/.smc/.srm o C generado
 cargo run --release -- info roms/alttp_usa.sfc      # cabecera, CRC y vectores
 cargo run --release -- disasm roms/alttp_usa.sfc 00:8000 40
 cargo run --release -- discover roms/alttp_usa.sfc  # añade --unresolved para ver saltos indirectos sin tabla, o --widths para ver conflictos M/X, PLP sin emparejar y llamadas sin retorno
@@ -44,6 +46,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 - `runtime/play_cfg.h`: la parte de `play.c` que no necesita SDL (tabla de opciones, INI que conserva claves desconocidas, rectángulo de la imagen, efectos, volumen, asignación de teclas); sus tests compilan el `.h` solo (`src/headless.rs`).
 - `runtime/headless.c` (conjunto): runtime sin vídeo (bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, `--wav` con el audio, bus LoROM, registros que guardan lo escrito, DMA real, VRAM/CGRAM/OAM con volcado `--dump`, captura `--screenshot` del modo 1, los sprites y el color math, trazas `--trace-frames`/`--trace-reads`/`--watch`, latch de contadores H/V (`$2137`, `$213C/$213D`, `$213F`), IRQ vertical (`$4200` bits 4-5, `$4209/$420A`, `$4211`), contextos de ejecución (fibras; un `RTI` con otra `S` cambia de contexto, como hace la intro de ALttP entre NMI e IRQ), fotogramas por bloques, NMI, informe). `codegen --all` lo escribe como `snes_headless.c`, junto a `snes_entry.c`; la ROM se lee del disco, nunca se incrusta. Tests en `src/headless.rs`.
 - `src/cctest.rs`: solo para tests; busca `CC`/gcc/clang/cc o Visual Studio y compila C.
+- `src/port.rs`, `src/toolchain.rs`, `src/download.rs`: el constructor `snes-port` (segundo binario, el mismo `main.rs`; arranca como `port` si se llama así). `port.rs`: caché atómica (`<crc32>-<versión>`, directorio temporal + marca `.complete`), versión = CRC32 de runtime, configuraciones y generador, compilación (MSVC por `vcvars64.bat`, gcc/clang, TinyCC) y la comprobación de que ningún byte de la ROM acaba en lo construido. `toolchain.rs`: detección del compilador. `download.rs`: única red del programa (TinyCC con SHA-256 fijado, solo sin compilador local y con consentimiento); `network_requests()` lo comprueban los tests. `SNES_TCC_EXE` activa el test de construcción con TinyCC; `cargo test -- --ignored the_real_tinycc` prueba la descarga real.
 - `src/config.rs`: formato de `games/<id>.toml` (documentado al inicio del fichero).
 - `src/games.rs`: identificación de ROMs conocidas por CRC32.
 - `games/alttp_usa.toml`: entradas y tablas de saltos de A Link to the Past.
