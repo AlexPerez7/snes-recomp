@@ -21,7 +21,7 @@
 
 - [x] 4.1 Escribir `games/alttp_usa/widefill.c` con un gancho (declarado en `games/alttp_usa.toml`) que cada fotograma calcule las franjas del exterior con los límites de 2.3 (`$0604`/`$0606`) y las del interior (completas) con `$1B`, y las fije con `ppu_wide_blank`; verificar con `--wide 72` en el borde izquierdo y derecho de un área del exterior, y en una sala y una cueva
 - [ ] 4.2 Comprobar `E = 96`, una transición entre áreas y la entrada y salida de una cueva; verificar con capturas que no queda basura en ningún fotograma de la transición y medir el tiempo con `--stats`
-- [ ] 4.3 Comprobar `E = 0`: verificar que la captura es idéntica byte a byte a la de antes del gancho
+- [x] 4.3 Comprobar `E = 0`: verificar que la captura es idéntica byte a byte a la de antes del gancho
 
 ## 5. Cierre
 
