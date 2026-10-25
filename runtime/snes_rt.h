@@ -42,6 +42,14 @@ uint16_t joy1_state(void);
  * (it reads as negative, as on the console). `ppu_sprite_xoff_clear` sets all 128 back to 0. */
 void ppu_sprite_xoff(int i, int dx);
 void ppu_sprite_xoff_clear(void);
+/* E, the extra pixels the picture is drawn with on each side (0 to 96, a multiple of 8; 0 is the 256x224 picture of the console).
+ * It follows the value in force, so it changes when a new E takes effect, not when it is asked for. */
+int ppu_wide(void);
+/* The first `left` pixels to the left of the picture and the first `right` pixels to its right (of the extra columns of a wider
+ * field) are drawn black instead of what the PPU would draw; each is cut to E and the 256 pixels of the console are never touched.
+ * It is how a game hides what it has not loaded there. `ppu_wide_blank_clear` is `ppu_wide_blank(0, 0)`. */
+void ppu_wide_blank(int left, int right);
+void ppu_wide_blank_clear(void);
 /* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
 int game_opt(const char *key, int def);
 

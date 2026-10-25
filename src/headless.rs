@@ -2797,6 +2797,84 @@ fn a_wider_field_loses_the_same_sprite_slices_as_the_picture_of_the_console() {
 }
 
 #[test]
+fn the_c_code_of_a_game_reads_the_wide_field() {
+    // The hook puts sprite 0 (OAM X = 0) at twice the E it reads, so the column of the sprite says what ppu_wide returned.
+    let scene = [
+        ppu_base(0x10),
+        sprite_tile(1, &[(0, 0, 3)]),
+        cgram_set(128 + 2 * 16 + 3, &[GREEN]),
+        cgram_set(0, &[RED]),
+        oam_set(0, &[0, 20, 1, 0x04]),
+        oam_set(0x100, &[0]),
+    ]
+    .concat();
+    let mut code = scene;
+    code.extend([0x20, 0x00, 0x81, 0x80, 0xFE]);
+    let hook = "#include \"snes_rt.h\"
+void game_hook(Cpu *c) {
+    (void)c;
+    ppu_sprite_xoff(0, 2 * ppu_wide());
+}
+";
+    let dir = std::env::temp_dir().join(format!("snes-recomp-pwide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for e in [0usize, 32, 64] {
+        let path = dir.join(format!("e{e}.png")).to_string_lossy().into_owned();
+        let wide = e.to_string();
+        let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50", "--wide", wide.as_str(), "--screenshot", path.as_str()];
+        let segs: [(u32, &[u8]); 2] = [(0x8000, &code), (0x8100, &[0x60])];
+        let Some(r) = run_hooked(&format!("pwide-{e}"), false, &segs, &[0x8000, 0x8100], HOOK_CFG, hook, &args) else { return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        let img = decode_png(&std::fs::read(&path).unwrap());
+        assert_eq!(img.rgb(e + 2 * e, 21), rgb(GREEN), "E = {e}: the sprite is not at column 2E");
+        if e > 0 {
+            assert_eq!(img.rgb(e, 21), rgb(RED), "E = {e}: the sprite stayed at column 0");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_c_code_of_a_game_blanks_the_extra_columns() {
+    // A red backdrop everywhere; E = 32, so the image is 320 wide and the picture is columns 32 to 287.
+    let mut code = [ppu_base(0x10), cgram_set(0, &[RED])].concat();
+    code.extend([0x20, 0x00, 0x81, 0x80, 0xFE]);
+    let dir = std::env::temp_dir().join(format!("snes-recomp-blank-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let shot = |name: &str, call: &str| {
+        let hook = format!("#include \"snes_rt.h\"
+void game_hook(Cpu *c) {{
+    (void)c;
+    {call}
+}}
+");
+        let path = dir.join(format!("{name}.png")).to_string_lossy().into_owned();
+        let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50", "--wide", "32", "--screenshot", path.as_str()];
+        let segs: [(u32, &[u8]); 2] = [(0x8000, &code), (0x8100, &[0x60])];
+        let r = run_hooked(&format!("blank-{name}"), false, &segs, &[0x8000, 0x8100], HOOK_CFG, &hook, &args)?;
+        assert_eq!(r.code, 0, "{}", r.out);
+        Some(decode_png(&std::fs::read(&path).unwrap()))
+    };
+    let Some(some) = shot("some", "ppu_wide_blank(24, 8);") else { return };
+    let Some(over) = shot("over", "ppu_wide_blank(64, 64);") else { return };
+    let Some(none) = shot("none", "ppu_wide_blank(5, 5); ppu_wide_blank_clear();") else { return };
+    let _ = std::fs::remove_dir_all(&dir);
+    // 24 to the left: columns 8 to 31 are black and 0 to 7 show the backdrop; 8 to the right: columns 288 to 295.
+    for x in 0..8 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
+    for x in 8..32 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
+    for x in 32..288 { assert_eq!(some.rgb(x, 21), rgb(RED), "the picture changed at {x}"); }
+    for x in 288..296 { assert_eq!(some.rgb(x, 21), [0, 0, 0], "x = {x}"); }
+    for x in 296..320 { assert_eq!(some.rgb(x, 21), rgb(RED), "x = {x}"); }
+    // More than E is cut to E: the extra columns are black and the picture is not.
+    for x in (0..32).chain(288..320) { assert_eq!(over.rgb(x, 21), [0, 0, 0], "x = {x}"); }
+    for x in 32..288 { assert_eq!(over.rgb(x, 21), rgb(RED), "the picture changed at {x}"); }
+    // Cleared: as if nothing had been asked for.
+    for x in 0..320 { assert_eq!(none.rgb(x, 21), rgb(RED), "x = {x}"); }
+}
+
+#[test]
 fn the_c_code_of_a_game_moves_a_sprite_into_the_extra_columns_on_the_right() {
     // Sprite 0 is at X = 0 in the OAM; the hook of the game puts it 256 pixels to the right. Sprite 1 has X = 300 (reads as -212).
     let scene = [
