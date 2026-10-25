@@ -181,6 +181,7 @@ fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<()
     write("snes_spc.inc".into(), codegen::RUNTIME_SPC)?;
     std::fs::create_dir_all(dir.join("play")).map_err(|e| format!("{}: {e}", dir.display()))?;
     write("play/snes_play.c".into(), codegen::PLAY_RUNTIME)?;
+    write("play/play_cfg.h".into(), codegen::PLAY_CFG)?;
     write("build_play.bat".into(), &codegen::BUILD_PLAY_BAT.replace('\r', "").replace('\n', "\r\n"))?; // cmd.exe wants CRLF
     let mut lines = out.header.lines().count();
     for (bank, text) in &out.banks {
