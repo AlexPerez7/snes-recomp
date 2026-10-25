@@ -1234,12 +1234,12 @@ fn what_is_not_drawn_is_reported() {
     let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x01, 0x212E), st(0x10, 0x2106)]);
     let Some((r, _)) = shot("rd-math", &code) else { return };
     assert!(!r.out.contains("colour math"), "{}", r.out);
-    assert!(r.out.contains("warning: windows are not applied"), "{}", r.out);
+    assert!(!r.out.contains("windows"), "windows are drawn now: {}", r.out);
     assert!(!r.out.contains("graphics mode"), "{}", r.out);
 
     let code = prog(&[st(0x01, 0x2105), st(0x01, 0x2131), st(0x10, 0x2130)]);
     let Some((r, _)) = shot("rd-math-window", &code) else { return };
-    assert!(r.out.contains("warning: colour math inside or outside the colour window is not applied"), "{}", r.out);
+    assert!(!r.out.contains("colour window"), "the colour window is applied now: {}", r.out);
 }
 
 // ---- Joypad ----
@@ -1563,4 +1563,112 @@ fn hdma_can_scroll_a_background_line_by_line() {
     assert_eq!((img.rgb(0, 0), img.rgb(8, 0), img.rgb(5, 0)), (rgb(GREEN), rgb(GREEN), rgb(0)), "line 0 has no scroll");
     assert_eq!((img.rgb(0, 1), img.rgb(8, 1), img.rgb(5, 1)), (rgb(0), rgb(0), rgb(GREEN)), "from line 1 the bars move 3 pixels left");
     assert_eq!(img.rgb(5, 7), rgb(GREEN), "the map row 0 covers lines 0-7");
+}
+
+/// BG1 with four solid green tiles (x 0-31, lines 0-7), full brightness, and `extra` set up before the screenshot.
+fn window_case(name: &str, extra: Vec<Vec<u8>>) -> Option<Img> {
+    let solid: Vec<(usize, usize, u8)> = (0..8).flat_map(|y| (0..8).map(move |x| (x, y, 1))).collect();
+    let code = prog(&[
+        ppu_base(0x01),
+        vram_words(16, &tile4(&solid)),
+        vram_words(0x1000, &[1, 1, 1, 1]),
+        cgram_set(0, &[0, GREEN]),
+        extra.concat(),
+    ]);
+    let (r, img) = shot(&format!("rd-win-{name}"), &code)?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    img
+}
+
+/// Window 1 = [l1, r1], window 2 = [l2, r2].
+fn windows(l1: u8, r1: u8, l2: u8, r2: u8) -> Vec<u8> {
+    [st(l1, 0x2126), st(r1, 0x2127), st(l2, 0x2128), st(r2, 0x2129)].concat()
+}
+
+/// The x positions 0-31 at line 0 where BG1 shows (green).
+fn shown(img: &Img) -> Vec<usize> {
+    (0..32).filter(|&x| img.rgb(x, 0) == rgb(GREEN)).collect()
+}
+
+#[test]
+fn a_window_hides_a_layer_inside_it_or_outside_when_inverted() {
+    // W1 = [8,15] on BG1, enabled for the main screen.
+    let Some(img) = window_case("inside", vec![windows(8, 15, 0, 0), st(0x02, 0x2123), st(0x01, 0x212E)]) else { return };
+    assert_eq!(shown(&img), (0..8).chain(16..32).collect::<Vec<_>>());
+    // Inverted: the layer shows only inside.
+    let Some(img) = window_case("inverted", vec![windows(8, 15, 0, 0), st(0x03, 0x2123), st(0x01, 0x212E)]) else { return };
+    assert_eq!(shown(&img), (8..16).collect::<Vec<_>>());
+    // The window is defined but the layer is not in $212E: nothing is hidden.
+    let Some(img) = window_case("unmasked", vec![windows(8, 15, 0, 0), st(0x02, 0x2123)]) else { return };
+    assert_eq!(shown(&img), (0..32).collect::<Vec<_>>());
+    // $212E on, but the window not enabled for the layer: nothing is hidden.
+    let Some(img) = window_case("not-enabled", vec![windows(8, 15, 0, 0), st(0x01, 0x212E)]) else { return };
+    assert_eq!(shown(&img), (0..32).collect::<Vec<_>>());
+    // A window whose left is past its right is empty.
+    let Some(img) = window_case("empty", vec![windows(20, 10, 0, 0), st(0x02, 0x2123), st(0x01, 0x212E)]) else { return };
+    assert_eq!(shown(&img), (0..32).collect::<Vec<_>>());
+}
+
+#[test]
+fn two_windows_combine_with_the_chosen_logic() {
+    // W1 = [0,15], W2 = [8,23], both enabled for BG1: $2123 = 0x0A. The logic is in $212A bits 0-1.
+    let case = |logic: u8, name: &str| {
+        let img = window_case(name, vec![windows(0, 15, 8, 23), st(0x0A, 0x2123), st(logic, 0x212A), st(0x01, 0x212E)])?;
+        Some(shown(&img))
+    };
+    let Some(or) = case(0, "or") else { return };
+    assert_eq!(or, (24..32).collect::<Vec<_>>(), "OR hides 0-23");
+    let Some(and) = case(1, "and") else { return };
+    assert_eq!(and, (0..8).chain(16..32).collect::<Vec<_>>(), "AND hides 8-15");
+    let Some(xor) = case(2, "xor") else { return };
+    assert_eq!(xor, (8..16).chain(24..32).collect::<Vec<_>>(), "XOR hides 0-7 and 16-23");
+    let Some(xnor) = case(3, "xnor") else { return };
+    assert_eq!(xnor, (0..8).chain(16..24).collect::<Vec<_>>(), "XNOR hides 8-15 and 24-31");
+}
+
+#[test]
+fn the_colour_window_chooses_where_colour_math_applies_and_where_the_main_screen_goes_black() {
+    // The backdrop gets the fixed red added; the colour window is W1 = [8,15] ($2125 bits 4-5 enable it).
+    let math = |sel: u8, name: &str| {
+        let extra = vec![windows(8, 15, 0, 0), st(0x20, 0x2125), st(0x20, 0x2131), st(0x20 | 31, 0x2132), st(sel, 0x2130)];
+        let img = window_case(name, extra)?;
+        // Line 20 has no BG1 tile, so the backdrop shows there.
+        Some((img.rgb(4, 20), img.rgb(12, 20)))
+    };
+    let Some(r) = math(0x10, "math-inside") else { return };
+    assert_eq!(r, (rgb(0), rgb(RED)), "math only inside the window");
+    let Some(r) = math(0x20, "math-outside") else { return };
+    assert_eq!(r, (rgb(RED), rgb(0)), "math only outside the window");
+    let Some(r) = math(0x00, "math-always") else { return };
+    assert_eq!(r, (rgb(RED), rgb(RED)));
+    // Forcing the main screen to black outside the window: BG1 keeps its green only inside.
+    let extra = vec![windows(8, 15, 0, 0), st(0x20, 0x2125), st(0x40, 0x2130)];
+    let Some(img) = window_case("black-outside", extra) else { return };
+    assert_eq!(shown(&img), (8..16).collect::<Vec<_>>());
+}
+
+#[test]
+fn mosaic_repeats_the_top_left_pixel_of_each_block() {
+    // BG1 tile 1 has one pixel, (0,1). Mosaic of size 4 ($2106 = $31): blocks of 4x4, the vertical ones start at line 1,
+    // so lines 1-4 all show row 1 and the horizontal blocks repeat the pixel at x = 0 over x = 0-3.
+    let case = |reg: u8, name: &str| {
+        let code = prog(&[
+            ppu_base(0x01),
+            vram_words(16, &tile4(&[(0, 1, 1)])),
+            vram_words(0x1000, &[0x0001]),
+            cgram_set(0, &[0, GREEN]),
+            st(reg, 0x2106),
+        ]);
+        let (r, img) = shot(name, &code)?;
+        assert_eq!(r.code, 0, "{}", r.out);
+        assert!(!r.out.contains("mosaic"), "{}", r.out);
+        img
+    };
+    let Some(img) = case(0x31, "rd-mosaic-on") else { return };
+    for (x, y, green) in [(0, 1, true), (3, 1, true), (3, 4, true), (4, 1, false), (0, 5, false), (0, 0, false)] {
+        assert_eq!(img.rgb(x, y) == rgb(GREEN), green, "pixel ({x},{y})");
+    }
+    // Size bits set but BG1 not enabled for the mosaic: the single pixel is alone.
+    let Some(img) = case(0x30, "rd-mosaic-off") else { return };
+    assert_eq!((img.rgb(0, 1) == rgb(GREEN), img.rgb(1, 1) == rgb(GREEN), img.rgb(0, 2) == rgb(GREEN)), (true, false, false));
 }

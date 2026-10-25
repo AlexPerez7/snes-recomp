@@ -23,7 +23,8 @@
  * General purpose DMA runs for real; VRAM, CGRAM and OAM are kept and --dump writes them (with the
  * last value of $2100-$213F) to DIR as vram.bin, cgram.bin, oam.bin, ppu_regs.bin and wram.bin. --screenshot draws
  * the final state of the PPU (mode 1 backgrounds and sprites only) as a 256x224 PNG; the HDMA tables of the channels
- * enabled in $420C are replayed line by line (direct and indirect, repeat and non repeat) on top of that state.
+ * enabled in $420C are replayed line by line (direct and indirect, repeat and non repeat) on top of that state; windows
+ * ($2123-$212B, $212E/$212F, colour window rules of $2130) and the BG mosaic ($2106) are applied.
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
  * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned, 12 an execution context returned,
@@ -645,17 +646,45 @@ typedef struct { int kind, n; } Layer;
 #define LAYER_OBJ 4
 #define LAYER_BACKDROP 5
 
+/* Windows. `layer` is 0-3 for BG1-4, 4 for the sprites and 5 for the colour window; returns 1 where x is inside the
+ * combined window area of that layer ($2123-$212B), 0 where it is outside or when no window is enabled for it. */
+static int win_area(int layer, int x) {
+    static const uint16_t sel_reg[6] = {0x2123, 0x2123, 0x2124, 0x2124, 0x2125, 0x2125};
+    int nib = hw[sel_reg[layer]] >> ((layer & 1) * 4) & 15;
+    int log = layer < 4 ? hw[0x212A] >> (layer * 2) & 3 : layer == 4 ? hw[0x212B] & 3 : hw[0x212B] >> 2 & 3;
+    int in1 = x >= hw[0x2126] && x <= hw[0x2127], in2 = x >= hw[0x2128] && x <= hw[0x2129];
+    int en1 = nib >> 1 & 1, en2 = nib >> 3 & 1;
+    if (nib & 1) in1 = !in1;
+    if (nib & 4) in2 = !in2;
+    if (!en1 && !en2) return 0;
+    if (!en2) return in1;
+    if (!en1) return in2;
+    switch (log) {
+    case 0: return in1 | in2;
+    case 1: return in1 & in2;
+    case 2: return in1 ^ in2;
+    default: return !(in1 ^ in2);
+    }
+}
+
 /* CGRAM index of the front pixel of the layers in `mask` (a $212C/$212D value); `*layer` says which layer gave it. */
-static int pixel_index(const Layer *order, int count, int x, int y, int mode1, uint8_t mask, int *layer) {
+static int pixel_index(const Layer *order, int count, int x, int y, int mode1, uint8_t mask, uint8_t wmask, int *layer) {
     int i, c;
     for (i = 0; i < count; i++) {
         int n = order[i].n;
         if (order[i].kind == 0) {
             if (!(mask & 0x10)) continue;
-            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n) { *layer = LAYER_OBJ; return spr_col[y][x]; }
+            if (spr_col[y][x] >= 0 && spr_pri[y][x] == n && !((wmask & 0x10) && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x]; }
         } else {
             if (!mode1 || !(mask >> n & 1)) continue;
-            c = bg_pixel(n, x, y, order[i].kind == 1);
+            if ((wmask >> n & 1) && win_area(n, x)) continue;
+            if (hw[0x2106] >> n & 1 && hw[0x2106] >> 4) {
+                /* mosaic: the block of (size) x (size) pixels shows the colour at its top left; vertical blocks start at line 1 */
+                int size = (hw[0x2106] >> 4) + 1;
+                c = bg_pixel(n, x - x % size, y < 1 ? y : (y - 1) / size * size + 1, order[i].kind == 1);
+            } else {
+                c = bg_pixel(n, x, y, order[i].kind == 1);
+            }
             if (c >= 0) { *layer = n; return c; }
         }
     }
@@ -867,10 +896,6 @@ static void screenshot(void) {
     uint8_t *rgb = (uint8_t *)malloc((size_t)SCREEN_W * SCREEN_H * 3);
     PpuState saved;
     if (mode != 1) printf("warning: graphics mode %d is not drawn\n", mode);
-    if (hw[0x212E] | hw[0x212F]) printf("warning: windows are not applied\n");
-    if (hw[0x2106] & 0x0F) printf("warning: mosaic is not applied\n");
-    if ((hw[0x2131] & 0x3F) && ((hw[0x2130] >> 4 & 3) == 1 || (hw[0x2130] >> 4 & 3) == 2))
-        printf("warning: colour math inside or outside the colour window is not applied\n");
     if (!rgb) return;
     draw_sprites();
     ppu_save(&saved);
@@ -882,11 +907,13 @@ static void screenshot(void) {
         order = (hw[0x2105] & 8) ? front_bg3_high : front_bg3_low;
         mode = hw[0x2105] & 7;
         for (x = 0; x < SCREEN_W; x++) {
-            int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1, hw[0x212C], &layer);
+            int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, 10, x, y, mode == 1, hw[0x212C], hw[0x212E], &layer);
             uint8_t *p = rgb + ((size_t)y * SCREEN_W + (size_t)x) * 3;
             int c = idx < 0 ? 0 : cgram_color(idx), k;
-            if (idx >= 0 && (hw[0x2131] & 0x3F)) {
-                int sub_idx = pixel_index(order, 10, x, y, mode == 1, hw[0x212D], &sub_layer);
+            int in_colour_window = win_area(5, x), black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
+            if (black == 3 || (black == 1 && !in_colour_window) || (black == 2 && in_colour_window)) c = 0;
+            if (idx >= 0 && (hw[0x2131] & 0x3F) && (math == 0 || (math == 1 && in_colour_window) || (math == 2 && !in_colour_window))) {
+                int sub_idx = pixel_index(order, 10, x, y, mode == 1, hw[0x212D], hw[0x212F], &sub_layer);
                 c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
             }
             for (k = 0; k < 3; k++) {
