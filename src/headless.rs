@@ -1499,3 +1499,68 @@ fn poke_writes_wram_bytes_when_the_frame_starts() {
         assert_eq!(r.code, 2, "{bad}\n{}", r.out);
     }
 }
+
+/// Bytes stored from WRAM `$0300` on (the code writes them before enabling HDMA).
+fn wram_bytes(at: u16, bytes: &[u8]) -> Vec<u8> {
+    bytes.iter().enumerate().flat_map(|(i, &b)| st(b, at + i as u16)).collect()
+}
+
+/// HDMA channel 0 from WRAM `$0300` to register `$21xx` with control byte `ctl`.
+fn hdma_channel0(ctl: u8, reg: u8) -> Vec<u8> {
+    [st(ctl, 0x4300), st(reg, 0x4301), st(0x00, 0x4302), st(0x03, 0x4303), st(0x00, 0x4304), st(0x00, 0x4307), st(0x01, 0x420C)].concat()
+}
+
+#[test]
+fn hdma_changes_a_register_per_group_of_lines() {
+    // Backdrop only, the colour math adds the fixed colour to it; HDMA sets the fixed colour for 10 lines each:
+    // red, none, green. A zero header ends the table.
+    let table = wram_bytes(0x0300, &[0x0A, 0x20 | 31, 0x0A, 0x20, 0x0A, 0x40 | 31, 0x00]);
+    let code = prog(&[ppu_base(0x00), st(0x20, 0x2131), table, hdma_channel0(0x00, 0x32)]);
+    let Some((r, img)) = shot("rd-hdma-direct", &code) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("hdma replayed:"), "{}", r.out);
+    let img = img.unwrap();
+    assert_eq!(img.rgb(5, 0), rgb(RED));
+    assert_eq!(img.rgb(5, 9), rgb(RED));
+    assert_eq!(img.rgb(5, 10), rgb(0));
+    assert_eq!(img.rgb(5, 19), rgb(0));
+    assert_eq!(img.rgb(5, 20), rgb(GREEN));
+    // After the last group the register keeps its value.
+    assert_eq!(img.rgb(5, 100), rgb(GREEN));
+}
+
+#[test]
+fn hdma_indirect_tables_repeat_one_value_per_line() {
+    // Indirect: header $83 (repeat, 3 lines) and a pointer to $0310, where there is one byte per line.
+    let table = [wram_bytes(0x0300, &[0x83, 0x10, 0x03, 0x00]), wram_bytes(0x0310, &[0x20 | 31, 0x20, 0x40 | 31])].concat();
+    let code = prog(&[ppu_base(0x00), st(0x20, 0x2131), table, hdma_channel0(0x40, 0x32)]);
+    let Some((r, img)) = shot("rd-hdma-indirect", &code) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let img = img.unwrap();
+    assert_eq!(img.rgb(5, 0), rgb(RED));
+    assert_eq!(img.rgb(5, 1), rgb(0));
+    assert_eq!(img.rgb(5, 2), rgb(GREEN));
+    assert_eq!(img.rgb(5, 3), rgb(GREEN));
+}
+
+#[test]
+fn hdma_can_scroll_a_background_line_by_line() {
+    // BG1 has a one pixel wide bar at the left of tile 1, used by map entries 0 and 1 (bars at x = 0 and 8).
+    // HDMA writes BG1HOFS (two bytes, mode 2 to $210D): 0 for line 0, then 3 for the rest of the screen.
+    let bar: Vec<(usize, usize, u8)> = (0..8).map(|y| (0, y, 1)).collect();
+    let table = wram_bytes(0x0300, &[0x01, 0x00, 0x00, 0x01, 0x03, 0x00, 0x00]);
+    let code = prog(&[
+        ppu_base(0x01),
+        vram_words(16, &tile4(&bar)),
+        vram_words(0x1000, &[0x0001, 0x0001]),
+        cgram_set(0, &[0, GREEN]),
+        table,
+        hdma_channel0(0x02, 0x0D),
+    ]);
+    let Some((r, img)) = shot("rd-hdma-scroll", &code) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let img = img.unwrap();
+    assert_eq!((img.rgb(0, 0), img.rgb(8, 0), img.rgb(5, 0)), (rgb(GREEN), rgb(GREEN), rgb(0)), "line 0 has no scroll");
+    assert_eq!((img.rgb(0, 1), img.rgb(8, 1), img.rgb(5, 1)), (rgb(0), rgb(0), rgb(GREEN)), "from line 1 the bars move 3 pixels left");
+    assert_eq!(img.rgb(5, 7), rgb(GREEN), "the map row 0 covers lines 0-7");
+}
