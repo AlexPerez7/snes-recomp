@@ -522,11 +522,12 @@ impl<'a> Emitter<'a> {
                 Flow::Return if !dispatch.is_empty() => {
                     // PHA/RTS dispatch: jump to the pushed address + 1, in the site's bank.
                     ends = true;
-                    let mut v = vec!["{".to_string(), format!("    uint32_t t = 0x{:06X} | (uint16_t)(rt_pull16(c) + 1);", a & 0xFF_0000), "    switch (t) {".into()];
+                    // An address outside the table is a plain return: the RTS can be shared with a branch that does not dispatch.
+                    let mut v = vec!["{".to_string(), "    uint16_t p = rt_pull16(c);".into(), format!("    uint32_t t = 0x{:06X} | (uint16_t)(p + 1);", a & 0xFF_0000), "    switch (t) {".into()];
                     for &t in &dispatch {
                         v.push(format!("    case 0x{t:06X}: {}", self.jump(body, t)?));
                     }
-                    v.push(format!("    default: rt_unresolved(c, 0x{a:06X}, t); return;"));
+                    v.push("    default: c->ret = p; return;".into());
                     v.push("    }".into());
                     v.push("}".into());
                     v
@@ -1618,6 +1619,28 @@ int main(void) {{
             printf("mem=%02X\n", bus_read8(0x10));"#;
         let Some(out) = exec("jmpx-unknown", &rom, cfg, &[0x8000], body) else { return };
         assert_eq!(out, "UNRESOLVED site=008002 target=000000\nmem=00\n");
+    }
+
+    #[test]
+    fn a_pha_rts_dispatch_site_also_works_as_a_plain_return() {
+        // 8000: JSR $8010 ; LDA #$55 ; STA $11 ; RTS
+        // 8010: LDA $10 ; BEQ $801A ; LDA #$80 ; PHA ; LDA #$2F ; PHA ; 801A: RTS    table: $8030    8030: LDA #$77 ; STA $12 ; RTS
+        let rom = [
+            (0x8000, &[0x20, 0x10, 0x80, 0xA9, 0x55, 0x85, 0x11, 0x60][..]),
+            (0x8010, &[0xA5, 0x10, 0xF0, 0x06, 0xA9, 0x80, 0x48, 0xA9, 0x2F, 0x48, 0x60][..]),
+            (0x8030, &[0xA9, 0x77, 0x85, 0x12, 0x60][..]),
+            (0x8100, &[0x30, 0x80][..]),
+        ];
+        let cfg = "[[table]]\nkind=\"indirect\"\nsite=\"00:801A\"\nat=\"00:8100\"\ncount=1";
+        for (flag, want, name) in [(1u8, "mem=77 55", "pharts_dispatch"), (0u8, "mem=00 55", "pharts_return")] {
+            let body = format!(
+                r#"{{ const uint8_t v[] = {{{flag}}}, t[] = {{0x30, 0x80}}; load(0x10, v, 1); load(0x8100, t, 2); }}
+            //report
+            printf("mem=%02X %02X s=%04X\n", bus_read8(0x12), bus_read8(0x11), c.s);"#
+            );
+            let Some(out) = exec(name, &rom, cfg, &[0x8000], &body) else { return };
+            assert_eq!(out, format!("{want} s=0201\n"));
+        }
     }
 
     #[test]

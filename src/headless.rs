@@ -488,6 +488,7 @@ struct Mem {
     cgram: Vec<u8>,
     oam: Vec<u8>,
     regs: Vec<u8>,
+    wram: Vec<u8>,
 }
 
 /// Run `code` at 00:8000 (with `data` in the ROM) for one short frame and read the dumped memories.
@@ -504,7 +505,7 @@ fn run_dump(name: &str, code: &[u8], data: &[(u32, &[u8])], dump: bool) -> Optio
     segments.extend_from_slice(data);
     let r = run(name, &segments, &[0x8000], None, &args);
     let read = |f: &str| std::fs::read(dir.join(f)).unwrap_or_default();
-    let mem = Mem { vram: read("vram.bin"), cgram: read("cgram.bin"), oam: read("oam.bin"), regs: read("ppu_regs.bin") };
+    let mem = Mem { vram: read("vram.bin"), cgram: read("cgram.bin"), oam: read("oam.bin"), regs: read("ppu_regs.bin"), wram: read("wram.bin") };
     r.map(|r| (r, mem, dir))
 }
 
@@ -754,12 +755,13 @@ fn oam_has_a_paired_low_table_and_a_direct_high_table() {
 #[test]
 fn dump_writes_the_memories_also_after_a_failure_and_only_when_asked() {
     // Writes the colour 0 and the register $2105, then jumps through a pointer nothing resolves.
-    let code = [st(0x00, 0x2121), st(0x21, 0x2122), st(0x22, 0x2122), st(0x07, 0x2105), vec![0x6C, 0x00, 0x00]].concat();
+    let code = [st(0x00, 0x2121), st(0x21, 0x2122), st(0x22, 0x2122), st(0x07, 0x2105), st(0x5A, 0x0020), vec![0x6C, 0x00, 0x00]].concat();
     let Some((r, m, dir)) = run_dump("hl-dump-fail", &code, &[], true) else { return };
     assert_eq!(r.code, 5, "{}", r.out);
     assert_eq!((m.vram.len(), m.cgram.len(), m.oam.len(), m.regs.len()), (0x10000, 512, 544, 0x40));
     assert_eq!(&m.cgram[0..2], &[0x21, 0x22]);
     assert_eq!(m.regs[5], 0x07);
+    assert_eq!((m.wram.len(), m.wram[0x20]), (0x20000, 0x5A));
     let _ = std::fs::remove_dir_all(dir);
 
     let Some((r, m, dir)) = run_dump("hl-dump-off", &code, &[], false) else { return };

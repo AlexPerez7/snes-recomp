@@ -616,3 +616,13 @@ site = "05:B5E7"
 at = "05:B5E8"
 count = 48
 size = 2
+
+# Despacho de ancillas por PHA/RTS (bloque 09): (tipo $7FF800,X - 1) * 2 -> word de 09:B124 -> DEC A -> PHA -> RTS, o sea
+# que el destino es el word tal cual (bias 0). 22 entradas (tipos $01-$16; el $0D es un hueco $0000); tras ellas (09:B150)
+# empiezan otros datos.
+[[table]]
+kind = "indirect"
+site = "09:B123"
+at = "09:B124"
+count = 22
+size = 2
