@@ -626,3 +626,12 @@ site = "09:B123"
 at = "09:B124"
 count = 22
 size = 2
+
+# Despacho de sprites por PHA/RTS (05:C2C5): estado $0D80,X (0-4) * 2 -> word de 05:C2C6 -> DEC A -> PHA -> RTS (bias 0).
+# 5 entradas; en 05:C2D0 empiezan datos (LDA $C2D0,Y).
+[[table]]
+kind = "indirect"
+site = "05:C2C5"
+at = "05:C2C6"
+count = 5
+size = 2

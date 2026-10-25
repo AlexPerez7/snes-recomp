@@ -1474,3 +1474,22 @@ fn trace_options_are_validated() {
 {}", r.out);
     }
 }
+
+#[test]
+fn poke_writes_wram_bytes_when_the_frame_starts() {
+    // NOP ; LDA $0020 ; STA $2134 ; LDA $7F0001 ; STA $2135 ; BRA to the start
+    let code: &[u8] = &[0xEA, 0xAD, 0x20, 0x00, 0x8D, 0x34, 0x21, 0xAF, 0x01, 0x00, 0x7F, 0x8D, 0x35, 0x21, 0x80, 0xF1];
+    let before = ["rom.sfc", "--frames", "2", "--frame-blocks", "50", "--poke", "20=5A@5", "--poke", "7F:0000=1122@5"];
+    let Some(r) = run("hl-poke-late", &[(0x8000, code)], &[0x8000], None, &before) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=00")) && r.reg(0x2135).is_some_and(|l| l.ends_with("last=00")), "{}", r.out);
+    let after = ["rom.sfc", "--frames", "6", "--frame-blocks", "50", "--poke", "20=5A@5", "--poke", "7F:0000=1122@5"];
+    let Some(r) = run("hl-poke", &[(0x8000, code)], &[0x8000], None, &after) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.reg(0x2134).is_some_and(|l| l.ends_with("last=5A")), "{}", r.out);
+    assert!(r.reg(0x2135).is_some_and(|l| l.ends_with("last=22")), "second byte goes to the next address: {}", r.out);
+    for bad in ["20=5A", "20=5@3", "20=@3", "20@3", "=5A@3", "7D:0000=5A@3", "20000=5A@3", "1FFFF=5A11@3", "20=5A@x", "20=5A@3x"] {
+        let Some(r) = run("hl-poke-bad", &[(0x8000, code)], &[0x8000], None, &["rom.sfc", "--poke", bad]) else { return };
+        assert_eq!(r.code, 2, "{bad}\n{}", r.out);
+    }
+}

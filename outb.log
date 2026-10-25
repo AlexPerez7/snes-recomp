@@ -13,8 +13,8 @@ rom_0C.c
 rom_0D.c
 rom_0E.c
 rom_0F.c
-rom_1B.c
 rom_1A.c
+rom_1B.c
 rom_1D.c
 rom_1E.c
 snes_entry.c
