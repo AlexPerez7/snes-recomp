@@ -75,6 +75,8 @@ build_play.bat
 snes_play.exe ..\..\roms\alttp_usa.sfc [--scale 3] [--fullscreen] [--mute] [--wav salida.wav]
 ```
 
+Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows para elegirla.
+
 | Tecla | Acción |
 |---|---|
 | Flechas | cruceta |
