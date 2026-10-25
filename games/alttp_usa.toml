@@ -635,3 +635,98 @@ site = "05:C2C5"
 at = "05:C2C6"
 count = 5
 size = 2
+
+# Despacho de sprites por PHA/RTS (bloque 05): indice * 2 -> word de 05:AC1A -> DEC A -> PHA -> RTS (bias 0). 5 entradas;
+# en 05:AC24 empieza el codigo (AD 9E 90 ...), que sin esta tabla se leia como un sexto destino ($909E).
+[[table]]
+kind = "indirect"
+site = "05:AC19"
+at = "05:AC1A"
+count = 5
+size = 2
+
+# dispatch16 con 3 entradas (hasta 05:DBF4); tras la tabla empieza codigo (9E 90 0D = STZ $0D90,X) que el heuristico de
+# 'inline_helper' leeria como cuarto destino ($909E, mitad de otra rutina).
+[[table]]
+kind = "inline"
+site = "05:DBEB"
+count = 3
+size = 2
+
+# Despacho por PHA/RTS (bloque 09): A & $FF * 2 -> word de 09:B7A8 -> DEC A -> PHA -> RTS (bias 0). 25 entradas (hasta
+# 09:B7D9, algunas repetidas); a partir de 09:B7DA hay codigo.
+[[table]]
+kind = "indirect"
+site = "09:B7A7"
+at = "09:B7A8"
+count = 25
+size = 2
+
+# Despachos de sprites por PHA/RTS (LDA tabla,Y -> DEC A -> PHA -> RTS, bias 0) hallados con un barrido de la ROM
+# (out/scan_rts.py). El tamano de cada tabla es la distancia al menor destino que cae por encima de su inicio; lo que
+# sigue son datos o codigo. 1E:8B33 cubre los tipos $79-$BC; 1D:C237, $BD-$D7 (los words siguientes son desplazamientos).
+[[table]]
+kind = "indirect"
+site = "05:B074"
+at = "05:B075"
+count = 4
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "05:B8DF"
+at = "05:B8E0"
+count = 5
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "05:BAA9"
+at = "05:BAAA"
+count = 6
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "05:CE67"
+at = "05:CE68"
+count = 6
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "05:D1EC"
+at = "05:D1ED"
+count = 4
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "06:D44A"
+at = "06:D44B"
+count = 3
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "1D:C236"
+at = "1D:C237"
+count = 27
+size = 2
+
+[[table]]
+kind = "indirect"
+site = "1E:8B2D"
+at = "1E:8B33"
+count = 68
+size = 2
+
+# Despacho de sprites por PHA/RTS sin DEC A (06:CBC9): estado $0D80,X * 2 -> word de 06:CBD0 -> PHA -> RTS, o sea que el
+# destino es el word + 1 (bias 1). 4 entradas; en 06:CBD8 empieza el codigo (el primer destino).
+[[table]]
+kind = "indirect"
+site = "06:CBCF"
+at = "06:CBD0"
+count = 4
+size = 2
+bias = 1
