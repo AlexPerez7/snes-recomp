@@ -289,17 +289,17 @@ fn the_menu_shows_the_options_of_the_game_first_in_the_game_tab_and_saves_them()
         run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
     };
     // F1, three tabs to the right (Image, Audio, Controls, Game), Right on the first row, Escape closes and saves
-    let Some(r) = run("opt-menu-change", b"game.language = en\n", "F1,W,W,W,Right,Escape") else { return };
+    let Some(r) = run("opt-menu-change", b"game.language = en\n", "F1,W,W,W,Down,Right,Escape") else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
     // the list goes round
-    let Some(r) = run("opt-menu-round", b"game.language = es\n", "F1,W,W,W,Right,Escape") else { return };
+    let Some(r) = run("opt-menu-round", b"game.language = es\n", "F1,W,W,W,Down,Right,Escape") else { return };
     assert!(config_lines(&r).contains(&"game.language = en"), "{}", r.out);
     // Enter on the row also goes to the next name
-    let Some(r) = run("opt-menu-enter", b"game.language = en\n", "F1,W,W,W,Return,Escape") else { return };
+    let Some(r) = run("opt-menu-enter", b"game.language = en\n", "F1,W,W,W,Down,Return,Escape") else { return };
     assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
     // the system rows come after: Resume, Save, Restore all defaults (Down x3 from the option), Enter twice
-    let Some(r) = run("opt-menu-restore", b"game.language = es\nfilter = nearest\n", "F1,W,W,W,Down,Down,Down,Return,Return,Escape") else { return };
+    let Some(r) = run("opt-menu-restore", b"game.language = es\nfilter = nearest\n", "F1,W,W,W,Down,Down,Down,Down,Return,Return,Escape") else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"game.language = en") && l.contains(&"filter = sharp"), "restoring everything also restores the options of the game\n{}", r.out);
 }
@@ -307,7 +307,7 @@ fn the_menu_shows_the_options_of_the_game_first_in_the_game_tab_and_saves_them()
 #[test]
 fn a_profile_without_options_leaves_the_game_tab_and_the_config_as_they_were() {
     // Restore is the third system row (Down x2) and Quit the fourth: the same keys as before options existed
-    let Some(r) = run_menu("menu-no-options", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
+    let Some(r) = run_menu("menu-no-options", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Down,Return"], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(!config_lines(&r).iter().any(|l| l.starts_with("game.")), "{}", r.out);
 }
@@ -2696,7 +2696,7 @@ fn the_game_tab_saves_now_restores_everything_and_quits() {
     // Game is the fourth tab: W three times from Image. Down once is "Save game now".
     let code = [0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70, 0x80, 0xFE];
     let seg = [(0x8000, code.as_slice())];
-    let all = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config", "--menu-keys", "F1,W,W,W,Down,Return,Escape"];
+    let all = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config", "--menu-keys", "F1,W,W,W,Down,Down,Return,Escape"];
     let Some(r) = run_play_with("menu-save-now", &seg, &[0x8000], &all, &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let saved = r.out.find("sram: saved").expect(&r.out);
@@ -2709,11 +2709,11 @@ volume = 50
 scanlines = 40
 p1.key.A = Space
 ";
-    let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
+    let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
     // Escape instead of the second Enter cancels the restoring
-    let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
+    let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
 }
@@ -2730,7 +2730,7 @@ fn ran_to_the_end(r: &Run) -> bool {
 
 #[test]
 fn quit_in_the_menu_asks_first_and_escape_cancels() {
-    let to_quit = "F1,W,W,W,Down,Down,Down,Return"; // Quit (the fourth row of Game) asks and the program goes on
+    let to_quit = "F1,W,W,W,Down,Down,Down,Down,Return"; // Quit (the fifth row of Game, after the fast forward speed) asks and the program goes on
     let Some(r) = run_menu("menu-quit-asks", &["--menu-keys", to_quit], &[]) else { return };
     assert!(ran_to_the_end(&r), "{}", r.out);
     // Enter on the question ends the program
@@ -2749,8 +2749,8 @@ fn the_question_to_quit_changes_the_menu_picture() {
         let args = ["rom.sfc", "--no-window", "--frames", "12", "--frame-blocks", "20", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
         run_play(name, &seg, &[0x8000], &args)
     };
-    let Some(without) = shot("menu-quit-pic-a", "F1,W,W,W,Down,Down,Down") else { return };
-    let Some(with) = shot("menu-quit-pic-b", "F1,W,W,W,Down,Down,Down,Return") else { return };
+    let Some(without) = shot("menu-quit-pic-a", "F1,W,W,W,Down,Down,Down,Down") else { return };
+    let Some(with) = shot("menu-quit-pic-b", "F1,W,W,W,Down,Down,Down,Down,Return") else { return };
     assert!(hash(&without.out).is_some() && hash(&with.out).is_some() && hash(&without.out) != hash(&with.out), "{}
 {}", without.out, with.out);
 }
@@ -3225,9 +3225,9 @@ int main(void) {
     {
         enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
         static const Group groups[] = {
-            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Volume", "Output device", "Controls of", "Language"}},
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Volume", "Output device", "Controls of", "Fast forward", "Language"}},
             {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit"}},
-            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "Player %d"}},
+            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "max", "Player %d"}},
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
             {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
             {"title", 120, {"OPTIONS"}},
@@ -3303,13 +3303,13 @@ fn the_menu_follows_the_language_option_of_the_game_and_the_config_file_stays_in
         let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
         run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
     };
-    let open = "F1,W,W,W";
+    let open = "F1,W,W,W,Down";
     let Some(en) = shot("lang-en", b"game.language = en\n", open) else { return };
     let Some(es) = shot("lang-es", b"game.language = es\n", open) else { return };
     assert!(hash(&en.out).is_some() && hash(&es.out).is_some() && hash(&en.out) != hash(&es.out), "{}\n{}", en.out, es.out);
     // changing the language in the Game tab redraws the menu in the other one at once: the picture of opening it in es
     // (the cursor is on the same row in both, so the pictures can be equal)
-    let Some(live) = shot("lang-live", b"game.language = en\n", "F1,W,W,W,Right") else { return };
+    let Some(live) = shot("lang-live", b"game.language = en\n", "F1,W,W,W,Down,Right") else { return };
     assert_eq!(hash(&live.out), hash(&es.out), "{}\n{}", live.out, es.out);
     // a value chosen with the menu in Spanish is written in English (the file only has the English words)
     let Some(r) = shot("lang-file", b"game.language = es\nfilter = nearest\n", "F1,Down,Down,Down,Down,Right,Escape") else { return };

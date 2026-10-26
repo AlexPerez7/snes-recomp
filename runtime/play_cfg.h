@@ -11,7 +11,7 @@
 
 /* ---- the options ---- */
 
-enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_COUNT };
+enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_FFSPEED, O_COUNT };
 enum { ASPECT_43, ASPECT_87, ASPECT_FREE };
 enum { SCALING_INTEGER, SCALING_FIT };
 enum { FILTER_NEAREST, FILTER_BILINEAR, FILTER_SHARP };
@@ -33,7 +33,14 @@ static const OptDef opt_defs[O_COUNT] = {
     {"fps", 0, 0, 1, "false|true", 1},
     {"volume", 100, 0, 100, NULL, 5},
     {"wide", 0, 0, 96, NULL, 8, 8}, /* extra pixels of picture on each side of the 256 of the console */
+    {"ffspeed", 2, 0, 4, "2x|3x|4x|8x|max", 1}, /* fast forward: times the normal speed; `max` does not wait */
 };
+
+/* The fast forward factor of an `ffspeed` value: 2, 3, 4 or 8 times, 0 for no limit. */
+static int ff_factor(int v) {
+    static const int f[] = {2, 3, 4, 8, 0};
+    return v >= 0 && v < 5 ? f[v] : 0;
+}
 
 typedef struct { int v[O_COUNT]; char audio_device[200]; } Settings;
 

@@ -20,7 +20,7 @@
  * --print-keys lists the keyboard map of player 1 and exits.
  *
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
- * F1 = menu, F11 = full screen, P = pause, Tab (held) = fast forward, F10 = save the picture as snes_NNN.png,
+ * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
@@ -47,7 +47,7 @@ static int cli_fullscreen, cli_scale, cli_set[O_COUNT], cli_val[O_COUNT];
 static SDL_Window *win;
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
-static int paused, fast, fullscreen, shot_n;
+static int paused, fast, ff_toggle, fullscreen, shot_n;
 static uint64_t t_next, perf_freq;
 static uint16_t held; /* --hold */
 static int opt_print_keys, opt_stats, opt_print_config;
@@ -472,7 +472,7 @@ static int menu_count(int tab) {
     case TAB_IMAGE: return N_IMAGE + 1;
     case TAB_AUDIO: return 3;
     case TAB_CONTROLS: return 13;
-    default: return GOPTS + 4; /* the options of the game, then Resume, Save, Restore and Quit */
+    default: return 1 + GOPTS + 4; /* the fast forward speed, the options of the game, then Resume, Save, Restore and Quit */
     }
 }
 
@@ -545,6 +545,7 @@ static void restore_audio(void) {
 static void restore_all(void) {
     int i;
     for (i = 0; i < GOPTS; i++) gopt_set_user(i, snes_game_opts[i].def);
+    restore_opt(O_FFSPEED);
     restore_image();
     restore_audio();
     bind_defaults();
@@ -580,6 +581,8 @@ static void menu_change(int dir) {
         else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, tr("Press a key or a controller button")); }
         break;
     default:
+        if (s == 0) { opt_change(O_FFSPEED, dir ? dir : 1); break; }
+        s--;
         if (s < GOPTS) { /* an option of the game: a list that goes round */
             const GameOptDef *d = &snes_game_opts[s];
             gopt_init();
@@ -834,12 +837,13 @@ static void menu_draw(const uint8_t *fb) {
             ctl_row(i, on, menu_player);
             break;
         default:
-            if (i < GOPTS) {
+            if (i == 0) { opt_label(O_FFSPEED, val, sizeof val); menu_row(i, on, "Fast forward", 1, val, 0, 0, 0); break; }
+            if (i - 1 < GOPTS) {
                 gopt_init();
-                menu_row(i, on, snes_game_opts[i].label, 1, snes_game_opts[i].names[gopt_eff[i]], 0, 0, 0);
+                menu_row(i, on, snes_game_opts[i - 1].label, 1, snes_game_opts[i - 1].names[gopt_eff[i - 1]], 0, 0, 0);
                 break;
             }
-            menu_row(i, on, i - GOPTS == 0 ? "Resume" : i - GOPTS == 1 ? "Save game now" : i - GOPTS == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
+            menu_row(i, on, i - 1 - GOPTS == 0 ? "Resume" : i - 1 - GOPTS == 1 ? "Save game now" : i - 1 - GOPTS == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
             break;
         }
     }
@@ -931,6 +935,7 @@ static void handle_events(void) {
             if (menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
             switch (sc) {
             case SDL_SCANCODE_P: paused = !paused; break;
+            case SDL_SCANCODE_F2: ff_toggle = !ff_toggle; break;
             case SDL_SCANCODE_F10: save_picture(); break;
             case SDL_SCANCODE_F11:
                 config_user_set(&cfg, O_FULLSCREEN, !fullscreen);
@@ -958,7 +963,11 @@ static void print_stats(void) {
 static void pace(void) {
     uint64_t now = SDL_GetPerformanceCounter(), period = (uint64_t)((double)perf_freq / 60.0988), w0 = now;
     st_frames++;
-    if (fast) { t_next = now; return; }
+    if (fast) {
+        int k = ff_factor(cfg.eff.v[O_FFSPEED]);
+        if (k == 0) { t_next = now; return; }
+        period /= (uint64_t)k;
+    }
     t_next += period;
     if (now > t_next) st_late++;
     if (now > t_next + 3 * period) {
@@ -1134,7 +1143,7 @@ static void play_frame(void) {
     }
     present(shown_frame());
     handle_events();
-    fast = SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
+    fast = ff_toggle || SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
     flush_audio();
     if (paused || menu_open) {
         while (paused || menu_open) {
