@@ -125,7 +125,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `aspect` | `8:7`, `4:3`, `free` | píxel cuadrado, píxel 7/6 más ancho como en un televisor, o la imagen llena toda la ventana |
 | `scale` | `3` (1 a 8) | tamaño inicial de la ventana |
 | `scaling` | `integer`, `fit` | múltiplos enteros, o relleno del área disponible |
-| `filter` | `nearest`, `bilinear`, `sharp` | `sharp` escala por un factor entero y suaviza solo el resto |
+| `filter` | `nearest`, `bilinear`, `sharp` | `sharp` (por defecto) escala por un factor entero y suaviza solo el resto; con factor entero es idéntico a `nearest` |
 | `overscan` | `0` (0 a 8) | líneas recortadas arriba y abajo |
 | `wide` | `0` (0 a 96, de 8 en 8) | píxeles de imagen extra a cada lado de los 256 de la consola; la zona nueva muestra lo que dibuja la PPU (los fondos continúan por su mapa), así que puede verse vacía o con restos; el C de un juego puede leer el valor (`ppu_wide()`) y tapar en negro lo que no tenga cargado (`ppu_wide_blank()`) |
 | `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |

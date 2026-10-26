@@ -2495,8 +2495,8 @@ fn config_lines(r: &Run) -> Vec<&str> {
 
 #[test]
 fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults() {
-    // F1 opens the menu on Image; four Downs reach `filter`; Right makes it bilinear; Escape closes and saves
-    let keys = "F1,Down,Down,Down,Down,Right,Escape";
+    // F1 opens the menu on Image; four Downs reach `filter`; Left makes it bilinear (sharp is the default); Escape closes and saves
+    let keys = "F1,Down,Down,Down,Down,Left,Escape";
     let Some(r) = run_menu("menu-filter", &["--menu-keys", keys], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let l = config_lines(&r);
@@ -2505,6 +2505,14 @@ fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults(
     assert!(l.iter().any(|x| x.starts_with("# Options of snes_play")), "{}", r.out);
     // closing the menu without changing anything still writes the defaults on the first run
     let Some(r) = run_menu("menu-defaults", &["--menu-keys", "F1,Escape"], &[]) else { return };
+    assert!(config_lines(&r).contains(&"filter = sharp"), "{}", r.out);
+}
+
+#[test]
+fn a_filter_written_in_the_config_file_is_kept_over_the_default() {
+    let Some(r) = run_menu("menu-keep-nearest", &["--menu-keys", "F1,Escape"], &[("config.ini", b"filter = nearest
+")]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
     assert!(config_lines(&r).contains(&"filter = nearest"), "{}", r.out);
 }
 
@@ -2552,18 +2560,18 @@ fn the_game_tab_saves_now_restores_everything_and_quits() {
     assert!(saved < config, "the saved game is written when the menu asks, not when the program ends
 {}", r.out);
     // Restore all defaults (Down twice, Enter, Enter to confirm) over a config that changed things
-    let ini = b"filter = sharp
+    let ini = b"filter = nearest
 volume = 50
 scanlines = 40
 p1.key.A = Space
 ";
     let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
+    assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
     // Escape instead of the second Enter cancels the restoring
     let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
+    assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
     // Quit (the fourth row) ends the program without closing the menu by hand
     let Some(r) = run_menu("menu-quit", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
@@ -2571,7 +2579,7 @@ p1.key.A = Space
 
 #[test]
 fn restoring_a_tab_only_changes_that_tab() {
-    let ini = b"filter = sharp
+    let ini = b"filter = nearest
 scanlines = 40
 volume = 50
 ";
@@ -2579,11 +2587,11 @@ volume = 50
     let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
     let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = nearest") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
+    assert!(l.contains(&"filter = sharp") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
     // Audio: Restore is the third row of the second tab
     let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"volume = 100") && l.contains(&"filter = sharp") && l.contains(&"scanlines = 40"), "{}", r.out);
+    assert!(l.contains(&"volume = 100") && l.contains(&"filter = nearest") && l.contains(&"scanlines = 40"), "{}", r.out);
 }
 
 #[test]
@@ -2615,6 +2623,25 @@ fn the_menu_picture_is_the_same_every_time_and_goes_through_the_presenter() {
     let Some(r) = run_play("play-menushot-sharp", &seg, &[0x8000], &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("present-shot: 600x450"), "{}", r.out);
+}
+
+#[test]
+fn sharp_at_a_whole_factor_is_the_same_picture_as_nearest() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let dir = std::env::temp_dir().join(format!("snes-recomp-sharp3x-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut shots = Vec::new();
+    for f in ["nearest", "sharp"] {
+        let path = dir.join(format!("{f}.png")).to_string_lossy().into_owned();
+        let opt = format!("filter={f}");
+        let args = ["rom.sfc", "--no-window", "--frames", "5", "--frame-blocks", "20", "--present-shot", &path, "--present-size", "768x672", "--opt", &opt, "--opt", "scaling=fit"];
+        let Some(r) = run_play(&format!("play-3x-{f}"), &seg, &[0x8000], &args) else { let _ = std::fs::remove_dir_all(&dir); return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        shots.push(std::fs::read(dir.join(format!("{f}.png"))).expect("no present-shot"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(shots[0] == shots[1], "sharp at 3x must equal nearest");
 }
 
 #[test]

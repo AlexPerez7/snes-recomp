@@ -311,10 +311,12 @@ static void present(const uint8_t *fb) {
     SDL_UpdateTexture(tex, NULL, fb, pw * 3);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
+    if (filter == FILTER_SHARP && dst.w % pw == 0 && dst.h % lines == 0) filter = FILTER_NEAREST; /* whole factor: nothing to smooth */
     if (filter == FILTER_SHARP) {
         /* scale up by a whole factor with nearest, then down to the final size with bilinear: the edges of the
-         * pixels stay sharp and the factor that is not whole is smoothed */
-        int k = (dst.w + pw - 1) / pw;
+         * pixels stay sharp and the factor that is not whole is smoothed. The factor covers both axes (they differ
+         * with aspect `free`) */
+        int kx = (dst.w + pw - 1) / pw, ky = (dst.h + lines - 1) / lines, k = kx > ky ? kx : ky;
         if (k < 1) k = 1;
         if (k > 8) k = 8;
         if (!tex_pre || pre_w != pw * k || pre_h != lines * k) {
