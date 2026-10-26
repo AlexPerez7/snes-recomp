@@ -18,4 +18,4 @@
 
 - [x] 3.1 `scripts/check.ps1`: volcado (397 mensajes y huella SHA-256 constante), ida y vuelta idéntica, diferencia al cambiar una línea y captura idéntica del primer cuadro con `language=en` y `es`
 - [x] 3.2 `cargo test` del motor completo y `scan` de las dos carpetas antes de subir nada
-- [ ] 3.3 Prueba manual con `play.bat`: `game.language = es` y un `es.txt` con un solo mensaje cambiado se ve en el juego, y al editarlo se actualiza sin reiniciar
+- [x] 3.3 Prueba manual con `play.bat`: `game.language = es` y un `es.txt` con un solo mensaje cambiado se ve en el juego, y al editarlo se actualiza sin reiniciar

@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn rom_bytes_are_found_raw_or_as_hex_and_padding_is_not_taken_for_them() {
         let rom = fake_rom();
-        let dir = temp("scan");
+        let dir = temp("scan-bytes");
         std::fs::write(dir.join("clean.bin"), vec![0u8; 5000]).unwrap();
         std::fs::write(dir.join("padding.bin"), vec![0xFFu8; 5000]).unwrap();
         std::fs::write(dir.join("a.c"), "int x = 0x12; /* 0xAB */ int y[] = {0x01, 0x02};").unwrap();
