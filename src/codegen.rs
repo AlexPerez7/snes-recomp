@@ -26,6 +26,9 @@ pub const PLAY_CFG: &str = include_str!("../runtime/play_cfg.h");
 /// The look of the menu without SDL (font, panel, cursor): `play/play_ui.h` written by `codegen --all`.
 pub const PLAY_UI: &str = include_str!("../runtime/play_ui.h");
 
+/// The text of the menu in Spanish and `tr()`: `play/play_i18n.h` written by `codegen --all`.
+pub const PLAY_I18N: &str = include_str!("../runtime/play_i18n.h");
+
 /// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
 pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
 
