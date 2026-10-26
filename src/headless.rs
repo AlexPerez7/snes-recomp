@@ -144,6 +144,11 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
 /// Builds `segments` with the hooks of `cfg` and the game's C code `game_c` (a `hooks.c` next to the generated files)
 /// against the headless runtime, or, with `play`, against the interactive frontend, and runs it with `args`.
 fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], cfg: &str, game_c: &str, args: &[&str]) -> Option<Run> {
+    run_hooked_with(name, play, segments, roots, cfg, game_c, args, &[])
+}
+
+/// Like `run_hooked`, with `extra` files (name, contents) next to the ROM, e.g. a `config.ini`.
+fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], cfg: &str, game_c: &str, args: &[&str], extra: &[(&str, &[u8])]) -> Option<Run> {
     let cc = crate::cctest::find()?;
     let sdl = if play { Some(crate::cctest::sdl2_dir().or_else(|| { eprintln!("skipped {name}: no SDL2 development package"); None })?) } else { None };
     let mut all: Vec<(u32, &[u8])> = segments.to_vec();
@@ -154,7 +159,7 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
     let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
     let d = discover(&rom_obj, &cfg, &r);
     let g = Graph::build(&d, roots);
-    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all();
+    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).generate_all();
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
@@ -173,6 +178,7 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));
     }
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
+    files.extend(extra.iter().map(|(n, b)| (n.to_string(), b.to_vec())));
     let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     Some(match cc.compile_run_sdl_times(name, &files, &["SNES_RT_TICK"], args, sdl.as_deref(), 1) {
         Ok(out) => Run { code: 0, out },
@@ -202,6 +208,118 @@ fn the_same_c_code_of_a_game_builds_and_runs_with_the_interactive_frontend() {
     let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50", "--press", "START@0-100", "--stats"];
     let Some(r) = run_hooked("hook-play", true, &HOOKED_ROM, &[0x8000, 0x8100], HOOK_CFG, HOOK_C, &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
+}
+
+/// The profile of the tests of game options: the hook of `HOOK_CFG` and one option, `language`.
+const OPT_CFG: &str = "[[hook]]\naddr=\"00:8100\"\nkind=\"before\"\ncall=\"game_hook\"\n[[option]]\nkey=\"language\"\nlabel=\"Language\"\nnames=[\"en\",\"es\"]\ndefault=\"en\"\n";
+/// The game reads its option and one the profile does not declare, and says both (headless: in registers; play: on stdout).
+const OPT_C: &str = "#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {\n    (void)c;\n    bus_write8(0x2105, (uint8_t)game_opt(\"language\", 9));\n    bus_write8(0x2106, (uint8_t)game_opt(\"undeclared\", 7));\n    printf(\"game_opt language=%d undeclared=%d\\n\", game_opt(\"language\", 9), game_opt(\"undeclared\", 7));\n}\n";
+
+#[test]
+fn a_declared_option_is_read_by_the_c_of_the_game_with_its_default_or_the_command_line() {
+    let base = ["rom.sfc", "--frames", "2", "--frame-blocks", "50"];
+    let run = |name: &str, opts: &[&str]| {
+        let args: Vec<&str> = base.iter().chain(opts).copied().collect();
+        run_hooked(name, false, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args)
+    };
+    let Some(r) = run("opt-default", &[]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=00"), "the default is the first name\n{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=07"), "an undeclared key gives `def`\n{}", r.out);
+    let Some(r) = run("opt-name", &["--game-opt", "language=es"]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    let Some(r) = run("opt-index", &["--game-opt", "language=1", "--game-opt", "undeclared=3"]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=03"), "numbers still work for keys the profile does not declare\n{}", r.out);
+    let Some(r) = run("opt-bad-name", &["--game-opt", "language=fr"]) else { return };
+    assert_ne!(r.code, 0, "a name that is not in the list is refused\n{}", r.out);
+}
+
+#[test]
+fn the_options_of_the_game_are_read_from_and_written_to_config_ini() {
+    let run = |name: &str, ini: &[u8], extra: &[&str]| {
+        let mut args = vec!["rom.sfc", "--no-window", "--frames", "3", "--frame-blocks", "50", "--print-config"];
+        args.extend_from_slice(extra);
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let Some(r) = run("opt-ini-es", b"game.language = es\n", &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("game_opt language=1 undeclared=7"), "{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "the file keeps its value\n{}", r.out);
+    let Some(r) = run("opt-ini-fr", b"game.language = fr\n", &[]) else { return };
+    assert!(r.out.contains("game_opt language=0"), "an unknown name keeps the default\n{}", r.out);
+    let Some(r) = run("opt-ini-cli", b"game.language = es\n", &["--game-opt", "language=en"]) else { return };
+    assert!(r.out.contains("game_opt language=0"), "the command line wins for this run\n{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "and the file is not changed by it\n{}", r.out);
+    // the first run writes the default, with the rest of the options (closing the menu saves, as in the test of the defaults)
+    let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", "F1,Escape"];
+    let Some(r) = run_hooked_with("opt-first", true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[]) else { return };
+    assert!(config_lines(&r).contains(&"game.language = en") && config_lines(&r).contains(&"filter = sharp"), "{}", r.out);
+}
+
+#[test]
+fn the_menu_shows_the_options_of_the_game_first_in_the_game_tab_and_saves_them() {
+    let run = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    // F1, three tabs to the right (Image, Audio, Controls, Game), Right on the first row, Escape closes and saves
+    let Some(r) = run("opt-menu-change", b"game.language = en\n", "F1,W,W,W,Right,Escape") else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
+    // the list goes round
+    let Some(r) = run("opt-menu-round", b"game.language = es\n", "F1,W,W,W,Right,Escape") else { return };
+    assert!(config_lines(&r).contains(&"game.language = en"), "{}", r.out);
+    // Enter on the row also goes to the next name
+    let Some(r) = run("opt-menu-enter", b"game.language = en\n", "F1,W,W,W,Return,Escape") else { return };
+    assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
+    // the system rows come after: Resume, Save, Restore all defaults (Down x3 from the option), Enter twice
+    let Some(r) = run("opt-menu-restore", b"game.language = es\nfilter = nearest\n", "F1,W,W,W,Down,Down,Down,Return,Return,Escape") else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"game.language = en") && l.contains(&"filter = sharp"), "restoring everything also restores the options of the game\n{}", r.out);
+}
+
+#[test]
+fn a_profile_without_options_leaves_the_game_tab_and_the_config_as_they_were() {
+    // Restore is the third system row (Down x2) and Quit the fourth: the same keys as before options existed
+    let Some(r) = run_menu("menu-no-options", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!config_lines(&r).iter().any(|l| l.starts_with("game.")), "{}", r.out);
+}
+
+/// JSR $8100 (the hook runs) ; LDA $8200 -> $2105 ; LDA $8203 -> $2106 ; BRA to itself    at 00:8100 an RTS, at 00:8200 the bytes 11 22 33 44.
+const OVERLAY_ROM: [(u32, &[u8]); 3] = [
+    (0x8000, &[0x20, 0x00, 0x81, 0xAD, 0x00, 0x82, 0x8D, 0x05, 0x21, 0xAD, 0x03, 0x82, 0x8D, 0x06, 0x21, 0x80, 0xFE]),
+    (0x8100, &[0x60]),
+    (0x8200, &[0x11, 0x22, 0x33, 0x44]),
+];
+
+#[test]
+fn rom_overlay_replaces_what_the_recompiled_code_reads_but_not_the_file() {
+    let c = |body: &str| format!("#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {{\n    static const uint8_t a[4] = {{0xAA, 0xBB, 0xCC, 0xDD}}, b[2] = {{0xEE, 0xFF}};\n    (void)c; (void)a; (void)b;\n{body}\n}}\n");
+    let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50"];
+    let run = |name: &str, body: &str| run_hooked(name, false, &OVERLAY_ROM, &[0x8000, 0x8100], HOOK_CFG, &c(body), &args);
+    // without a call the code reads the ROM
+    let Some(r) = run("overlay-none", "") else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=11"), "{}", r.out);
+    // the overlay shows in the reads; and the file on disk keeps its byte (the hook reads it with stdio)
+    let body = "    bus_write8(0x2107, (uint8_t)rom_overlay(0x008200, a, 4));\n    { FILE *f = fopen(\"rom.sfc\", \"rb\"); int v = 0; if (f) { fseek(f, 0x200, SEEK_SET); v = fgetc(f); fclose(f); } bus_write8(0x2109, (uint8_t)v); }";
+    let Some(r) = run("overlay-read", body) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=AA"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=DD"), "{}", r.out);
+    assert_eq!(r.reg(0x2107), Some("reads=0 writes=1 last=00"), "a good call returns 0\n{}", r.out);
+    assert_eq!(r.reg(0x2109), Some("reads=0 writes=1 last=11"), "the file on disk is not changed\n{}", r.out);
+    // a later call over the same bytes wins, and the rest is left alone
+    let body = "    rom_overlay(0x008200, a, 4);\n    rom_overlay(0x008200, b, 2);";
+    let Some(r) = run("overlay-last", body) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=EE"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=DD"), "the bytes the second call did not cover keep the first\n{}", r.out);
+    // outside the image: an error and nothing written (the last byte of the 64 KiB image is 4 bytes short)
+    let body = "    bus_write8(0x2107, (uint8_t)rom_overlay(0x01FFFE, a, 4));\n    bus_write8(0x2108, (uint8_t)rom_overlay(0x7F8000, a, 4));\n    bus_write8(0x2109, (uint8_t)rom_overlay(0x008200, a, 0));";
+    let Some(r) = run("overlay-outside", body) else { return };
+    assert_eq!(r.reg(0x2107), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2108), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2109), Some("reads=0 writes=1 last=00"), "zero bytes is not an error\n{}", r.out);
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=11"), "nothing was written\n{}", r.out);
 }
 
 #[test]

@@ -197,10 +197,41 @@ static void bindings_store(Ini *out) {
             }
 }
 
+/* The options of the game (snes_game_opts) in the INI as `game.<key> = <name>`. */
+#define GOPTS (snes_game_opt_count < MAX_GAME_OPT ? snes_game_opt_count : MAX_GAME_OPT)
+
+/* Reads them: a value that is not one of the names is reported and keeps the default; what the command line set stays for this run. */
+static void gopts_load(const Ini *in) {
+    char key[64], val[64];
+    int i, k;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++) {
+        const GameOptDef *d = &snes_game_opts[i];
+        snprintf(key, sizeof key, "game.%s", d->key);
+        if (!ini_get(in, key, val, sizeof val)) continue;
+        for (k = 0; k < d->n; k++) if (!strcmp(d->names[k], val)) break;
+        if (k == d->n) { fprintf(stderr, "warning: config: invalid value '%s' for %s, using the default\n", val, key); continue; }
+        gopt_file[i] = k;
+        if (!(gopt_cli >> i & 1)) gopt_eff[i] = k;
+    }
+}
+
+/* Writes what config.ini holds (not what the command line changed). */
+static void gopts_store(Ini *out) {
+    char key[64];
+    int i;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++) {
+        snprintf(key, sizeof key, "game.%s", snes_game_opts[i].key);
+        ini_set(out, key, snes_game_opts[i].names[gopt_file[i]]);
+    }
+}
+
 /* Writes config.ini: the options of the file (not what the command line changed) and the key map. */
 static void config_save(void) {
     if (!cfg_writable || !cfg_path[0]) return;
     cfg_store(&cfg.file, &ini);
+    gopts_store(&ini);
     bindings_store(&ini);
     if (!ini_save(&ini, cfg_path)) fprintf(stderr, "warning: cannot write %s\n", cfg_path);
 }
@@ -228,6 +259,7 @@ static void config_load(const char *rom_path) {
             fprintf(stderr, "config: imported %s\n", keys_path);
     }
     cfg_apply(&file, &ini);
+    gopts_load(&ini);
     config_init(&cfg, &file);
     if (cli_fullscreen) config_override(&cfg, O_FULLSCREEN, 1);
     if (cli_scale) config_override(&cfg, O_SCALE, opt_scale);
@@ -437,7 +469,7 @@ static int menu_count(int tab) {
     case TAB_IMAGE: return N_IMAGE + 1;
     case TAB_AUDIO: return 3;
     case TAB_CONTROLS: return 13;
-    default: return 4;
+    default: return GOPTS + 4; /* the options of the game, then Resume, Save, Restore and Quit */
     }
 }
 
@@ -508,6 +540,8 @@ static void restore_audio(void) {
 }
 
 static void restore_all(void) {
+    int i;
+    for (i = 0; i < GOPTS; i++) gopt_set_user(i, snes_game_opts[i].def);
     restore_image();
     restore_audio();
     bind_defaults();
@@ -543,6 +577,13 @@ static void menu_change(int dir) {
         else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, "Press a key or a controller button"); }
         break;
     default:
+        if (s < GOPTS) { /* an option of the game: a list that goes round */
+            const GameOptDef *d = &snes_game_opts[s];
+            gopt_init();
+            gopt_set_user(s, (gopt_eff[s] + (dir ? dir : 1) + d->n) % d->n);
+            break;
+        }
+        s -= GOPTS;
         if (dir) break;
         if (s == 0) menu_close();
         else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, "Saved game written"); }
@@ -725,7 +766,12 @@ static void menu_draw(const uint8_t *fb) {
             }
             break;
         default:
-            menu_row(i, on, i == 0 ? "Resume" : i == 1 ? "Save game now" : i == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
+            if (i < GOPTS) {
+                gopt_init();
+                menu_row(i, on, snes_game_opts[i].label, 1, snes_game_opts[i].names[gopt_eff[i]], 0, 0, 0);
+                break;
+            }
+            menu_row(i, on, i - GOPTS == 0 ? "Resume" : i - GOPTS == 1 ? "Save game now" : i - GOPTS == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
             break;
         }
     }

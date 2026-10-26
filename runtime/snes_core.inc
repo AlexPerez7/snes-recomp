@@ -95,12 +95,68 @@ uint16_t joy1_state(void) { return joy_now(); }
 static struct { char key[32]; long val; } game_opts[MAX_GAME_OPT];
 static int ngame_opts;
 
+/* The options the profile declares (snes_game_opts): `gopt_file` is what config.ini holds, `gopt_eff` what this run uses (the
+ * command line sets it for this run only; the menu sets both). */
+static int gopt_file[MAX_GAME_OPT], gopt_eff[MAX_GAME_OPT];
+static unsigned gopt_cli;
+static int gopt_ready;
+
+static void gopt_init(void) {
+    int i;
+    if (gopt_ready) return;
+    gopt_ready = 1;
+    for (i = 0; i < snes_game_opt_count && i < MAX_GAME_OPT; i++) gopt_file[i] = gopt_eff[i] = snes_game_opts[i].def;
+}
+
+static int gopt_find(const char *key, size_t n) {
+    int i;
+    for (i = 0; i < snes_game_opt_count && i < MAX_GAME_OPT; i++)
+        if (strlen(snes_game_opts[i].key) == n && !strncmp(snes_game_opts[i].key, key, n)) return i;
+    return -1;
+}
+
+/* The name or the number (an index of the list) `text` of the option `i`; returns 0 when it is neither. */
+static int gopt_parse(int i, const char *text, int *out) {
+    const GameOptDef *d = &snes_game_opts[i];
+    char *end;
+    long v;
+    int k;
+    for (k = 0; k < d->n; k++) if (!strcmp(d->names[k], text)) { *out = k; return 1; }
+    v = strtol(text, &end, 10);
+    if (!*text || *end || v < 0 || v >= d->n) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+/* The command line: this run only. */
+static void gopt_set_cli(int i, int v) {
+    gopt_init();
+    gopt_eff[i] = v;
+    gopt_cli |= 1u << i;
+}
+
+/* The player (menu): applies now and is saved. */
+static void gopt_set_user(int i, int v) {
+    gopt_init();
+    gopt_eff[i] = gopt_file[i] = v;
+    gopt_cli &= ~(1u << i);
+}
+
 /* Parses KEY=NUMBER of --game-opt; returns 0 when it is malformed or there are too many. */
 static int parse_game_opt(const char *arg) {
     const char *eq = strchr(arg, '=');
     char *end;
     long v;
-    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof game_opts[0].key || ngame_opts == MAX_GAME_OPT || !eq[1]) return 0;
+    int d;
+    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof game_opts[0].key || !eq[1]) return 0;
+    d = gopt_find(arg, (size_t)(eq - arg)); /* an option the profile declares: a name or an index of its list */
+    if (d >= 0) {
+        int k;
+        if (!gopt_parse(d, eq + 1, &k)) return 0;
+        gopt_set_cli(d, k);
+        return 1;
+    }
+    if (ngame_opts == MAX_GAME_OPT) return 0;
     v = strtol(eq + 1, &end, 0);
     if (*end) return 0;
     memcpy(game_opts[ngame_opts].key, arg, (size_t)(eq - arg));
@@ -113,6 +169,8 @@ static int parse_game_opt(const char *arg) {
 int game_opt(const char *key, int def) {
     int i;
     for (i = ngame_opts - 1; i >= 0; i--) if (!strcmp(game_opts[i].key, key)) return (int)game_opts[i].val;
+    i = gopt_find(key, strlen(key));
+    if (i >= 0) { gopt_init(); return gopt_eff[i]; }
     return def;
 }
 
@@ -179,6 +237,13 @@ static void write_m7(uint32_t off, uint8_t v);
 static uint8_t rom_byte(uint32_t a) {
     uint32_t bank = (a >> 16) & 0x7F;
     return rom[(((bank << 15) | (a & 0x7FFF))) % rom_size];
+}
+
+int rom_overlay(uint32_t addr, const uint8_t *data, size_t n) {
+    size_t off = (size_t)((addr >> 16) & 0x7F) << 15 | (addr & 0x7FFF);
+    if (!rom || (n && !data) || off > rom_size || n > rom_size - off) return 1;
+    if (n) memcpy(rom + off, data, n);
+    return 0;
 }
 
 static uint16_t vram_word(void) {
