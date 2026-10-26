@@ -55,6 +55,12 @@
 //! kind = "before"          # before = on entry, after = before each return, replace = instead of the body
 //! call = "my_hook"         # void my_hook(Cpu *c)
 //! ret = "rts"              # only with replace: how the function returns (rts or rtl)
+//!
+//! [[option]]               # a setting of the game for the player: config.ini `game.<key> = <name>` and a row in the F1 menu
+//! key = "language"         # letters, digits or `_`, up to 31 characters; the C of the game reads it with game_opt("language", 0)
+//! label = "Language"       # the row of the menu
+//! names = ["en", "es"]     # two or more different names; game_opt returns the index of the chosen one
+//! default = "en"           # one of the names
 //! ```
 
 use crate::disasm::Flags;
@@ -89,6 +95,17 @@ struct RawConfig {
     game: Option<RawGame>,
     #[serde(default)]
     hook: Vec<RawHook>,
+    #[serde(default)]
+    option: Vec<RawOption>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOption {
+    key: String,
+    label: String,
+    names: Vec<String>,
+    default: String,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +207,21 @@ pub struct Hook {
     pub ret: Option<HookReturn>,
 }
 
+/// A setting of the game that the player chooses from a list: the `[[option]]` sections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameOption {
+    pub key: String,
+    pub label: String,
+    pub names: Vec<String>,
+    /// Index into `names`.
+    pub default: usize,
+}
+
+/// Longest `key` of a game option (the runtime keeps it in 32 bytes with the terminator).
+pub const MAX_OPTION_KEY: usize = 31;
+/// Most options a profile can declare (the runtime keeps a fixed table).
+pub const MAX_OPTIONS: usize = 16;
+
 /// Who a profile is: the `[game]` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameId {
@@ -247,6 +279,7 @@ pub struct Config {
     pub assume: HashMap<u32, Flags>,
     pub game: Option<GameId>,
     pub hooks: Vec<Hook>,
+    pub options: Vec<GameOption>,
 }
 
 fn width(v: Option<u8>, what: &str) -> Result<bool, String> {
@@ -365,6 +398,35 @@ impl Config {
                 return Err(format!("duplicate {:?} hook for {}", h.kind, h.addr));
             }
             cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret });
+        }
+
+        for o in raw.option {
+            let key = &o.key;
+            if key.is_empty() || key.len() > MAX_OPTION_KEY || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err(format!("option {key:?}: key must be 1 to {MAX_OPTION_KEY} letters, digits or `_`"));
+            }
+            if cfg.options.len() == MAX_OPTIONS {
+                return Err(format!("option {key:?}: a profile can declare at most {MAX_OPTIONS} options"));
+            }
+            if o.label.is_empty() || !o.label.chars().all(|c| (' '..='~').contains(&c)) {
+                return Err(format!("option {key:?}: label must be printable ASCII (the menu font has no more), got {:?}", o.label));
+            }
+            if cfg.options.iter().any(|x| &x.key == key) {
+                return Err(format!("option {key:?}: duplicate key"));
+            }
+            if o.names.len() < 2 {
+                return Err(format!("option {key:?}: names needs at least two entries"));
+            }
+            if o.names.iter().any(|n| n.is_empty() || !n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')) {
+                return Err(format!("option {key:?}: names are letters, digits, `_`, `-` or `.`, got {:?}", o.names));
+            }
+            if (1..o.names.len()).any(|i| o.names[..i].contains(&o.names[i])) {
+                return Err(format!("option {key:?}: names must be different, got {:?}", o.names));
+            }
+            let Some(default) = o.names.iter().position(|n| *n == o.default) else {
+                return Err(format!("option {key:?}: default {:?} is not one of {:?}", o.default, o.names));
+            };
+            cfg.options.push(GameOption { key: o.key, label: o.label, names: o.names, default });
         }
 
         Ok(cfg)
@@ -500,6 +562,52 @@ name=\"n\"").is_err(), "missing crc");
 id=\"a/b\"
 name=\"n\"
 crc32=\"0000ABCD\"").is_err(), "bad id");
+    }
+
+    #[test]
+    fn parses_game_options() {
+        let cfg = Config::parse("[[option]]
+key=\"language\"
+label=\"Language\"
+names=[\"en\",\"es\"]
+default=\"es\"
+[[option]]
+key=\"b\"
+label=\"B\"
+names=[\"x\",\"y\",\"z\"]
+default=\"x\"").unwrap();
+        assert_eq!(cfg.options.len(), 2);
+        assert_eq!(cfg.options[0], GameOption { key: "language".into(), label: "Language".into(), names: vec!["en".into(), "es".into()], default: 1 });
+        assert_eq!(cfg.options[1].default, 0);
+        assert!(Config::parse("[[entry]]
+addr=\"00:8000\"").unwrap().options.is_empty(), "no options without [[option]]");
+    }
+
+    #[test]
+    fn rejects_bad_game_options() {
+        let opt = |k: &str, names: &str, d: &str| format!("[[option]]
+key=\"{k}\"
+label=\"L\"
+names={names}
+default=\"{d}\"");
+        assert!(Config::parse(&opt("language", "[\"en\",\"es\"]", "fr")).unwrap_err().contains("language"), "default outside the list");
+        assert!(Config::parse(&format!("{}
+{}", opt("language", "[\"en\",\"es\"]", "en"), opt("language", "[\"a\",\"b\"]", "a"))).unwrap_err().contains("duplicate"));
+        assert!(Config::parse(&opt("language", "[\"en\"]", "en")).is_err(), "one name");
+        assert!(Config::parse(&opt("language", "[\"en\",\"en\"]", "en")).is_err(), "repeated names");
+        assert!(Config::parse(&opt("bad key", "[\"a\",\"b\"]", "a")).is_err(), "key with a space");
+        assert!(Config::parse(&opt(&"k".repeat(32), "[\"a\",\"b\"]", "a")).is_err(), "key too long");
+        assert!(Config::parse(&opt(&"k".repeat(31), "[\"a\",\"b\"]", "a")).is_ok());
+        assert!(Config::parse(&opt("k", "[\"a b\",\"c\"]", "c")).is_err(), "name with a space");
+        assert!(Config::parse("[[option]]\nkey=\"k\"\nlabel=\"Idioma \u{f1}\"\nnames=[\"a\",\"b\"]\ndefault=\"a\"").is_err(), "label with a non-ASCII letter");
+        let many: String = (0..17).map(|i| opt(&format!("k{i}"), "[\"a\",\"b\"]", "a") + "\n").collect();
+        assert!(Config::parse(&many).unwrap_err().contains("at most 16"), "more than 16 options");
+        assert!(Config::parse("[[option]]
+key=\"k\"
+label=\"L\"
+names=[\"a\",\"b\"]
+default=\"a\"
+typo=1").is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 #ifndef SNES_RT_H
 #define SNES_RT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct Cpu {
@@ -50,8 +51,20 @@ int ppu_wide(void);
  * It is how a game hides what it has not loaded there. `ppu_wide_blank_clear` is `ppu_wide_blank(0, 0)`. */
 void ppu_wide_blank(int left, int right);
 void ppu_wide_blank_clear(void);
-/* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
+/* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. For an option the profile declares
+ * (`[[option]]`) it is the index of the chosen name in `names`, from `--game-opt`, then `config.ini` (`game.<key>`) and the menu, then
+ * the default of the profile; `def` is only for the keys the profile does not declare. */
 int game_opt(const char *key, int def);
+/* Puts `n` bytes of `data` over the ROM image in memory, from the LoROM address `addr` (BBAAAA) on: what the recompiled code reads there
+ * afterwards is `data`. The image is the file as it is read, so the bytes are contiguous in the file from the one `addr` maps to; the
+ * file on disk, its CRC32 and the generated C do not change, and the bytes are the game's own (a font, a table of widths), not the ROM's.
+ * The recompiler analysed the original, so it is for data, not for code. Returns 0, or non-zero with nothing written when any byte would
+ * fall outside the image. A later call over the same bytes wins. */
+int rom_overlay(uint32_t addr, const uint8_t *data, size_t n);
+/* An option the profile declares, as snes_entry.c carries it (`snes_game_opts[snes_game_opt_count]`). */
+typedef struct { const char *key; const char *label; int n; const char *const *names; int def; } GameOptDef;
+extern const GameOptDef snes_game_opts[];
+extern const int snes_game_opt_count;
 
 /* An indirect jump or call reached a target the recompiler did not know about. */
 void rt_unresolved(Cpu *c, uint32_t site, uint32_t target);

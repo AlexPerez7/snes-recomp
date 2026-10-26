@@ -184,7 +184,7 @@ fn generate(rom: &Rom, profile: &games::GameProfile, dir: &Path) -> Result<(), S
     let d = discover::discover(rom, &cfg, &roots);
     let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = graph::Graph::build(&d, &root_addrs);
-    let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks).map_err(|e| format!("{}: {e}", profile.origin))?.generate_all();
+    let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks).map_err(|e| format!("{}: {e}", profile.origin))?.with_options(&cfg.options).generate_all();
     crate::write_sources(&out, dir).map(|_| ())?;
     write_game_sources(profile, &cfg, dir)
 }

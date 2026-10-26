@@ -1,6 +1,6 @@
 //! C code generation: one C function per function of the graph, one label per basic block.
 
-use crate::config::{Hook, HookKind, HookReturn};
+use crate::config::{GameOption, Hook, HookKind, HookReturn};
 use crate::disasm::{fmt_addr, Flags, Flow, Instr};
 use crate::discover::{Discovery, EdgeKind};
 use crate::graph::{Block, Graph, SuccKind};
@@ -318,6 +318,7 @@ pub struct Emitter<'a> {
     g: &'a Graph,
     /// Calls to C functions of the game, by the entry of the function they hook.
     hooks: BTreeMap<u32, Vec<Hook>>,
+    options: Vec<GameOption>,
 }
 
 /// A function body under construction: the blocks it owns and what it refers to.
@@ -351,7 +352,7 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g, hooks: BTreeMap::new() }
+        Emitter { d, g, hooks: BTreeMap::new(), options: Vec::new() }
     }
 
     /// Hooks the functions of the game's profile: a hook runs `before` the body of the function at `addr`, `after` it
@@ -365,6 +366,33 @@ impl<'a> Emitter<'a> {
             self.hooks.entry(h.addr).or_default().push(h.clone());
         }
         Ok(self)
+    }
+
+    /// The options of the game's profile (`[[option]]`): `generate_all` writes them into `snes_entry.c`, where the runtime finds them.
+    pub fn with_options(mut self, options: &[GameOption]) -> Self {
+        self.options = options.to_vec();
+        self
+    }
+
+    /// The options of the profile as C data (see `GameOptDef` in snes_rt.h). Without options there is an empty table, so the
+    /// runtime always finds the symbols.
+    fn options_c(&self) -> String {
+        let q = |t: &str| format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\""));
+        let mut out = String::from("\n/* Options of the game for the player (`[[option]]` of the profile). */\n");
+        if self.options.is_empty() {
+            out.push_str("const GameOptDef snes_game_opts[1] = {{0}};\nconst int snes_game_opt_count = 0;\n");
+            return out;
+        }
+        for (i, o) in self.options.iter().enumerate() {
+            let names: Vec<String> = o.names.iter().map(|n| q(n)).collect();
+            out.push_str(&format!("static const char *const snes_game_opt_names_{i}[] = {{{}}};\n", names.join(", ")));
+        }
+        out.push_str("const GameOptDef snes_game_opts[] = {\n");
+        for (i, o) in self.options.iter().enumerate() {
+            out.push_str(&format!("    {{{}, {}, {}, snes_game_opt_names_{i}, {}}},\n", q(&o.key), q(&o.label), o.names.len(), o.default));
+        }
+        out.push_str(&format!("}};\nconst int snes_game_opt_count = {};\n", self.options.len()));
+        out
     }
 
     /// The names of the C functions the hooks call, each once.
@@ -794,6 +822,7 @@ impl<'a> Emitter<'a> {
             entry.push_str(&format!("    case 0x{f:06X}: {}(c); return 1;\n", func_name(f)));
         }
         entry.push_str("    default: return 0;\n    }\n}\n");
+        entry.push_str(&self.options_c());
         FullOutput { header, entry, banks, functions: self.g.functions.len(), unsupported }
     }
 }
@@ -1138,7 +1167,7 @@ sep xf=1 x=0034 p=10
         let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
         let d = crate::discover::discover(&rom, &cfg, &r);
         let g = Graph::build(&d, roots);
-        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all()
+        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).generate_all()
     }
 
     /// Roots 00:8000 (widths in conflict, so it cannot be translated), 00:9000 and 01:8000.
@@ -1185,6 +1214,19 @@ sep xf=1 x=0034 p=10
     }
 
     #[test]
+    fn the_options_of_the_profile_become_a_table_in_the_entry_file() {
+        let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..])];
+        let cfg = "[[option]]\nkey=\"language\"\nlabel=\"Say \\\"hi\\\"\"\nnames=[\"en\",\"es\"]\ndefault=\"es\"\n[[option]]\nkey=\"b\"\nlabel=\"B\"\nnames=[\"x\",\"y\",\"z\"]\ndefault=\"x\"";
+        let out = gen_all(&rom, cfg, &[0x8000]);
+        assert!(out.entry.contains("snes_game_opt_names_0[] = {\"en\", \"es\"};"), "{}", out.entry);
+        assert!(out.entry.contains("{\"language\", \"Say \\\"hi\\\"\", 2, snes_game_opt_names_0, 1},"), "{}", out.entry);
+        assert!(out.entry.contains("{\"b\", \"B\", 3, snes_game_opt_names_1, 0},"), "{}", out.entry);
+        assert!(out.entry.contains("const int snes_game_opt_count = 2;"), "{}", out.entry);
+        let none = gen_all(&rom, "", &[0x8000]);
+        assert!(none.entry.contains("const int snes_game_opt_count = 0;") && !none.entry.contains("snes_game_opt_names"), "{}", none.entry);
+    }
+
+    #[test]
     fn entry_dispatch_calls_a_function_by_address_and_rejects_the_rest() {
         // 00:8000: LDA #$42 ; STA $10 ; RTS     00:9000: LDA #$77 ; STA $10 ; RTS
         let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..]), (0x9000, &[0xA9, 0x77, 0x85, 0x10, 0x60][..])];
@@ -1197,6 +1239,8 @@ sep xf=1 x=0034 p=10
                 || l.starts_with("/*")
                 || l.starts_with("#include")
                 || l.starts_with("int snes_call_entry")
+                || l.starts_with("const GameOptDef snes_game_opts[1]") // the empty table of the options of the game
+                || l == "const int snes_game_opt_count = 0;"
                 || l.trim_start().starts_with("case 0x00")
                 || ["    switch (addr & 0xFFFFFF) {", "    default: return 0;", "    }", "}"].contains(&l);
             assert!(known, "unexpected line: {l}");
