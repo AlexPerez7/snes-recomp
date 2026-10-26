@@ -239,6 +239,30 @@ static uint8_t rom_byte(uint32_t a) {
     return rom[(((bank << 15) | (a & 0x7FFF))) % rom_size];
 }
 
+/* Folders for the C of the game: the one of the ROM and the one of the profile (`--game-dir`), both ending in a separator. */
+static char rom_dir_buf[1024] = "./", game_dir_buf[1024];
+
+static void dir_with_separator(char *out, size_t n, const char *s, size_t len) {
+    if (len + 2 > n) len = n - 2;
+    memcpy(out, s, len);
+    if (len && out[len - 1] != '/' && out[len - 1] != 92) out[len++] = '/';
+    out[len] = 0;
+}
+
+static void set_rom_dir(const char *rom_path) {
+    const char *sep = strrchr(rom_path, '/'), *bsep = strrchr(rom_path, 92);
+    if (bsep && (!sep || bsep > sep)) sep = bsep;
+    if (sep) dir_with_separator(rom_dir_buf, sizeof rom_dir_buf, rom_path, (size_t)(sep - rom_path + 1));
+    else strcpy(rom_dir_buf, "./");
+}
+
+static void set_game_dir(const char *dir) {
+    dir_with_separator(game_dir_buf, sizeof game_dir_buf, dir, strlen(dir));
+}
+
+const char *rom_dir(void) { return rom_dir_buf; }
+const char *game_dir(void) { return game_dir_buf[0] ? game_dir_buf : rom_dir_buf; }
+
 int rom_overlay(uint32_t addr, const uint8_t *data, size_t n) {
     size_t off = (size_t)((addr >> 16) & 0x7F) << 15 | (addr & 0x7FFF);
     if (!rom || (n && !data) || off > rom_size || n > rom_size - off) return 1;
@@ -955,6 +979,7 @@ static int load_rom(const char *path) {
     long n;
     size_t skip = 0;
     uint8_t *buf;
+    set_rom_dir(path);
     if (!f) { fprintf(stderr, "error: cannot read %s\n", path); return 0; }
     fseek(f, 0, SEEK_END);
     n = ftell(f);

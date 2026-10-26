@@ -61,6 +61,12 @@ int game_opt(const char *key, int def);
  * The recompiler analysed the original, so it is for data, not for code. Returns 0, or non-zero with nothing written when any byte would
  * fall outside the image. A later call over the same bytes wins. */
 int rom_overlay(uint32_t addr, const uint8_t *data, size_t n);
+/* The folder of the ROM the program was started with, ending in a path separator (`./` when the path has none): where the game puts files
+ * of the user's own, such as a dump of the text of the ROM. */
+const char *rom_dir(void);
+/* The folder the profile of the game brings next to its .toml (its C code and its data files, such as `lang/es.txt`), ending in a path
+ * separator. `snes-port` passes it with `--game-dir`; without it this is `rom_dir()`. */
+const char *game_dir(void);
 /* An option the profile declares, as snes_entry.c carries it (`snes_game_opts[snes_game_opt_count]`). */
 typedef struct { const char *key; const char *label; int n; const char *const *names; int def; } GameOptDef;
 extern const GameOptDef snes_game_opts[];
