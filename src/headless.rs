@@ -2714,9 +2714,57 @@ p1.key.A = Space
     let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
-    // Quit (the fourth row) ends the program without closing the menu by hand
-    let Some(r) = run_menu("menu-quit", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
-    assert_eq!(r.code, 0, "{}", r.out);
+}
+
+/// The program ended because the player chose Quit in the menu (the report names the cause).
+fn quit_from_the_menu(r: &Run) -> bool {
+    r.out.contains("stop: quit from the menu")
+}
+
+/// The game ran to the end of its frames: it never quit.
+fn ran_to_the_end(r: &Run) -> bool {
+    r.code == 0 && !quit_from_the_menu(r)
+}
+
+#[test]
+fn quit_in_the_menu_asks_first_and_escape_cancels() {
+    let to_quit = "F1,W,W,W,Down,Down,Down,Return"; // Quit (the fourth row of Game) asks and the program goes on
+    let Some(r) = run_menu("menu-quit-asks", &["--menu-keys", to_quit], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+    // Enter on the question ends the program
+    let Some(r) = run_menu("menu-quit-yes", &["--menu-keys", &format!("{to_quit},Return")], &[]) else { return };
+    assert!(r.code == 0 && quit_from_the_menu(&r), "{}", r.out);
+    // Escape cancels: the menu stays open (a second Escape closes it) and the program goes on
+    let Some(r) = run_menu("menu-quit-no", &["--menu-keys", &format!("{to_quit},Escape,Escape")], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+}
+
+#[test]
+fn the_question_to_quit_changes_the_menu_picture() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "12", "--frame-blocks", "20", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
+        run_play(name, &seg, &[0x8000], &args)
+    };
+    let Some(without) = shot("menu-quit-pic-a", "F1,W,W,W,Down,Down,Down") else { return };
+    let Some(with) = shot("menu-quit-pic-b", "F1,W,W,W,Down,Down,Down,Return") else { return };
+    assert!(hash(&without.out).is_some() && hash(&with.out).is_some() && hash(&without.out) != hash(&with.out), "{}
+{}", without.out, with.out);
+}
+
+#[test]
+fn escape_opens_the_menu_like_f1_and_does_not_end_the_game() {
+    // the same trip as the F1 test: Escape opens, four Downs reach `filter`, Left makes it bilinear, Escape closes and saves
+    let Some(r) = run_menu("menu-esc-open", &["--menu-keys", "Escape,Down,Down,Down,Down,Left,Escape"], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+    assert!(config_lines(&r).contains(&"filter = bilinear"), "{}", r.out);
+    // Escape with the menu closed does not quit: it opens it, and the game is still running at the end
+    let Some(r) = run_menu("menu-esc-alone", &["--menu-keys", "Escape"], &[]) else { return };
+    assert!(ran_to_the_end(&r) && !r.out.contains("stop: quit"), "{}", r.out);
+    // F1 still opens it
+    let Some(r) = run_menu("menu-f1-open", &["--menu-keys", "F1,Down,Down,Down,Down,Left,F1"], &[]) else { return };
+    assert!(config_lines(&r).contains(&"filter = bilinear"), "{}", r.out);
 }
 
 #[test]

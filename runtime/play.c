@@ -457,7 +457,8 @@ static Canvas cv = {fb_menu, SCREEN_W, SCREEN_H};
 
 enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game"};
-static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad;
+enum { ASK_NONE, ASK_RESTORE, ASK_QUIT };
+static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad; /* menu_ask: an ASK_* waiting for Enter or Esc */
 static Bind menu_pending;
 static char menu_msg[80];
 static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS};
@@ -587,8 +588,8 @@ static void menu_change(int dir) {
         if (dir) break;
         if (s == 0) menu_close();
         else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, "Saved game written"); }
-        else if (s == 2) { menu_ask = 1; snprintf(menu_msg, sizeof menu_msg, "Enter restores everything, Esc cancels"); }
-        else stop(0, "quit from the menu");
+        else if (s == 2) { menu_ask = ASK_RESTORE; snprintf(menu_msg, sizeof menu_msg, "Enter restores everything, Esc cancels"); }
+        else { menu_ask = ASK_QUIT; snprintf(menu_msg, sizeof menu_msg, "Enter quits the game, Esc cancels"); }
         break;
     }
 }
@@ -627,8 +628,12 @@ static void menu_key(SDL_Scancode sc) {
         return;
     }
     if (menu_ask) {
-        if (sc == SDL_SCANCODE_RETURN) { menu_ask = 0; restore_all(); }
-        else if (sc == SDL_SCANCODE_ESCAPE) { menu_ask = 0; menu_msg[0] = 0; }
+        if (sc == SDL_SCANCODE_RETURN) {
+            int what = menu_ask;
+            menu_ask = ASK_NONE;
+            if (what == ASK_QUIT) stop(0, "quit from the menu");
+            else restore_all();
+        } else if (sc == SDL_SCANCODE_ESCAPE) { menu_ask = ASK_NONE; menu_msg[0] = 0; }
         return;
     }
     if (menu_capture >= 0) {
@@ -833,10 +838,14 @@ static const uint8_t *shown_frame(void) {
     return fb_show;
 }
 
-/* Any key: F1 opens or closes the menu; with the menu open, the keys drive it. */
+static void menu_open_now(void) {
+    menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = ASK_NONE; menu_msg[0] = 0; menu_tick = 0;
+}
+
+/* Any key: Esc or F1 opens the menu; with the menu open, the keys drive it (Esc and F1 close it). */
 static void ui_key(SDL_Scancode sc) {
     if (menu_open) { menu_key(sc); return; }
-    if (sc == SDL_SCANCODE_F1) { menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = 0; menu_msg[0] = 0; menu_tick = 0; }
+    if (sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) menu_open_now();
 }
 
 static void handle_events(void) {
@@ -856,9 +865,8 @@ static void handle_events(void) {
         if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             SDL_Scancode sc = e.key.keysym.scancode;
-            if (menu_open || sc == SDL_SCANCODE_F1) { ui_key(sc); continue; }
+            if (menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
             switch (sc) {
-            case SDL_SCANCODE_ESCAPE: stop(0, "quit"); break;
             case SDL_SCANCODE_P: paused = !paused; break;
             case SDL_SCANCODE_F10: save_picture(); break;
             case SDL_SCANCODE_F11:
