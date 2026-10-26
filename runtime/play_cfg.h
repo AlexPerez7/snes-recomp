@@ -26,7 +26,7 @@ static const OptDef opt_defs[O_COUNT] = {
     {"aspect", ASPECT_87, 0, 2, "4:3|8:7|free", 1},
     {"scale", 3, 1, 8, NULL, 1},
     {"scaling", SCALING_INTEGER, 0, 1, "integer|fit", 1},
-    {"filter", FILTER_NEAREST, 0, 2, "nearest|bilinear|sharp", 1},
+    {"filter", FILTER_SHARP, 0, 2, "nearest|bilinear|sharp", 1},
     {"overscan", 0, 0, 8, NULL, 1},
     {"scanlines", 0, 0, 100, NULL, 10},
     {"grid", 0, 0, 1, "false|true", 1},
