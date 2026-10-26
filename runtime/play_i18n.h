@@ -23,7 +23,7 @@ static const I18n i18n_table[] = {
     {"Volume", "Volumen"}, {"Output device", "Salida"}, {"Controls of", "Controles de"}, {"Player %d", "Jugador %d"},
     {"Keyboard", "Teclado"}, {"Controller", "Mando"}, {"Up", "Arriba"}, {"Down", "Abajo"}, {"Left", "Izquierda"}, {"Right", "Derecha"},
     /* Game */
-    {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},
+    {"Fast forward", "Avance rápido"}, {"max", "máx."}, {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},
     {"Quit", "Salir"},
     /* notices */
     {"Image options restored", "Vídeo restaurado"}, {"Audio options restored", "Audio restaurado"},
