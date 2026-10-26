@@ -234,6 +234,30 @@ fn a_declared_option_is_read_by_the_c_of_the_game_with_its_default_or_the_comman
     assert_ne!(r.code, 0, "a name that is not in the list is refused\n{}", r.out);
 }
 
+/// The game prints the two folders it is told about.
+const DIRS_C: &str = "#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {\n    (void)c;\n    printf(\"dirs rom=[%s] game=[%s]\\n\", rom_dir(), game_dir());\n}\n";
+
+#[test]
+fn the_game_knows_the_folder_of_the_rom_and_the_folder_of_its_profile() {
+    let run = |name: &str, rom: &str, extra: &[&str]| {
+        let mut args = vec![rom, "--frames", "2", "--frame-blocks", "50"];
+        args.extend_from_slice(extra);
+        run_hooked(name, false, &HOOKED_ROM, &[0x8000, 0x8100], HOOK_CFG, DIRS_C, &args)
+    };
+    // the folder of the ROM ends in a separator, `./` when the path has none; without --game-dir the game folder is the same
+    let Some(r) = run("dirs-bare", "rom.sfc", &[]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
+    let Some(r) = run("dirs-slash", "./rom.sfc", &[]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
+    let Some(r) = run("dirs-backslash", ".\\rom.sfc", &[]) else { return };
+    assert!(r.out.contains("dirs rom=[.\\] game=[.\\]"), "{}", r.out);
+    // --game-dir sets only the folder of the profile, and gets its separator
+    let Some(r) = run("dirs-game", "rom.sfc", &["--game-dir", "games/x"]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[games/x/]"), "{}", r.out);
+    let Some(r) = run("dirs-game-sep", "rom.sfc", &["--game-dir", "games/x/"]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[games/x/]"), "{}", r.out);
+}
+
 #[test]
 fn the_options_of_the_game_are_read_from_and_written_to_config_ini() {
     let run = |name: &str, ini: &[u8], extra: &[&str]| {

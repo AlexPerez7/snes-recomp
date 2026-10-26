@@ -607,7 +607,11 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         return Ok(Outcome { built, game: None });
     }
     let mut cmd = Command::new(built.dir.join(exe_name()));
-    cmd.current_dir(&built.dir).arg(&opts.rom).args(&opts.game_args);
+    cmd.current_dir(&built.dir).arg(&opts.rom);
+    if let Some(dir) = game_dir_arg(profile) {
+        cmd.arg("--game-dir").arg(dir);
+    }
+    cmd.args(&opts.game_args);
     let game = if opts.capture {
         match cmd.output() {
             Ok(o) => (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)),
@@ -620,6 +624,12 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         }
     };
     Ok(Outcome { built, game: Some(game) })
+}
+
+/// The folder of the profile for `--game-dir`. The game runs in the cache folder, so the folder with its data files
+/// (such as `lang/es.txt`) goes by absolute path.
+fn game_dir_arg(profile: &games::GameProfile) -> Option<PathBuf> {
+    profile.dir.as_ref().and_then(|d| std::path::absolute(d).ok())
 }
 
 fn cache_has(cache: &Path, name: &str) -> bool {
@@ -1132,6 +1142,32 @@ addr=\"00:8000\"
         assert!(!first.built.dir.exists());
         assert_eq!(std::fs::read(dir.join("alttp.srm")).unwrap(), b"my saved game");
         assert_eq!(std::fs::read(&rom_path).unwrap(), rom_bytes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_folder_of_the_profile_goes_to_the_game_by_absolute_path_and_its_data_files_do_not_change_the_build() {
+        let dir = temp("game-dir");
+        let toml = "[game]
+id=\"g\"
+name=\"G\"
+crc32=\"0000ABCD\"
+";
+        std::fs::write(dir.join("g.toml"), toml).unwrap();
+        std::fs::write(dir.join("lone.toml"), toml.replace("\"g\"", "\"lone\"")).unwrap();
+        std::fs::create_dir_all(dir.join("g").join("lang")).unwrap();
+        std::fs::write(dir.join("g").join("a.c"), "int a;").unwrap();
+        let p = games::GameProfile::load(&dir.join("g.toml")).unwrap();
+        let arg = game_dir_arg(&p).expect("the profile has a folder");
+        assert!(arg.is_absolute() && arg.ends_with("g"), "{}", arg.display());
+        assert_eq!(game_dir_arg(&games::GameProfile::load(&dir.join("lone.toml")).unwrap()), None, "no folder, no --game-dir");
+        // a data file next to the C does not change the version of the cache, and so does not rebuild
+        let before = current_version(false, Some(&p));
+        std::fs::write(dir.join("g").join("lang").join("es.txt"), "@000
+hola").unwrap();
+        std::fs::write(dir.join("g").join("notes.txt"), "x").unwrap();
+        let p = games::GameProfile::load(&dir.join("g.toml")).unwrap();
+        assert_eq!(current_version(false, Some(&p)), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
