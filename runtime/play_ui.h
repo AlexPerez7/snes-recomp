@@ -107,6 +107,15 @@ static const ExtGlyph ext_glyphs[] = {
     {0xA1,'!',0,0,0,1}, {0xBF,'?',0,0,0,1},
 };
 
+/* Symbols with a shape of their own (not a base letter plus an accent): arrows for the keys and a middle dot to tell
+ * several assignments apart. Seven rows of the 5x7 grid, bit 4 the leftmost pixel. */
+typedef struct { int cp; uint8_t rows[7]; } SymGlyph;
+static const SymGlyph sym_glyphs[] = {
+    {0x2190, {0x00,0x04,0x08,0x1F,0x08,0x04,0x00}}, {0x2191, {0x04,0x0E,0x15,0x04,0x04,0x04,0x04}},
+    {0x2192, {0x00,0x04,0x02,0x1F,0x02,0x04,0x00}}, {0x2193, {0x04,0x04,0x04,0x04,0x15,0x0E,0x04}},
+    {0xB7,   {0x00,0x00,0x00,0x04,0x00,0x00,0x00}},
+};
+
 #define GLYPH_ROWS 9 /* two extra rows above the 5x7 grid, for the accents of the capitals */
 #define GLYPH_TOP 2
 
@@ -115,6 +124,12 @@ static void glyph_rows(int cp, uint8_t rows[GLYPH_ROWS]) {
     const ExtGlyph *e = NULL;
     int base = cp, r;
     size_t i;
+    for (i = 0; i < sizeof sym_glyphs / sizeof sym_glyphs[0]; i++)
+        if (sym_glyphs[i].cp == cp) {
+            memset(rows, 0, GLYPH_ROWS);
+            for (r = 0; r < 7; r++) rows[GLYPH_TOP + r] = sym_glyphs[i].rows[r];
+            return;
+        }
     for (i = 0; i < sizeof ext_glyphs / sizeof ext_glyphs[0]; i++) if (ext_glyphs[i].cp == cp) e = &ext_glyphs[i];
     if (e) base = e->base;
     else if (cp < 32 || cp > 126) base = '?';

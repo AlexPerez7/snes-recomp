@@ -3187,6 +3187,13 @@ int main(void) {
         glyph_ink(cp, &lo, &hi);
         CHECK(hi >= lo && hi - lo + 1 <= 6 && glyph_adv(cp) >= 2);
     }
+    /* the arrows and the middle dot of the controls tab have ink and fit the box */
+    for (p = "\xE2\x86\x90\xE2\x86\x91\xE2\x86\x92\xE2\x86\x93\xC2\xB7"; *p; ) {
+        int cp = utf8_next(&p);
+        glyph_ink(cp, &lo, &hi);
+        CHECK(hi >= lo && hi - lo + 1 <= 6 && glyph_adv(cp) >= 2);
+        CHECK(cp != '?');
+    }
     CHECK(text_w("Año") == glyph_adv('A') + glyph_adv(0xF1) + glyph_adv('o'));
     CHECK(text_w("ó") == text_w("o") && text_w("Ñ") == text_w("N"));
 
@@ -3224,6 +3231,8 @@ int main(void) {
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
             {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
             {"title", 120, {"OPTIONS"}},
+            {"button of the Controls tab", 66, {"Up", "Down", "Left", "Right"}},
+            {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
         };
         static const char *const tabs[] = {"Image", "Audio", "Controls", "Game"};
         char line[128];
@@ -3246,6 +3255,32 @@ int main(void) {
         /* every string of the table was checked in one of the groups (the tabs are checked above) */
         CHECK(checked == I18N_COUNT);
         if (bad) return 1;
+    }
+
+    /* the names of the keys and buttons of the Controls tab fit their column, in both languages, and are real UTF-8;
+     * the columns are those of ctl_cols() in runtime/play.c */
+    {
+        static const char *const btn[] = {"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"};
+        enum { LAB = 38, PAD = 170, PADW = 64 };
+        int lang, k, b;
+        char buf[64];
+        for (lang = 0; lang < 2; lang++) {
+            int labw = 0, keyw;
+            ui_es = lang;
+            for (b = 0; b < 12; b++) if (text_w(tr(btn[b])) > labw) labw = text_w(tr(btn[b]));
+            keyw = PAD - 4 - (LAB + labw + 6);
+            for (k = 0; k < BIND_NAME_COUNT; k++) {
+                const char *shown = bind_label(bind_names[k].sdl, buf, sizeof buf);
+                int is_pad = bind_names[k].sdl[0] >= 'a' && bind_names[k].sdl[0] <= 'z', max = is_pad ? PADW : keyw;
+                CHECK(valid_utf8(shown));
+                if (text_w(shown) > max) { printf("too wide (%s, lang %d, %d > %d): %s\n", is_pad ? "button" : "key", lang, text_w(shown), max, shown); return 1; }
+            }
+            CHECK(text_w("Num 5") <= keyw);
+        }
+        /* what SDL calls a key is what config.ini keeps: the label only changes the sight */
+        ui_es = 1; CHECK(!strcmp(bind_label("Return", buf, sizeof buf), "Intro") && !strcmp(bind_label("Keypad 5", buf, sizeof buf), "Num 5"));
+        CHECK(!strcmp(bind_label("W", buf, sizeof buf), "W") && !strcmp(bind_label("F11", buf, sizeof buf), "F11"));
+        ui_es = 0; CHECK(!strcmp(bind_label("Return", buf, sizeof buf), "Enter") && !strcmp(bind_label("dpleft", buf, sizeof buf), "D-pad ←"));
     }
     printf("ok\n");
     return 0;
@@ -3287,4 +3322,30 @@ fn the_menu_follows_the_language_option_of_the_game_and_the_config_file_stays_in
     let Some(b) = shot("lang-cfg-es", b"filter = bilinear\ngame.language = es\n", "F1,Escape") else { return };
     let strip = |v: Vec<String>| v.into_iter().filter(|l| !l.contains("language") && !l.contains("$2105") && !l.contains("game_opt")).collect::<Vec<_>>();
     assert_eq!(strip(cfg(&a)), strip(cfg(&b)), "{}\n{}", a.out, b.out);
+}
+
+#[test]
+fn the_controls_tab_is_drawn_in_both_languages_for_each_player_and_while_it_waits_for_a_key() {
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "2"];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let open = "F1,W,W";
+    let Some(en) = shot("ctl-en", b"game.language = en\n", open) else { return };
+    let Some(es) = shot("ctl-es", b"game.language = es\n", open) else { return };
+    let Some(p2) = shot("ctl-p2", b"game.language = es\n", "F1,W,W,Right") else { return };
+    let Some(wait) = shot("ctl-wait", b"game.language = es\n", "F1,W,W,Down,Return") else { return };
+    let hs: Vec<_> = [&en, &es, &p2, &wait].iter().map(|r| hash(&r.out)).collect();
+    assert!(hs.iter().all(|h| h.is_some()), "{}", en.out);
+    // the language, the player and the waiting for a key each change the picture
+    for i in 0..hs.len() {
+        for j in i + 1..hs.len() {
+            assert_ne!(hs[i], hs[j], "{i} and {j} draw the same\n{}\n{}", en.out, es.out);
+        }
+    }
+    // looking at the tab, and drawing it in another language, does not touch the file: the names stay SDL's
+    let cfg = |r: &Run| r.out.lines().filter(|l| !l.starts_with("menu-shot")).map(str::to_string).collect::<Vec<_>>();
+    let strip = |v: Vec<String>| v.into_iter().filter(|l| !l.contains("language") && !l.contains("$2105") && !l.contains("game_opt")).collect::<Vec<_>>();
+    assert_eq!(strip(cfg(&en)), strip(cfg(&es)), "{}\n{}", en.out, es.out);
 }

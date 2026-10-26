@@ -4,6 +4,7 @@
 #ifndef PLAY_I18N_H
 #define PLAY_I18N_H
 
+#include <stdio.h>
 #include <string.h>
 
 typedef struct { const char *en, *es; } I18n;
@@ -20,6 +21,7 @@ static const I18n i18n_table[] = {
     {"bilinear", "bilineal"}, {"sharp", "nítido"}, {"Default", "Por defecto"},
     /* Audio and Controls */
     {"Volume", "Volumen"}, {"Output device", "Salida"}, {"Controls of", "Controles de"}, {"Player %d", "Jugador %d"},
+    {"Keyboard", "Teclado"}, {"Controller", "Mando"}, {"Up", "Arriba"}, {"Down", "Abajo"}, {"Left", "Izquierda"}, {"Right", "Derecha"},
     /* Game */
     {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},
     {"Quit", "Salir"},
@@ -38,6 +40,39 @@ static const I18n i18n_table[] = {
 #define I18N_COUNT ((int)(sizeof i18n_table / sizeof i18n_table[0]))
 
 static int ui_es; /* 1 when the menu is drawn in Spanish */
+
+/* The keys and controller buttons of the Controls tab as the player reads them. `sdl` is the name SDL gives (what
+ * config.ini keeps, so it never changes); the menu shows `en` or `es`. A name that is not here (the letters, the digits,
+ * an odd key) is shown as SDL spells it. */
+typedef struct { const char *sdl, *en, *es; } BindName;
+static const BindName bind_names[] = {
+    {"Up", "Up Arrow", "Flecha ↑"}, {"Down", "Down Arrow", "Flecha ↓"},
+    {"Left", "Left Arrow", "Flecha ←"}, {"Right", "Right Arrow", "Flecha →"},
+    {"Return", "Enter", "Intro"}, {"Escape", "Esc", "Esc"}, {"Space", "Space", "Espacio"}, {"Tab", "Tab", "Tab"},
+    {"Backspace", "Backspace", "Retroceso"}, {"Delete", "Delete", "Supr"}, {"Insert", "Insert", "Insert"},
+    {"Home", "Home", "Inicio"}, {"End", "End", "Fin"}, {"PageUp", "Page Up", "Re Pág"}, {"PageDown", "Page Down", "Av Pág"},
+    {"CapsLock", "Caps Lock", "Bloq May."},
+    {"Left Shift", "L Shift", "Mayús izq."}, {"Right Shift", "R Shift", "Mayús der."},
+    {"Left Ctrl", "L Ctrl", "Ctrl izq."}, {"Right Ctrl", "R Ctrl", "Ctrl der."},
+    {"Left Alt", "L Alt", "Alt izq."}, {"Right Alt", "R Alt", "Alt der."},
+    /* controller buttons (SDL_GameControllerGetStringForButton) */
+    {"a", "A", "A"}, {"b", "B", "B"}, {"x", "X", "X"}, {"y", "Y", "Y"},
+    {"back", "Back", "Atrás"}, {"guide", "Guide", "Guía"}, {"start", "Start", "Start"},
+    {"leftstick", "L3", "L3"}, {"rightstick", "R3", "R3"}, {"leftshoulder", "LB", "LB"}, {"rightshoulder", "RB", "RB"},
+    {"dpup", "D-pad ↑", "Cruceta ↑"}, {"dpdown", "D-pad ↓", "Cruceta ↓"},
+    {"dpleft", "D-pad ←", "Cruceta ←"}, {"dpright", "D-pad →", "Cruceta →"},
+    {"touchpad", "Touchpad", "Táctil"}, {"misc1", "Misc", "Extra"},
+};
+#define BIND_NAME_COUNT ((int)(sizeof bind_names / sizeof bind_names[0]))
+
+/* The name of a key or button for the menu, from the name SDL gives it. The keypad keys ("Keypad 5") become "Num 5". */
+static const char *bind_label(const char *sdl, char *buf, size_t n) {
+    int i;
+    for (i = 0; i < BIND_NAME_COUNT; i++)
+        if (!strcmp(bind_names[i].sdl, sdl)) return ui_es ? bind_names[i].es : bind_names[i].en;
+    if (!strncmp(sdl, "Keypad ", 7)) { snprintf(buf, n, "Num %s", sdl + 7); return buf; }
+    return sdl;
+}
 
 /* `en` in the language of the menu; the English text itself if there is no translation. */
 static const char *tr(const char *en) {

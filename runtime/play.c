@@ -678,28 +678,74 @@ static void menu_pad(SDL_GameControllerButton b) {
     menu_by_pad = 1;
 }
 
-/* The keys and buttons of `button` for the menu line, e.g. "Space, Z | a". */
-static void bind_text(char *out, size_t n, int player, int button) {
-    char name[64];
-    int i, k = 0, any;
+/* The keys (`dev` BIND_KEY) or controller buttons (BIND_PAD) of `button` for the menu, as the player reads them ("Space ·
+ * Z"). Empty when there is none. The names are for the eye only: config.ini keeps the ones from bind_name. */
+static void bind_cell(char *out, size_t n, int dev, int player, int button) {
+    char name[64], tmp[64];
+    int i;
     out[0] = 0;
-    for (any = 0; any < 2; any++) {
-        int first = 1;
-        for (i = 0; i < nbinds; i++) {
-            if (binds[i].dev != any || binds[i].player != player || binds[i].button != button) continue;
-            bind_name(name, sizeof name, any, binds[i].code);
-            if (strlen(out) + strlen(name) + 4 >= n) break;
-            if (!first) strcat(out, ",");
-            else if (any == 1 && k) strcat(out, " | ");
-            strcat(out, name);
-            first = 0;
-        }
-        if (!first) k = 1;
+    for (i = 0; i < nbinds; i++) {
+        const char *shown;
+        if (binds[i].dev != dev || binds[i].player != player || binds[i].button != button) continue;
+        bind_name(name, sizeof name, dev, binds[i].code);
+        shown = bind_label(name, tmp, sizeof tmp);
+        if (strlen(out) + strlen(shown) + 5 >= n) break;
+        if (out[0]) strcat(out, " · ");
+        strcat(out, shown);
     }
 }
 
 /* Where the panel puts things (the picture is 256 by 224). */
 enum { PX = 10, PY = 6, PW = 236, PH = 214, ROW_X = 22, ROW_W = 212, ROW_Y = 52, ROW_H = 11, VAL_R = 228, VAL_W = 92 };
+/* The Controls tab has its own rows, a little closer, under a line with the names of the two columns. */
+enum { CTL_HEAD = 51, CTL_Y = 61, CTL_H = 10, CTL_LAB = 38, CTL_PAD = 170, CTL_PADW = 64 };
+
+static const char *const btn_labels[12] = {"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"};
+
+/* The columns of the Controls tab: the buttons take what the widest name needs in the current language, the controller
+ * buttons a fixed strip on the right, and the keys what is left between them. */
+static void ctl_cols(int *labw, int *keyx, int *keyw) {
+    int b, w = 0;
+    for (b = 0; b < 12; b++) if (text_w(tr(btn_labels[b])) > w) w = text_w(tr(btn_labels[b]));
+    *labw = w;
+    *keyx = CTL_LAB + w + 6;
+    *keyw = CTL_PAD - 4 - *keyx;
+}
+
+/* One row of the Controls tab: row 0 picks the player; the others show a console button, with its keys and its controller
+ * buttons in two columns ("..." in both while it waits for a key). */
+static void ctl_row(int i, int on, int player) {
+    int y = CTL_Y + i * CTL_H, bob = on ? (menu_tick / 10) % 2 : 0;
+    char val[96], fit[96];
+    if (on) cv_rect(&cv, ROW_X, y - 2, ROW_W, CTL_H - 1, 0x34489Cu);
+    if (on) ui_cursor(&cv, ROW_X + 3 + bob, y);
+    if (i == 0) {
+        int w, cx = ROW_X + ROW_W / 2;
+        snprintf(val, sizeof val, tr("Player %d"), player + 1);
+        w = text_w(val);
+        ui_arrow(&cv, cx - w / 2 - 12, y, -1, on ? UI_TEXT : UI_DIM);
+        text_center(&cv, ROW_X, ROW_W, y, val, on ? UI_GOOD : UI_TEXT);
+        ui_arrow(&cv, cx + w / 2 + 6, y, 1, on ? UI_TEXT : UI_DIM);
+        return;
+    }
+    {
+        int labw, keyx, keyw, d, x[2], w[2];
+        ctl_cols(&labw, &keyx, &keyw);
+        text_fit(fit, sizeof fit, tr(btn_labels[i - 1]), labw);
+        text_draw(&cv, CTL_LAB, y, fit, on ? UI_GOLD : UI_TEXT, 1);
+        x[0] = keyx; x[1] = CTL_PAD; w[0] = keyw; w[1] = CTL_PADW;
+        for (d = 0; d < 2; d++) {
+            uint32_t col = on ? UI_GOOD : UI_TEXT;
+            if (menu_capture == i - 1) snprintf(val, sizeof val, "...");
+            else {
+                bind_cell(val, sizeof val, d, player, 0x8000 >> (i - 1));
+                if (!val[0]) { snprintf(val, sizeof val, "-"); col = UI_DIM; }
+            }
+            text_fit(fit, sizeof fit, val, w[d]);
+            text_draw(&cv, x[d], y, fit, col, 1);
+        }
+    }
+}
 
 /* One row. `kind`: 0 an action, 1 a value with arrows (`dimL`/`dimR` dim an arrow), 2 a bar at `pct`, 3 only text. */
 static void menu_row(int i, int on, const char *label, int kind, const char *value, int pct, int dimL, int dimR) {
@@ -761,6 +807,12 @@ static void menu_draw(const uint8_t *fb) {
         text_center(&cv, x, w, PY + (on ? 33 : 34), tr(tab_names[t]), on ? UI_GOLD : UI_DIM);
         x += w + 3;
     }
+    if (menu_tab == TAB_CONTROLS) {
+        int labw, keyx, keyw;
+        ctl_cols(&labw, &keyx, &keyw);
+        text_draw(&cv, keyx, CTL_HEAD, tr("Keyboard"), UI_DIM, 1);
+        text_draw(&cv, CTL_PAD, CTL_HEAD, tr("Controller"), UI_DIM, 1);
+    }
     for (i = 0; i < n; i++) {
         int on = i == s;
         switch (menu_tab) {
@@ -779,11 +831,7 @@ static void menu_draw(const uint8_t *fb) {
             else menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0);
             break;
         case TAB_CONTROLS:
-            if (i == 0) { snprintf(val, sizeof val, tr("Player %d"), menu_player + 1); menu_row(i, on, "Controls of", 1, val, 0, 0, 0); }
-            else {
-                bind_text(val, sizeof val, menu_player, 0x8000 >> (i - 1));
-                menu_row(i, on, btn_names[i - 1], 3, menu_capture == i - 1 ? "..." : val, 0, 0, 0);
-            }
+            ctl_row(i, on, menu_player);
             break;
         default:
             if (i < GOPTS) {
