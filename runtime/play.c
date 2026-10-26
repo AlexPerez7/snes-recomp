@@ -32,6 +32,7 @@
 #include "snes_core.inc"
 #include "play_cfg.h"
 #include "play_ui.h"
+#include "play_i18n.h"
 #ifdef _WIN32
 #include <windows.h>
 #ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
@@ -458,6 +459,7 @@ static Canvas cv = {fb_menu, SCREEN_W, SCREEN_H};
 enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game"};
 enum { ASK_NONE, ASK_RESTORE, ASK_QUIT };
+static void menu_lang_sync(void);
 static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad; /* menu_ask: an ASK_* waiting for Enter or Esc */
 static Bind menu_pending;
 static char menu_msg[80];
@@ -531,13 +533,13 @@ static void restore_opt(int opt) {
 static void restore_image(void) {
     int i;
     for (i = 0; i < N_IMAGE; i++) restore_opt(image_opts[i]);
-    snprintf(menu_msg, sizeof menu_msg, "Image options restored");
+    snprintf(menu_msg, sizeof menu_msg, tr("Image options restored"));
 }
 
 static void restore_audio(void) {
     restore_opt(O_VOLUME);
     set_audio_device("");
-    snprintf(menu_msg, sizeof menu_msg, "Audio options restored");
+    snprintf(menu_msg, sizeof menu_msg, tr("Audio options restored"));
 }
 
 static void restore_all(void) {
@@ -546,7 +548,7 @@ static void restore_all(void) {
     restore_image();
     restore_audio();
     bind_defaults();
-    snprintf(menu_msg, sizeof menu_msg, "Everything restored to the defaults");
+    snprintf(menu_msg, sizeof menu_msg, tr("Everything restored to the defaults"));
 }
 
 static void menu_close(void) {
@@ -575,7 +577,7 @@ static void menu_change(int dir) {
         break;
     case TAB_CONTROLS:
         if (s == 0) menu_player = (menu_player + (dir ? dir : 1) + 2) % 2;
-        else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, "Press a key or a controller button"); }
+        else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, tr("Press a key or a controller button")); }
         break;
     default:
         if (s < GOPTS) { /* an option of the game: a list that goes round */
@@ -587,9 +589,9 @@ static void menu_change(int dir) {
         s -= GOPTS;
         if (dir) break;
         if (s == 0) menu_close();
-        else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, "Saved game written"); }
-        else if (s == 2) { menu_ask = ASK_RESTORE; snprintf(menu_msg, sizeof menu_msg, "Enter restores everything, Esc cancels"); }
-        else { menu_ask = ASK_QUIT; snprintf(menu_msg, sizeof menu_msg, "Enter quits the game, Esc cancels"); }
+        else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, tr("Saved game written")); }
+        else if (s == 2) { menu_ask = ASK_RESTORE; snprintf(menu_msg, sizeof menu_msg, tr("Enter restores everything, Esc cancels")); }
+        else { menu_ask = ASK_QUIT; snprintf(menu_msg, sizeof menu_msg, tr("Enter quits the game, Esc cancels")); }
         break;
     }
 }
@@ -602,7 +604,7 @@ static void menu_assign(int dev, int code) {
         int o = bind_find(binds, nbinds, dev, code);
         menu_pending.dev = dev; menu_pending.code = code; menu_pending.player = menu_player; menu_pending.button = mask;
         menu_confirm = 1;
-        snprintf(menu_msg, sizeof menu_msg, "Used by P%d %s: Enter replaces, Esc cancels", binds[o].player + 1, button_name((uint16_t)binds[o].button));
+        snprintf(menu_msg, sizeof menu_msg, tr("Used by P%d %s: Enter replaces, Esc cancels"), binds[o].player + 1, button_name((uint16_t)binds[o].button));
     } else {
         menu_capture = -1;
         menu_msg[0] = 0;
@@ -618,6 +620,7 @@ static void menu_move(int d) {
 /* A key pressed while the menu is open, or while the menu is being opened (F1). */
 static void menu_key(SDL_Scancode sc) {
     menu_by_pad = 0;
+    menu_lang_sync();
     if (menu_confirm) {
         if (sc == SDL_SCANCODE_RETURN) {
             bind_assign(binds, &nbinds, MAX_BINDS, menu_pending.dev, menu_pending.code, menu_pending.player, menu_pending.button, 1);
@@ -704,10 +707,10 @@ static void menu_row(int i, int on, const char *label, int kind, const char *val
     char fit[96];
     if (on) cv_rect(&cv, ROW_X, y - 2, ROW_W, ROW_H - 1, 0x34489Cu);
     if (on) ui_cursor(&cv, ROW_X + 3 + bob, y);
-    text_draw(&cv, ROW_X + 16, y, label, on ? UI_GOLD : UI_TEXT, 1);
+    text_draw(&cv, ROW_X + 16, y, tr(label), on ? UI_GOLD : UI_TEXT, 1);
     if (kind == 1) {
         int left = VAL_R - VAL_W - 4;
-        text_fit(fit, sizeof fit, value, VAL_W - 4);
+        text_fit(fit, sizeof fit, tr(value), VAL_W - 4);
         ui_arrow(&cv, left, y, -1, dimL ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
         text_center(&cv, left + 6, VAL_W - 4, y, fit, on ? UI_GOOD : UI_TEXT);
         ui_arrow(&cv, VAL_R - 4, y, 1, dimR ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
@@ -720,30 +723,42 @@ static void menu_row(int i, int on, const char *label, int kind, const char *val
     }
 }
 
+/* The menu is in Spanish when the game has an option `language` whose value is `es`. A notice written in the other
+ * language is dropped when it changes. */
+static void menu_lang_sync(void) {
+    int i, es = 0;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++)
+        if (!strcmp(snes_game_opts[i].key, "language") && !strcmp(snes_game_opts[i].names[gopt_eff[i]], "es")) es = 1;
+    if (es != ui_es) { ui_es = es; menu_msg[0] = 0; }
+}
+
 /* The value of an option as the menu shows it ("Off"/"On" for the yes-or-no ones). */
 static void opt_label(int opt, char *out, size_t n) {
     const OptDef *d = &opt_defs[opt];
     opt_format(d, cfg.eff.v[opt], out, n);
-    if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", cfg.eff.v[opt] ? "On" : "Off");
+    if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", tr(cfg.eff.v[opt] ? "On" : "Off"));
     else if (opt == O_SCANLINES) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
+    else if (d->names) { char w[32]; snprintf(w, sizeof w, "%s", out); snprintf(out, n, "%s", tr(w)); } /* the word as shown; the file keeps the English one */
 }
 
 /* The menu over the picture `fb`, into fb_menu. */
 static void menu_draw(const uint8_t *fb) {
     char val[96], line[96];
+    menu_lang_sync();
     int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab], extra, used = 0;
     const char *help;
     ui_backdrop(&cv, fb);
     ui_panel(&cv, PX, PY, PW, PH);
-    for (t = 0; t < TAB_COUNT; t++) used += text_w(tab_names[t]) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
+    for (t = 0; t < TAB_COUNT; t++) used += text_w(tr(tab_names[t])) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
     extra = (ROW_W - 8 - used + 3) / TAB_COUNT;
-    text_draw2x(&cv, PX + (PW - text_w2x("OPTIONS")) / 2, PY + 7, "OPTIONS", UI_GOLD, UI_SHADOW);
+    text_draw2x(&cv, PX + (PW - text_w2x(tr("OPTIONS"))) / 2, PY + 7, tr("OPTIONS"), UI_GOLD, UI_SHADOW);
     ui_rule(&cv, PX + 10, PY + 25, PW - 20);
     for (t = 0, x = ROW_X + 4; t < TAB_COUNT; t++) {
-        int on = t == menu_tab, w = text_w(tab_names[t]) + 12 + extra;
+        int on = t == menu_tab, w = text_w(tr(tab_names[t])) + 12 + extra;
         if (on) { cv_rect(&cv, x, PY + 30, w, 13, 0x4A64C8u); cv_rect(&cv, x, PY + 30, w, 1, 0xE8ECFAu); }
         else cv_rect(&cv, x, PY + 33, w, 10, 0x141C50u);
-        text_center(&cv, x, w, PY + (on ? 33 : 34), tab_names[t], on ? UI_GOLD : UI_DIM);
+        text_center(&cv, x, w, PY + (on ? 33 : 34), tr(tab_names[t]), on ? UI_GOLD : UI_DIM);
         x += w + 3;
     }
     for (i = 0; i < n; i++) {
@@ -764,7 +779,7 @@ static void menu_draw(const uint8_t *fb) {
             else menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0);
             break;
         case TAB_CONTROLS:
-            if (i == 0) { snprintf(val, sizeof val, "Player %d", menu_player + 1); menu_row(i, on, "Controls of", 1, val, 0, 0, 0); }
+            if (i == 0) { snprintf(val, sizeof val, tr("Player %d"), menu_player + 1); menu_row(i, on, "Controls of", 1, val, 0, 0, 0); }
             else {
                 bind_text(val, sizeof val, menu_player, 0x8000 >> (i - 1));
                 menu_row(i, on, btn_names[i - 1], 3, menu_capture == i - 1 ? "..." : val, 0, 0, 0);
@@ -782,9 +797,9 @@ static void menu_draw(const uint8_t *fb) {
     }
     if (menu_msg[0]) { text_fit(line, sizeof line, menu_msg, PW - 24); text_center(&cv, PX, PW, PY + PH - 26, line, UI_WARN); }
     ui_rule(&cv, PX + 10, PY + PH - 17, PW - 20);
-    help = menu_capture >= 0 ? "Press the key or button   Esc: cancel"
+    help = tr(menu_capture >= 0 ? "Press the key or button   Esc: cancel"
          : menu_by_pad ? "L/R: tabs   A: select   B: close"
-         : "Q/W: tabs   Enter: select   Esc: close";
+         : "Q/W: tabs   Enter: select   Esc: close");
     text_center(&cv, PX, PW, PY + PH - 13, help, UI_DIM);
     menu_tick++;
 }

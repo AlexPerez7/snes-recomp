@@ -97,6 +97,7 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         codegen::PLAY_RUNTIME,
         codegen::PLAY_CFG,
         codegen::PLAY_UI,
+        codegen::PLAY_I18N,
         include_str!("codegen.rs"),
         include_str!("discover.rs"),
         include_str!("graph.rs"),

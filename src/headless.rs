@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -123,6 +123,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()),
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
+        ("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
@@ -174,6 +175,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         files.push(("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()));
         files.push(("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()));
         files.push(("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()));
+        files.push(("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()));
     } else {
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));
     }
@@ -3136,4 +3138,153 @@ fn the_c_code_of_a_game_moves_a_sprite_into_the_extra_columns_on_the_right() {
     assert_eq!(without.rgb(e + 256, 21), rgb(RED));
     assert_eq!(without.rgb(e + 44, 41), rgb(RED));
     assert_eq!(with.rgb(e + 44, 41), rgb(RED));
+}
+
+/// The C program that checks the Spanish letters of the font, the UTF-8 reading and that every string of the Spanish
+/// table fits the place it is drawn in (the numbers are the layout of `menu_draw` in `runtime/play.c`).
+const PLAY_I18N_TEST: &str = r##"
+#include "play_ui.h"
+#include "play_i18n.h"
+#define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+#define W 64
+#define H 40
+#define GUARD 256
+
+static int guards_ok(const uint8_t *buf, size_t n) {
+    size_t i;
+    for (i = 0; i < GUARD; i++) if (buf[i] != 0xA5 || buf[GUARD + n + i] != 0xA5) return 0;
+    return 1;
+}
+
+/* every character of `s` is a real one (a '?' is only accepted where the text has one) */
+static int valid_utf8(const char *s) {
+    while (*s) { const char *p = s; if (utf8_next(&p) == '?' && *s != '?') return 0; s = p; }
+    return 1;
+}
+
+typedef struct { const char *what; int max; const char *items[24]; } Group;
+
+int main(void) {
+    static uint8_t mem[GUARD + W * H * 3 + GUARD];
+    Canvas c; int i, j, lo, hi, x, y;
+    static const char *const spanish = "áéíóúüñÁÉÍÓÚÜÑ¿¡";
+    char out[64]; const char *p;
+    memset(mem, 0xA5, sizeof mem);
+    memset(mem + GUARD, 0, W * H * 3);
+    c.px = mem + GUARD; c.w = W; c.h = H;
+
+    /* reading UTF-8: a two-byte letter is one character, a bad byte is one '?' */
+    p = "ñ"; CHECK(utf8_next(&p) == 0xF1 && *p == 0);
+    p = "A"; CHECK(utf8_next(&p) == 'A');
+    p = "\x80x"; CHECK(utf8_next(&p) == '?' && *p == 'x');
+    p = "\xC3"; CHECK(utf8_next(&p) == '?' && *p == 0);
+    p = "\xC3x"; CHECK(utf8_next(&p) == '?' && *p == 'x');
+    CHECK(text_w("\x80") == text_w("?") && text_w("a\xC3") == text_w("a?"));
+
+    /* every Spanish letter has ink and moves the pen; the accent adds no width */
+    for (p = spanish; *p; ) {
+        int cp = utf8_next(&p);
+        glyph_ink(cp, &lo, &hi);
+        CHECK(hi >= lo && hi - lo + 1 <= 6 && glyph_adv(cp) >= 2);
+    }
+    CHECK(text_w("Año") == glyph_adv('A') + glyph_adv(0xF1) + glyph_adv('o'));
+    CHECK(text_w("ó") == text_w("o") && text_w("Ñ") == text_w("N"));
+
+    /* a lowercase accent stays inside the row; a capital's goes two rows above it */
+    memset(c.px, 0, W * H * 3);
+    text_draw(&c, 4, 10, "áéíóúüñ", UI_TEXT, 1);
+    for (y = 0; y < 10; y++) for (x = 0; x < W; x++) CHECK(!c.px[(y * W + x) * 3]);
+    memset(c.px, 0, W * H * 3);
+    text_draw(&c, 4, 10, "ÁÉÍÓÚÜÑ", UI_TEXT, 0);
+    for (y = 0; y < 8; y++) for (x = 0; x < W; x++) CHECK(!c.px[(y * W + x) * 3]);
+    { int any = 0; for (x = 0; x < W; x++) any |= c.px[(8 * W + x) * 3] != 0; CHECK(any); }
+    /* nothing leaves the canvas */
+    for (i = -40; i < 80; i += 7) {
+        text_draw(&c, i, i / 2, "¿Qué? ¡Sí! Ñandú", UI_TEXT, 1);
+        text_draw2x(&c, i, 3 - i, "Español", UI_GOLD, UI_SHADOW);
+    }
+    CHECK(guards_ok(mem, W * H * 3));
+
+    /* the cut of the fit never falls inside a letter */
+    for (i = 8; i < 60; i += 3) {
+        text_fit(out, sizeof out, "Dispositivo de salida: Altavoces áéíóú ñandú", i);
+        CHECK(valid_utf8(out) && (i < 14 || text_w(out) <= i));
+    }
+    text_fit(out, 9, "ñññññññññññ", 1000); CHECK(valid_utf8(out) && strlen(out) < 9);
+
+    /* the table: translated, and every string fits its place */
+    ui_es = 0; CHECK(!strcmp(tr("Quit"), "Quit"));
+    ui_es = 1; CHECK(!strcmp(tr("Quit"), "Salir") && !strcmp(tr("not in the table"), "not in the table"));
+    {
+        enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
+        static const Group groups[] = {
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Volume", "Output device", "Controls of", "Language"}},
+            {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit"}},
+            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "Player %d"}},
+            {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
+            {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
+            {"title", 120, {"OPTIONS"}},
+        };
+        static const char *const tabs[] = {"Image", "Audio", "Controls", "Game"};
+        char line[128];
+        int used = 0, checked = 0, g, bad = 0;
+        for (g = 0; g < (int)(sizeof groups / sizeof groups[0]); g++)
+            for (j = 0; groups[g].items[j]; j++) {
+                const char *es = tr(groups[g].items[j]);
+                int w;
+                CHECK(valid_utf8(es));
+                /* the notice about a key in use is measured with a player and a button filled in */
+                if (strstr(es, "%d") && strstr(es, "%s")) { snprintf(line, sizeof line, es, 2, "SELECT"); es = line; }
+                else if (strstr(es, "%d")) { snprintf(line, sizeof line, es, 2); es = line; }
+                w = g == 5 ? text_w2x(es) : text_w(es);
+                if (w > groups[g].max) { printf("too wide (%s, %d > %d): %s\n", groups[g].what, w, groups[g].max, es); return 1; }
+                checked++;
+            }
+        /* the four tabs share the width of the row */
+        for (i = 0; i < 4; i++) { used += text_w(tr(tabs[i])) + 12 + 3; checked++; }
+        if (used - 3 > ROW_W - 8) { printf("tabs too wide: %d\n", used - 3); return 1; }
+        /* every string of the table was checked in one of the groups (the tabs are checked above) */
+        CHECK(checked == I18N_COUNT);
+        if (bad) return 1;
+    }
+    printf("ok\n");
+    return 0;
+}
+"##;
+
+#[test]
+fn the_spanish_letters_the_utf8_reading_and_the_spanish_strings_fit() {
+    let cc = crate::need_compiler!();
+    match cc.compile_run("play-i18n", &[("play_ui.h", PLAY_UI), ("play_i18n.h", PLAY_I18N), ("t.c", PLAY_I18N_TEST)], &[]) {
+        Ok(out) => assert!(out.trim_end().ends_with("ok"), "{out}"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn the_menu_follows_the_language_option_of_the_game_and_the_config_file_stays_in_english() {
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let open = "F1,W,W,W";
+    let Some(en) = shot("lang-en", b"game.language = en\n", open) else { return };
+    let Some(es) = shot("lang-es", b"game.language = es\n", open) else { return };
+    assert!(hash(&en.out).is_some() && hash(&es.out).is_some() && hash(&en.out) != hash(&es.out), "{}\n{}", en.out, es.out);
+    // changing the language in the Game tab redraws the menu in the other one at once: the picture of opening it in es
+    // (the cursor is on the same row in both, so the pictures can be equal)
+    let Some(live) = shot("lang-live", b"game.language = en\n", "F1,W,W,W,Right") else { return };
+    assert_eq!(hash(&live.out), hash(&es.out), "{}\n{}", live.out, es.out);
+    // a value chosen with the menu in Spanish is written in English (the file only has the English words)
+    let Some(r) = shot("lang-file", b"game.language = es\nfilter = nearest\n", "F1,Down,Down,Down,Down,Right,Escape") else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = sharp") || l.contains(&"filter = bilinear"), "{}", r.out);
+    assert!(!l.iter().any(|x| x.contains("cercano") || x.contains("nítido") || x.contains("bilineal")), "{}", r.out);
+    // the same file prints the same with both languages
+    let cfg = |r: &Run| r.out.lines().filter(|l| !l.starts_with("menu-shot")).map(str::to_string).collect::<Vec<_>>();
+    let Some(a) = shot("lang-cfg-en", b"filter = bilinear\ngame.language = en\n", "F1,Escape") else { return };
+    let Some(b) = shot("lang-cfg-es", b"filter = bilinear\ngame.language = es\n", "F1,Escape") else { return };
+    let strip = |v: Vec<String>| v.into_iter().filter(|l| !l.contains("language") && !l.contains("$2105") && !l.contains("game_opt")).collect::<Vec<_>>();
+    assert_eq!(strip(cfg(&a)), strip(cfg(&b)), "{}\n{}", a.out, b.out);
 }
