@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -125,6 +125,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
         ("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()),
+        ("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
@@ -162,7 +163,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
     let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
     let d = discover(&rom_obj, &cfg, &r);
     let g = Graph::build(&d, roots);
-    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).generate_all();
+    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).with_resume(cfg.resume).unwrap().generate_all();
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
@@ -179,6 +180,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         files.push(("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()));
         files.push(("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()));
         files.push(("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()));
+        files.push(("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()));
     } else {
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));
     }
@@ -192,6 +194,40 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
             Run { code, out: e }
         }
     })
+}
+
+/// LDA #0 ; STA $10 ; then, at 00:8004 (the block of the loop), INC $10 ; JMP $8004: a counter in WRAM that moves every block.
+const COUNTER_ROM: [(u32, &[u8]); 1] = [(0x8000, &[0xA9, 0x00, 0x85, 0x10, 0xE6, 0x10, 0x4C, 0x04, 0x80])];
+const RESUME_CFG: &str = "[resume]\naddr=\"00:8004\"";
+
+fn run_states(name: &str, extra_args: &[&str]) -> Option<Run> {
+    let mut args = vec!["rom.sfc", "--no-window", "--frame-blocks", "50", "--hash-wram"];
+    args.extend(extra_args);
+    run_hooked_with(name, true, &COUNTER_ROM, &[0x8000], RESUME_CFG, "", &args, &[])
+}
+
+fn wram_hash(r: &Run) -> String {
+    r.out.lines().find_map(|l| l.strip_prefix("wram: ")).unwrap_or_else(|| panic!("no wram hash: {}", r.out)).to_string()
+}
+
+#[test]
+fn a_state_saved_in_the_main_loop_comes_back_exactly_and_the_rewind_goes_back() {
+    // Save at frame 2 and stop at 6: the memory four frames after the state. Save at 2, load at 6 and stop at 10: the same four.
+    let Some(a) = run_states("states-save", &["--frames", "6", "--state-script", "save@2"]) else { return };
+    assert!(a.out.contains("State saved (slot 1)"), "{}", a.out);
+    let Some(r) = run_states("states-both", &["--frames", "10", "--state-script", "save@2,load@6"]) else { return };
+    assert!(r.out.contains("State saved (slot 1)") && r.out.contains("State loaded (slot 1)"), "{}", r.out);
+    assert_eq!(wram_hash(&a), wram_hash(&r), "the memory after save + 4 frames and after load + 4 frames");
+    // without the load the memory is that of ten frames
+    let Some(c) = run_states("states-none", &["--frames", "10"]) else { return };
+    assert_ne!(wram_hash(&c), wram_hash(&r), "{}", c.out);
+    // an empty slot says so and a slot change is announced
+    let Some(e) = run_states("states-empty", &["--frames", "6", "--state-script", "slot+@2,load@3"]) else { return };
+    assert!(e.out.contains("Slot 2 (") && e.out.contains("Slot 2 is empty"), "{}", e.out);
+    // the rewind: captures every 4 frames, then it steps back and the ring differences check out
+    let Some(w) = run_states("states-rewind", &["--frames", "40", "--state-script", "rewind@30-36"]) else { return };
+    assert!(w.out.contains("rewind step"), "{}", w.out);
+    assert!(!w.out.contains("does not give back"), "{}", w.out);
 }
 
 /// LDA #$05 ; STA $10 ; JSR $8100 ; BRA to itself    and at 00:8100 an RTS.
@@ -3236,6 +3272,7 @@ int main(void) {
             {"title", 120, {"OPTIONS"}},
             {"button of the Controls tab", 66, {"Up", "Down", "Left", "Right"}},
             {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
+            {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "an interrupt is running", "the game is switching execution contexts", "another execution context is running", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},
         };
         static const char *const tabs[] = {"Image", "Audio", "Controls", "Game"};
         char line[128];

@@ -21,6 +21,7 @@
  *
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
  * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
+ * F5 = save a state, F7 = load it, F3/F4 = previous/next slot (1 to 9), Backspace held = rewind (games with a [resume] point; see play_state.h),
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
@@ -936,18 +937,27 @@ static void menu_compose(void) {
     }
 }
 
+#include "play_state.h"
+
 /* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and then
  * drawn into fb_show, so the picture itself is never touched), or the menu over it. Sets show_w to its width. */
 static const uint8_t *shown_frame(void) {
     char t[24];
     show_w = fb_front_w;
     if (menu_open) { menu_compose(); return fb_show; }
-    if (!cfg.eff.v[O_FPS]) return fb_front;
+    if (!cfg.eff.v[O_FPS] && st_toast_left <= 0) return fb_front;
     memcpy(fb_show, fb_front, (size_t)SCREEN_H * show_w * 3);
-    snprintf(t, sizeof t, "%d FPS", fps_val);
     {
         Canvas cw = {fb_show, show_w, SCREEN_H};
-        text_draw(&cw, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+        if (cfg.eff.v[O_FPS]) {
+            snprintf(t, sizeof t, "%d FPS", fps_val);
+            text_draw(&cw, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+        }
+        if (st_toast_left > 0) {
+            int y = SCREEN_H - 12 - cfg.eff.v[O_OVERSCAN];
+            text_draw(&cw, 4, y, st_toast, UI_GOLD, 1);
+            if (st_toast2[0]) text_draw(&cw, 4, y - 10, st_toast2, UI_GOLD, 1);
+        }
     }
     return fb_show;
 }
@@ -986,6 +996,10 @@ static void handle_events(void) {
             case SDL_SCANCODE_P: paused = !paused; break;
             case SDL_SCANCODE_F2: ff_toggle = !ff_toggle; break;
             case SDL_SCANCODE_F10: save_picture(); break;
+            case SDL_SCANCODE_F5: st_request(1); break;
+            case SDL_SCANCODE_F7: st_request(2); break;
+            case SDL_SCANCODE_F3: st_change_slot(-1); break;
+            case SDL_SCANCODE_F4: st_change_slot(1); break;
             case SDL_SCANCODE_F11:
                 config_user_set(&cfg, O_FULLSCREEN, !fullscreen);
                 set_fullscreen(!fullscreen);
@@ -1126,7 +1140,7 @@ static void flush_audio(void) {
     queued = SDL_GetQueuedAudioSize(adev);
     st_queued_sum += queued;
     if (queued == 0) st_underruns++;
-    if (fast || paused || menu_open) SDL_ClearQueuedAudio(adev);
+    if (fast || paused || menu_open || st_rewound) SDL_ClearQueuedAudio(adev);
     else if (queued < 5 * 533 * 4) SDL_QueueAudio(adev, afr, (Uint32)nafr * 4);
     else st_dropped++;
     nafr = 0;
@@ -1167,6 +1181,12 @@ static int menu_shot_page;
 static void play_frame(void) {
     if (++srm_frames >= 60) { srm_frames = 0; srm_save(); }
     fps_tick();
+    {
+        int rew = play_state_script();
+        if (!opt_no_window && SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]) rew = 1;
+        play_state_tick(rew, !opt_no_window && (paused || menu_open));
+        if (st_toast_left > 0) st_toast_left--;
+    }
     if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
     if (menu_shot_path && frames + 1 >= max_frames) {
         menu_open = 1;
@@ -1299,6 +1319,8 @@ int main(int argc, char **argv) {
             if (bad) break;
         }
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) { if (!parse_press(argv[++i])) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--hash-wram")) st_hash_wram = 1;
+        else if (!strcmp(argv[i], "--state-script") && i + 1 < argc) { if (!parse_state_keys(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) { int m = parse_buttons(argv[++i]); if (m < 0) { bad = 1; break; } held |= (uint16_t)m; }
         else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) { if (!parse_game_opt(argv[++i])) { bad = 1; break; } }
@@ -1310,7 +1332,8 @@ int main(int argc, char **argv) {
     if (bad || !path || max_frames == 0 || frame_len == 0 || (cli_scale && opt_scale < 1)) {
         fprintf(stderr, "usage: %s [<rom>] [--scale N] [--fullscreen] [--no-window] [--frames N] [--screenshot FILE]\n"
                         "       [--wav FILE] [--frame-blocks N] [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n"
-                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--game-dir DIR] [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n", argv[0]);
+                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--game-dir DIR] [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n"
+                        "       [--state-script save@N,load@N,slot+@N,rewind@A-B,...]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
@@ -1320,6 +1343,9 @@ int main(int argc, char **argv) {
     config_load(path);
     ppu_set_wide(cfg.eff.v[O_WIDE]);
     srm_load(path);
+    play_state_init(path);
+    st_echo = opt_no_window;
+    if (st_hash_wram) atexit(st_print_hash);
     if (opt_print_keys) {
         for (i = 0; i < nbinds; i++)
             if (binds[i].dev == BIND_KEY && binds[i].player == 0) printf("%s = %s\n", SDL_GetScancodeName((SDL_Scancode)binds[i].code), button_name((uint16_t)binds[i].button));

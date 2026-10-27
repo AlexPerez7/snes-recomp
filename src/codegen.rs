@@ -28,6 +28,8 @@ pub const PLAY_UI: &str = include_str!("../runtime/play_ui.h");
 
 /// The text of the menu in Spanish and `tr()`: `play/play_i18n.h` written by `codegen --all`.
 pub const PLAY_I18N: &str = include_str!("../runtime/play_i18n.h");
+/// Save states in the interactive frontend (slots, rewind, notices): `play/play_state.h` written by `codegen --all`.
+pub const PLAY_STATE: &str = include_str!("../runtime/play_state.h");
 
 /// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
 pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");

@@ -94,6 +94,7 @@ static int state_req;                /* 0 none, 1 save, 2 load */
 static uint8_t *state_data;          /* the state to load, or the one just saved (malloc) */
 static size_t state_len;
 static int state_result;
+static int state_seen; /* rt_resume has run: the game has a resume point */
 static const char *state_msg = "";
 
 /* Frees the state held in state_data. */

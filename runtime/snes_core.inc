@@ -1016,6 +1016,7 @@ static void state_script_poll(void) {
 }
 
 void rt_resume(Cpu *c) {
+    state_seen = 1;
     if (!state_req) return;
     state_service(c);
     if (st_script && !state_req) state_script_finish();
