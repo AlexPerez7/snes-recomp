@@ -344,7 +344,7 @@ static int play_input_label(uint16_t mask, char *out, size_t n) {
                 SDL_GameControllerType t = SDL_GameControllerGetType(pads[0]);
                 static const char *const face[4] = {"A", "B", "X", "Y"}; /* SDL_CONTROLLER_BUTTON_A, B, X, Y in this order */
                 name = face[binds[i].code - SDL_CONTROLLER_BUTTON_A];
-                kind = t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5 ? 2 : 3;
+                kind = t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5 ? 3 : 2;
             } else {
                 name = pad_label(binds[i].code);
             }
