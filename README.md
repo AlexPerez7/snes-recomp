@@ -38,6 +38,7 @@ ROM ──► carga y cabecera ──► descubrimiento de código ──► gra
 | Frontal interactivo (SDL2) | hecho: ventana, pantalla completa, teclado y mandos, audio, `.srm` |
 | Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32, MSVC/gcc/clang o TinyCC descargado con consentimiento |
 | Opciones de port (menú F1, `config.ini`, filtros) | hecho |
+| Estados guardados y rebobinado (`[resume]` del perfil) | hecho: F5/F7, 9 ranuras `.sst`, Retroceso; cambio `savestates` con pruebas por cerrar (ver `openspec/changes/savestates/tasks.md`) |
 | Perfiles de juego (entradas, tablas, ganchos y C propio) | hecho: viven en el repositorio de cada juego |
 | Pantalla ancha (`wide`, hasta 96 px por lado) | hecho en el motor, con API para el C del juego; el relleno específico de ALttP (franjas negras donde no hay mapa) está en curso en el cambio `alttp-wide-fill` y la precarga real del exterior queda como trabajo futuro |
 
