@@ -141,6 +141,7 @@ extern "system" {
     fn SetWindowTextW(h: Hwnd, text: *const u16) -> i32;
     fn DestroyWindow(h: Hwnd) -> i32;
     fn LoadCursorW(inst: isize, name: usize) -> isize;
+    fn LoadIconW(inst: isize, name: usize) -> isize;
     fn AdjustWindowRect(r: *mut Rect, style: u32, menu: i32) -> i32;
     fn GetSystemMetrics(i: i32) -> i32;
     fn SetForegroundWindow(h: Hwnd) -> i32;
@@ -553,7 +554,7 @@ fn window_thread(first: Screen, ready: mpsc::Sender<()>) {
             cls_extra: 0,
             wnd_extra: 0,
             instance: inst,
-            icon: 0,
+            icon: LoadIconW(inst, 1), // the icon of the program (resource 1, see build.rs)
             cursor: LoadCursorW(0, IDC_ARROW),
             background: COLOR_WINDOW + 1,
             menu: std::ptr::null(),

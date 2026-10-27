@@ -100,6 +100,7 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         codegen::PLAY_CFG,
         codegen::PLAY_UI,
         codegen::PLAY_I18N,
+        codegen::PLAY_ICON,
         codegen::PLAY_STATE,
         include_str!("codegen.rs"),
         include_str!("discover.rs"),
