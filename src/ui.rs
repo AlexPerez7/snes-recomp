@@ -4,6 +4,27 @@
 
 use std::path::{Path, PathBuf};
 
+/// What is said when there is no C compiler and a portable one could be downloaded.
+pub struct DownloadNotice {
+    pub name: String,
+    pub kib: u64,
+    pub url: String,
+    pub dir: PathBuf,
+}
+
+impl DownloadNotice {
+    /// The sentence the console prints: what, from where, where it is kept and that nothing of the ROM is sent.
+    pub fn text(&self) -> String {
+        format!(
+            "{} ({} KiB) can be downloaded from {} and kept in {}. Nothing about your ROM is sent; it is the only download.",
+            self.name,
+            self.kib,
+            self.url,
+            self.dir.display()
+        )
+    }
+}
+
 pub trait Ui {
     /// Something the program is doing or a warning that does not stop it.
     fn status(&self, text: &str);
@@ -13,6 +34,15 @@ pub trait Ui {
     fn confirm(&self, question: &str) -> bool;
     /// Lets the person choose a ROM, starting in `start_dir` (empty if unknown); `None` if they give up.
     fn ask_rom(&self, start_dir: &Path) -> Option<PathBuf>;
+    /// Tells that there is no compiler and asks whether to download the portable one. The console says it in two lines
+    /// and asks; the launcher window says it in its language.
+    fn offer_download(&self, notice: &DownloadNotice) -> bool {
+        self.status("No C compiler found on this machine.");
+        self.status(&notice.text());
+        self.confirm("Download it now?")
+    }
+    /// The game is about to start (and the program waits for it to end): the launcher window gets out of the way.
+    fn launching(&self) {}
 }
 
 /// The terminal: messages to stderr, answers from stdin and the ROM from the Windows file dialog.
