@@ -41,6 +41,8 @@
  */
 #include "snes_core.inc"
 
+void snes_set_window_icon(const unsigned *argb, int w, int h) { (void)argb; (void)w; (void)h; } /* no window */
+
 /* ---- Entry point ---- */
 
 int main(int argc, char **argv) {

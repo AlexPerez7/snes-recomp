@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -125,6 +125,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
         ("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()),
+        ("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()),
         ("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
@@ -180,6 +181,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         files.push(("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()));
         files.push(("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()));
         files.push(("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()));
+        files.push(("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()));
         files.push(("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()));
     } else {
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));

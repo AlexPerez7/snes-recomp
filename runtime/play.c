@@ -46,6 +46,16 @@
 static int opt_no_window, opt_fullscreen, opt_scale;
 static int cli_fullscreen, cli_scale, cli_set[O_COUNT], cli_val[O_COUNT];
 static SDL_Window *win;
+
+#include "play_icon.h"
+void snes_set_window_icon(const unsigned *argb, int w, int h) {
+    SDL_Surface *s;
+    if (!win || !argb || w <= 0 || h <= 0) return;
+    s = SDL_CreateRGBSurfaceWithFormatFrom((void *)argb, w, h, 32, w * 4, SDL_PIXELFORMAT_ARGB8888);
+    if (!s) return;
+    SDL_SetWindowIcon(win, s); /* SDL copies it */
+    SDL_FreeSurface(s);
+}
 static SDL_Renderer *ren;
 static SDL_Texture *tex;
 static int paused, fast, ff_toggle, fullscreen, shot_n;
@@ -1247,6 +1257,7 @@ static int open_window(void) {
         fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
         return 0;
     }
+    snes_set_window_icon(play_icon, PLAY_ICON_SIZE, PLAY_ICON_SIZE);
     perf_freq = SDL_GetPerformanceFrequency();
     t_next = st_start = SDL_GetPerformanceCounter();
     if (opt_stats) atexit(print_stats);
