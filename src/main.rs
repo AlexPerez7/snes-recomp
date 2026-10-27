@@ -16,6 +16,7 @@ mod rom;
 #[cfg(test)]
 mod spctest;
 mod toolchain;
+mod ui;
 
 use config::{parse_addr, Config};
 use disasm::{fmt_addr, Flags};
