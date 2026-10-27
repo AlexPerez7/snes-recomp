@@ -152,7 +152,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let g = graph::Graph::build(&d, &root_addrs);
             if args.iter().any(|a| a == "--all") {
                 let dir = option_value(&args, "-o").ok_or("codegen --all needs -o <dir>")?;
-                let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.with_options(&cfg.options).generate_all();
+                let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.with_options(&cfg.options).with_resume(cfg.resume)?.generate_all();
                 let dir = PathBuf::from(dir);
                 write_full_rom(&out, &dir)?;
                 // the C code of the game (hooks) sits in <dir>/game, like in the builds of snes-port

@@ -56,6 +56,9 @@
 //! call = "my_hook"         # void my_hook(Cpu *c)
 //! ret = "rts"              # only with replace: how the function returns (rts or rtl)
 //!
+//! [resume]                 # where the runtime can save and load states: a block of the main loop, with the 65816 stack at its base
+//! addr = "00:8034"         # start of a block of the graph; the generator calls rt_resume(c) there
+//!
 //! [[option]]               # a setting of the game for the player: config.ini `game.<key> = <name>` and a row in the F1 menu
 //! key = "language"         # letters, digits or `_`, up to 31 characters; the C of the game reads it with game_opt("language", 0)
 //! label = "Language"       # the row of the menu
@@ -97,6 +100,13 @@ struct RawConfig {
     hook: Vec<RawHook>,
     #[serde(default)]
     option: Vec<RawOption>,
+    resume: Option<RawResume>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawResume {
+    addr: String,
 }
 
 #[derive(Deserialize)]
@@ -280,6 +290,8 @@ pub struct Config {
     pub game: Option<GameId>,
     pub hooks: Vec<Hook>,
     pub options: Vec<GameOption>,
+    /// The block of the main loop where the runtime may save and load states (`[resume]`).
+    pub resume: Option<u32>,
 }
 
 fn width(v: Option<u8>, what: &str) -> Result<bool, String> {
@@ -400,6 +412,10 @@ impl Config {
             cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret });
         }
 
+        if let Some(r) = raw.resume {
+            cfg.resume = Some(parse_addr(&r.addr)?);
+        }
+
         for o in raw.option {
             let key = &o.key;
             if key.is_empty() || key.len() > MAX_OPTION_KEY || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -509,6 +525,18 @@ addr=\"00:8781\"").is_err());
         let cfg = Config::parse(&game.profile.config).unwrap();
         assert!(!cfg.entries.is_empty());
         assert_eq!(cfg.game.as_ref().map(|g| g.crc32), Some(game.profile.crc32));
+    }
+
+    #[test]
+    fn parses_resume() {
+        assert_eq!(Config::parse("").unwrap().resume, None);
+        assert_eq!(Config::parse("[resume]
+addr = \"00:8034\"").unwrap().resume, Some(0x8034));
+        assert!(Config::parse("[resume]
+addr = \"zz\"").is_err());
+        assert!(Config::parse("[resume]
+addr = \"00:8034\"
+foo = 1").is_err());
     }
 
     #[test]

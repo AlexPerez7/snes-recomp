@@ -98,6 +98,10 @@ void rt_brk(Cpu *c);
 void rt_cop(Cpu *c);
 void rt_wdm(Cpu *c);
 
+/* The block the profile names in [resume] starts with a call to this, right after rt_tick: the main loop of the game, with
+ * the 65816 stack at its base and no interrupt running. It is the one place where the runtime saves and loads states. */
+void rt_resume(Cpu *c);
+
 /* Every block starts with rt_tick: a hook where the runtime can account for time and deliver
  * interrupts. Without SNES_RT_TICK it costs nothing; with it, the runtime provides rt_poll. */
 #ifdef SNES_RT_TICK

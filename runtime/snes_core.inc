@@ -934,6 +934,10 @@ void rt_poll(Cpu *c) {
     if (frames >= max_frames && !in_nmi) stop(0, "frames reached");
 }
 
+void rt_resume(Cpu *c) {
+    (void)c; /* save and load states: not yet */
+}
+
 void rt_wai(Cpu *c) {
     spc_advance(frame_len - 1 - tick_in_frame);
     tick_in_frame = frame_len - 1;

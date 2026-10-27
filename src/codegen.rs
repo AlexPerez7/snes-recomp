@@ -322,6 +322,8 @@ pub struct Emitter<'a> {
     /// Calls to C functions of the game, by the entry of the function they hook.
     hooks: BTreeMap<u32, Vec<Hook>>,
     options: Vec<GameOption>,
+    /// The block where the runtime may save and load states: it starts with a call to rt_resume.
+    resume: Option<u32>,
 }
 
 /// A function body under construction: the blocks it owns and what it refers to.
@@ -355,7 +357,18 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g, hooks: BTreeMap::new(), options: Vec::new() }
+        Emitter { d, g, hooks: BTreeMap::new(), options: Vec::new(), resume: None }
+    }
+
+    /// Marks the block at `addr` as the resume point of the profile (`[resume]`): it must be the start of a block of the graph.
+    pub fn with_resume(mut self, addr: Option<u32>) -> Result<Self, String> {
+        if let Some(a) = addr {
+            if !self.g.blocks.contains_key(&a) {
+                return Err(format!("[resume]: {} is not the start of a block", fmt_addr(a)));
+            }
+        }
+        self.resume = addr;
+        Ok(self)
     }
 
     /// Hooks the functions of the game's profile: a hook runs `before` the body of the function at `addr`, `after` it
@@ -541,6 +554,9 @@ impl<'a> Emitter<'a> {
             v.cur = (block.end(), *widths.last().expect("a block has at least one instruction"));
         }
         let mut out = vec!["rt_tick(c);".to_string(), format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
+        if self.resume == Some(block.start) {
+            out.push("rt_resume(c);".to_string());
+        }
         let dispatch: Vec<u32> = block
             .succs
             .iter()
@@ -1454,6 +1470,27 @@ exit=\"00:820F\"";
         let b = body(&out, "f_00_8000");
         assert_eq!(b.last().unwrap(), "return;");
         assert_eq!(b.iter().filter(|l| l.starts_with("// ")).count(), 1, "the table bytes are not instructions");
+    }
+
+    #[test]
+    fn the_resume_block_calls_rt_resume_after_the_tick_and_no_other_does() {
+        // 8000: BNE $8003 ; 8002: NOP ; 8003: RTS  (three blocks)
+        let rom = test_rom(&[(0x8000, &[0xD0, 0x01, 0xEA, 0x60])]);
+        let cfg = crate::config::Config::parse("").unwrap();
+        let r = vec![(0x8000, Flags::RESET)];
+        let d = crate::discover::discover(&rom, &cfg, &r);
+        let g = Graph::build(&d, &[0x8000]);
+        let out = Emitter::new(&d, &g).with_resume(Some(0x8003)).unwrap().generate(0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert_eq!(b.iter().filter(|l| *l == "rt_resume(c);").count(), 1, "{b:?}");
+        let i = b.iter().position(|l| l == "rt_resume(c);").unwrap();
+        assert!(b[i - 1].starts_with("rt_check_flags(") && b[i - 2] == "rt_tick(c);", "{b:?}");
+        // Without [resume] nothing changes.
+        let plain = Emitter::new(&d, &g).generate(0x8000, 0).unwrap();
+        assert!(!plain.contains("rt_resume"));
+        // An address that is not the start of a block is an error that names it.
+        let err = Emitter::new(&d, &g).with_resume(Some(0x8001)).err().unwrap();
+        assert!(err.contains("[resume]") && err.contains("00:8001"), "{err}");
     }
 
     #[test]
