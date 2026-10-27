@@ -32,6 +32,17 @@ static const I18n i18n_table[] = {
     {"Used by P%d %s: Enter replaces, Esc cancels", "J%d usa %s: Intro cambia"},
     {"Enter restores everything, Esc cancels", "Intro restaura todo, Esc cancela"},
     {"Enter quits the game, Esc cancels", "Intro cierra el juego, Esc cancela"},
+    /* save states */
+    {"State saved (slot %d)", "Estado guardado (ranura %d)"}, {"State loaded (slot %d)", "Estado cargado (ranura %d)"},
+    {"Slot %d", "Ranura %d"}, {"Slot %d is empty", "La ranura %d está vacía"}, {"Cannot save", "No se puede guardar"},
+    {"Cannot load", "No se puede cargar"}, {"Cannot read the state", "No se puede leer el estado"},
+    {"Cannot write the state", "No se puede escribir el estado"},
+    {"Save states are not available in this game", "Este juego no admite estados"},
+    {"an interrupt is running", "hay una interrupción en curso"},
+    {"the game is switching execution contexts", "el juego cambia de contexto"},
+    {"another execution context is running", "corre otro contexto"},
+    {"not a state of this version", "estado de otra versión"}, {"state of another game", "estado de otro juego"},
+    {"state taken at another stack depth", "estado tomado en otro punto"}, {"out of memory", "sin memoria"},
     /* the help line */
     {"L/R: tabs   A: select   B: close", "L/R: pestañas  A: ok  B: salir"},
     {"Press the key or button   Esc: cancel", "Pulsa tecla o botón   Esc: cancelar"},

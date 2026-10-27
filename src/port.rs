@@ -99,6 +99,7 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         codegen::PLAY_CFG,
         codegen::PLAY_UI,
         codegen::PLAY_I18N,
+        codegen::PLAY_STATE,
         include_str!("codegen.rs"),
         include_str!("discover.rs"),
         include_str!("graph.rs"),
@@ -477,10 +478,30 @@ pub fn find_rom_bytes(rom: &[u8], dir: &Path) -> Option<PathBuf> {
 
 /// `snes-recomp scan`: fails, naming the file, when anything under `dir` holds bytes of the ROM (before publishing).
 pub fn scan(rom: &[u8], dir: &Path) -> Result<(), String> {
+    if let Some(f) = find_state_file(dir) {
+        return Err(format!("{}: a save state (.sst) holds the memory of the game and is never published", f.display()));
+    }
     match find_rom_bytes_at(rom, dir) {
         Some((file, at, r)) => Err(format!("{}: bytes of the ROM (file offset {at}, ROM offset {r:#X})", file.display())),
         None => Ok(()),
     }
+}
+
+/// The first save state (`*.sst`) under `dir`.
+fn find_state_file(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "sst") {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Like `find_rom_bytes`, also saying where: (file, offset in the file, offset in the ROM).
@@ -918,6 +939,10 @@ mod tests {
         std::fs::write(dir.join("t.c"), format!("const unsigned char t[] = {{ {hex} }};")).unwrap();
         let e = scan(&rom, &dir).unwrap_err();
         assert!(e.contains("t.c"), "{e}");
+        std::fs::remove_file(dir.join("t.c")).unwrap();
+        std::fs::write(dir.join("game.s1.sst"), b"not a byte of the ROM").unwrap();
+        let e = scan(&rom, &dir).unwrap_err();
+        assert!(e.contains("game.s1.sst") && e.contains("save state"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

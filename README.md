@@ -112,6 +112,9 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | P | pausa (silencia el audio) |
 | Tab (mantener) / F2 (activar y desactivar) | avance rápido, a la velocidad de **Game → Fast forward** (2x, 3x, 4x, 8x o máx.; por defecto 2x; clave `ffspeed`); sin sonido mientras dura |
 | F10 | captura PNG |
+| F5 / F7 | guardar / cargar el estado de la ranura actual |
+| F3 / F4 | ranura anterior / siguiente (1 a 9) |
+| Retroceso (mantener) | rebobinar unos 10 s, sin sonido |
 
 - Cualquier mando SDL funciona, también conectado en caliente: el primero es el jugador 1 y el segundo el jugador 2. `--print-keys` lista el teclado del jugador 1.
 - Las opciones viven en `config.ini` junto a la ROM: se crea con los valores por defecto la primera vez, conserva comentarios y claves que no conoce, y se relee al arrancar. La línea de comandos manda sobre el fichero solo en esa ejecución (`--scale N`, `--fullscreen`, `--opt CLAVE=VALOR`, repetible). Un `<rom>.keys` antiguo se importa una vez, si aún no hay `config.ini`.
@@ -137,6 +140,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `p1.key.A`, `p2.pad.B`… | nombres de tecla o de botón de SDL separados por comas | asignación por jugador (`key` teclado, `pad` mando) y botón (`B Y SELECT START UP DOWN LEFT RIGHT A X L R`) |
 
 - Para ver el resultado de las opciones de imagen sin ventana: `snes_play <rom> --no-window --frames 700 --opt filter=sharp --present-shot out\p.png --present-size 640x560`. Con efectos desactivados y el tamaño de la propia imagen, la salida es idéntica al búfer byte a byte (lo dice por consola).
+- **Estados guardados y rebobinado.** Solo en juegos cuyo perfil declara `[resume]` (un bloque del bucle principal, con la pila del 65816 en su base; ver `openspec/specs/savestates`). El estado de la ranura N va en `<rom>.sN.sst`, junto a la ROM, y lleva la memoria del juego: **no se publica** (`.gitignore`, `scan` y `release.ps1` lo rechazan). La petición espera al siguiente paso por ese punto y, si en 1,5 s no hay uno seguro (en la intro de ALttP, que cambia de pila entre NMI e IRQ, no lo hay), avisa con el motivo. El rebobinado guarda un estado cada 4 fotogramas (unos 10 s) y, tras el último, solo las diferencias con los anteriores. Para pruebas sin ventana: `--state-script save@N,load@N,slot+@N,rewind@A-B` y `--hash-wram`; con el frontal sin vídeo, `--state-save FILE@N` y `--state-load FILE@N`.
 - La SRAM se guarda en `<rom>.srm` (cada segundo si cambió y al salir) y se recarga al arrancar.
 - `--stats` muestra ritmo, cola de audio y parones.
 

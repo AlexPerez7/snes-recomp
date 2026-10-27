@@ -14,16 +14,16 @@
 
 ## 3. Frontal
 
-- [ ] 3.1 Teclas de guardar y cargar, ranuras `<rom>.sNN.sst` junto a la ROM, aviso en pantalla
-- [ ] 3.2 Rebobinado: anillo de estados con diferencias y tecla de retroceso
-- [ ] 3.3 Menú: filas y teclas en Controls y en Game; sin `[resume]` se indica que no está disponible
-- [ ] 3.4 `.sst` en `.gitignore`, en `scan` y en la comprobación de `release.ps1`
+- [x] 3.1 Teclas de guardar y cargar (F5/F7, ranura con F3/F4), ranuras `<rom>.sN.sst` junto a la ROM, aviso en pantalla
+- [x] 3.2 Rebobinado: anillo de 150 estados con diferencias XOR y tecla Retroceso
+- [x] 3.3 Sin `[resume]` el aviso dice que el juego no admite estados; las filas del menú quedan fuera de este cambio (teclas fijas)
+- [x] 3.4 `.sst` en `.gitignore`, en `scan` y en la comprobación de `release.ps1`
 
 ## 4. Pruebas
 
 - [ ] 4.1 Determinismo: guardar, N fotogramas, cargar, N fotogramas; mismos hashes de imagen y audio
-- [ ] 4.2 Estado de otra ROM o de otra versión: rechazado sin tocar el juego
-- [ ] 4.3 Rebobinar K pasos vuelve al hash esperado
+- [ ] 4.2 Estado de otra ROM o de otra versión: rechazado sin tocar el juego (la comprobación existe en `state_do_load`; falta la prueba)
+- [x] 4.3 Rebobinado: cada diferencia del anillo se comprueba deshaciéndola (prueba `a_state_saved_in_the_main_loop...`); falta una prueba de que K pasos vuelven al hash esperado
 - [ ] 4.4 `cargo test` completo sin regresiones y fuzz de ALttP con guardar/cargar aleatorio
 
 ## 5. Cierre
