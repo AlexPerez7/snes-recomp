@@ -28,7 +28,7 @@
 
 ## 5. Paquete y documentación
 
-- [ ] 5.1 Probar el paquete completo en un Windows sin Visual Studio ni gcc (máquina virtual o equipo limpio): descomprimir, doble clic, elegir ROM, jugar; con y sin red
-- [ ] 5.2 README del motor: tabla de estado, sección del constructor y de la descarga; `CLAUDE.md` con los módulos nuevos
-- [ ] 5.3 `alttp-recomp`: `README.md` («Jugar» con el flujo de doble clic) y `plan.md` (punto 8b); `release.ps1` del juego comprueba que `toolchain/` llega al zip y que sigue sin ROM ni `.srm`
+- [ ] 5.1 Probar el paquete completo en un Windows sin Visual Studio ni gcc (máquina virtual o equipo limpio): descomprimir, doble clic, elegir ROM, jugar; con y sin red (hecho en parte: paquete del juego descomprimido en otra carpeta, sin compilador local simulado con `SNES_PORT_NO_LOCAL_COMPILER=1`, ROM soltada sobre el exe: construye con el TinyCC del paquete en 4 s, abre el juego y recuerda la ROM, sin red; falta una máquina realmente limpia, y probar con red sin TinyCC en el paquete)
+- [x] 5.2 README del motor: tabla de estado, sección del constructor y de la descarga; `CLAUDE.md` con los módulos nuevos
+- [x] 5.3 `alttp-recomp`: `README.md` («Jugar» con el flujo de doble clic) y `plan.md` (punto 8b); `release.ps1` del juego comprueba que `toolchain/` llega al zip y que sigue sin ROM ni `.srm`
 - [x] 5.4 El lanzador se cierra al lanzar el juego y reaparece con el error si el juego falla al arrancar (decidido); comprobarlo con un juego que termina con código distinto de 0 (hecho: un juego matado con `Stop-Process` hace reaparecer la ventana con el error; al cerrar el juego con normalidad el lanzador termina)

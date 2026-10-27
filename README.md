@@ -36,7 +36,7 @@ ROM ──► carga y cabecera ──► descubrimiento de código ──► gra
 | PPU por línea | hecho: modos 0 a 7, sprites, ventanas, mosaico, color math, HDMA, modo 7 |
 | SPC700 y DSP | hecho: 256 instrucciones, temporizadores, ROM de arranque, voces BRR, ADSR/GAIN, ruido, eco |
 | Frontal interactivo (SDL2) | hecho: ventana, pantalla completa, teclado y mandos, audio, `.srm` |
-| Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32, MSVC/gcc/clang o TinyCC descargado con consentimiento |
+| Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32; MSVC/gcc/clang, o el TinyCC del paquete, o TinyCC descargado con consentimiento; ventana de lanzamiento (doble clic) con la última ROM recordada |
 | Opciones de port (menú F1, `config.ini`, filtros) | hecho |
 | Estados guardados y rebobinado (`[resume]` del perfil) | hecho: F5/F7, 9 ranuras `.sst`, Retroceso; cambio `savestates` con pruebas por cerrar (ver `openspec/changes/savestates/tasks.md`) |
 | Perfiles de juego (entradas, tablas, ganchos y C propio) | hecho: viven en el repositorio de cada juego |
@@ -76,7 +76,7 @@ cargo test
 `snes-port` construye el juego en tu máquina a partir de **tu** ROM y lo arranca. No se distribuye ningún juego: el ejecutable se genera aquí, la primera vez (unas decenas de segundos con MSVC; algo más con gcc), y las siguientes arranca al instante. Lo más cómodo es el paquete del repositorio del juego (`alttp-recomp-<versión>-win64.zip`), que ya trae `snes-port.exe`, SDL2 y el perfil.
 
 ```
-snes-port roms\alttp_usa.sfc [--game games\alttp_usa.toml]   # construye (si hace falta) y juega; también vale arrastrar la ROM sobre snes-port.exe, o abrirlo con doble clic para elegirla en una ventana (recuerda la última carpeta)
+snes-port roms\alttp_usa.sfc [--game games\alttp_usa.toml]   # construye (si hace falta) y juega; también vale arrastrar la ROM sobre snes-port.exe, o abrirlo con doble clic: se abre la ventana de lanzamiento
 snes-port roms\alttp_usa.sfc -- --scale 3 --mute   # lo que va tras -- se pasa al juego
 snes-port roms\alttp_usa.sfc --no-launch           # solo construye
 snes-port clean [roms\alttp_usa.sfc]               # borra la caché de esa ROM (o toda); nunca toca ROMs ni partidas
@@ -84,6 +84,7 @@ snes-port clean [roms\alttp_usa.sfc]               # borra la caché de esa ROM 
 
 - **Qué se queda dónde.** El C generado y el ejecutable viven en la caché (`%LOCALAPPDATA%\snes-port`, o `--cache <carpeta>` / `SNES_PORT_CACHE`), en una carpeta `<crc32>-<versión>`; cambiar el runtime reconstruye solo. El ejecutable lee la ROM del sitio donde está, y la partida guardada (`.srm`) queda junto a ella. Tras construir se comprueba que ningún byte de la ROM ha acabado en lo construido.
 - **Compilador.** Usa `CC`, gcc, clang o Visual Studio, y los ficheros de desarrollo de SDL2 (`SDL2_DIR`, o la carpeta `sdl2` junto a `snes-port.exe`, que el paquete de `scripts\release.ps1` ya incluye). Con uno local **nunca se descarga nada**. Si no hay ninguno, usa el TinyCC que lleva el paquete en `toolchain\tcc` (junto a `snes-port.exe`; `SNES_PORT_NO_LOCAL_COMPILER=1` finge una máquina sin compilador para probarlo). Sin él pregunta si descargar TinyCC (480 KiB, desde `download.savannah.gnu.org`, con SHA-256 fijado en el programa; si no coincide se descarta); `--download-compiler` responde que sí de antemano. Es lo único que usa la red.
+- **Ventana de lanzamiento (Windows).** `snes-port.exe` es un programa de ventanas: con doble clic (sin argumentos) abre una ventana, sin consola, donde eliges tu ROM («Elegir ROM…»); las siguientes veces ofrece **Jugar** con la ROM recordada (`last-rom.txt` en la caché, solo si el fichero sigue existiendo) y «Cambiar ROM…». Mientras prepara el juego dice qué hace y se puede mover; los errores (ROM no reconocida con su CRC32 y los juegos soportados, falta de compilador, construcción fallida) salen en la ventana con «Copiar detalle»; la pregunta de la descarga del compilador, también. Al abrirse el juego la ventana se cierra, y si el juego termina con error reaparece con él. Con solo una ROM y sin terminal (arrastrarla sobre el exe) la ventana solo sale si hay algo que decir. Los textos están en español si Windows está en español, y en inglés en otro caso. Desde una terminal (con argumentos) se engancha a ella y todo sale como antes: mensajes en la consola y los mismos códigos de salida; un programa de ventanas no hace esperar al intérprete, así que para esperar su código usa `Start-Process -Wait` o `snes-recomp.exe port ...`, que es de consola.
 - **Perfiles.** Busca `*.toml` (con su carpeta hermana de C, si la hay) en `games/` del directorio actual y en `games/` junto al ejecutable; el del directorio actual manda si coinciden, y `--game` (repetible) manda sobre ambos. Un `.toml` roto se avisa y se omite; dos perfiles para el mismo CRC32 en un mismo sitio son un error.
 - **Paquete del motor.** `powershell -File scripts\release.ps1` crea `out\release\snes-port-<versión>-win64.zip` con el programa, este README, la licencia, SDL2 y TinyCC en `toolchain\tcc` (LGPL, con su aviso; `-NoTcc` lo omite) (sin ningún juego). Falla (y no crea el zip) si encuentra `.sfc`, `.smc`, `.srm` o C generado. Cada juego arma el suyo con su propio `release.ps1`.
 - **Códigos de salida.** 2: ROM no reconocida (se listan las admitidas, o dónde se buscan los perfiles si no hay ninguno); 3: falta compilador o SDL2; 4: la construcción falló.
@@ -166,6 +167,7 @@ Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir
 | `src/codegen.rs` | generador de C |
 | `src/config.rs` | formato de los perfiles de juego (`games/<id>.toml`): entradas, tablas de saltos y ganchos |
 | `src/port.rs`, `src/toolchain.rs`, `src/download.rs` | `snes-port`: caché, compilación y descarga opcional de TinyCC |
+| `src/ui.rs`, `src/launcher.rs`, `src/launcher_win.rs`, `build.rs`, `assets/` | `snes-port`: cómo habla con quien lo usa (consola o ventana), textos es/en y ventana de Win32; subsistema de ventanas y manifiesto |
 | `runtime/snes_rt.h` | interfaz entre el C generado y el runtime |
 | `runtime/snes_core.inc`, `snes_ppu.inc`, `snes_spc.inc` | núcleo de hardware, PPU y sonido |
 | `runtime/headless.c`, `runtime/play.c`, `runtime/play_cfg.h` | frontales sin vídeo e interactivo, y la lógica de opciones sin SDL (INI, imagen, efectos, volumen, teclas) |
