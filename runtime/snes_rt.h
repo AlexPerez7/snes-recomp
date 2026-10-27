@@ -57,6 +57,10 @@ int ppu_wide(void);
  * It is how a game hides what it has not loaded there. `ppu_wide_blank_clear` is `ppu_wide_blank(0, 0)`. */
 void ppu_wide_blank(int left, int right);
 void ppu_wide_blank_clear(void);
+/* A word of the VRAM by its word address (0-0x7FFF), as the PPU reads it: what the picture draws from the next line on. It is how a game
+ * changes a tile or a map entry that comes from compressed data, which `rom_overlay` cannot reach. */
+uint16_t ppu_vram_read16(uint16_t word);
+void ppu_vram_write16(uint16_t word, uint16_t value);
 /* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. For an option the profile declares
  * (`[[option]]`) it is the index of the chosen name in `names`, from `--game-opt`, then `config.ini` (`game.<key>`) and the menu, then
  * the default of the profile; `def` is only for the keys the profile does not declare. */

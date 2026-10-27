@@ -99,6 +99,13 @@ int input_label(uint16_t mask, char *out, size_t n) {
     return input_label_hook && n ? input_label_hook(mask, out, n) : 0;
 }
 
+uint16_t ppu_vram_read16(uint16_t word) { return (uint16_t)(vram[(word * 2u) & 0xFFFF] | vram[(word * 2u + 1u) & 0xFFFF] << 8); }
+
+void ppu_vram_write16(uint16_t word, uint16_t value) {
+    vram[(word * 2u) & 0xFFFF] = (uint8_t)value;
+    vram[(word * 2u + 1u) & 0xFFFF] = (uint8_t)(value >> 8);
+}
+
 #define MAX_GAME_OPT 16
 static struct { char key[32]; long val; } game_opts[MAX_GAME_OPT];
 static int ngame_opts;
