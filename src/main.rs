@@ -205,6 +205,7 @@ fn write_sources(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<usi
     write("snes_core.inc".into(), codegen::RUNTIME_CORE)?;
     write("snes_ppu.inc".into(), codegen::RUNTIME_PPU)?;
     write("snes_spc.inc".into(), codegen::RUNTIME_SPC)?;
+    write("snes_state.inc".into(), codegen::RUNTIME_STATE)?;
     std::fs::create_dir_all(dir.join("play")).map_err(|e| format!("{}: {e}", dir.display()))?;
     write("play/snes_play.c".into(), codegen::PLAY_RUNTIME)?;
     write("play/play_cfg.h".into(), codegen::PLAY_CFG)?;

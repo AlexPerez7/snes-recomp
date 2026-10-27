@@ -35,6 +35,7 @@ pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
 /// PPU renderer and PNG writer, included by `snes_core.inc`.
 pub const RUNTIME_PPU: &str = include_str!("../runtime/snes_ppu.inc");
 pub const RUNTIME_SPC: &str = include_str!("../runtime/snes_spc.inc");
+pub const RUNTIME_STATE: &str = include_str!("../runtime/snes_state.inc");
 
 pub fn func_name(entry: u32) -> String {
     format!("f_{:02X}_{:04X}", entry >> 16, entry & 0xFFFF)
