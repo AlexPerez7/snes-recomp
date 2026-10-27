@@ -24,6 +24,7 @@ pub fn lang_from_langid(id: u16) -> Lang {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Key {
     WindowTitle,
+    Tagline,
     PickPrompt,
     PickTitle,
     PickFilter,
@@ -51,6 +52,7 @@ pub fn text(lang: Lang, key: Key) -> &'static str {
     match lang {
         Lang::En => match key {
             WindowTitle => "snes-port",
+            Tagline => "SNES games on your PC, from your own ROM",
             PickPrompt => "Choose your ROM to play. It stays where it is: nothing is copied or sent anywhere.",
             PickTitle => "Choose your ROM",
             PickFilter => "SNES ROM (*.sfc;*.smc)\0*.sfc;*.smc\0All files (*.*)\0*.*\0\0",
@@ -74,6 +76,7 @@ pub fn text(lang: Lang, key: Key) -> &'static str {
         },
         Lang::Es => match key {
             WindowTitle => "snes-port",
+            Tagline => "Juegos de SNES en tu PC, desde tu propia ROM",
             PickPrompt => "Elige tu ROM para jugar. Se queda donde está: no se copia ni se envía a ningún sitio.",
             PickTitle => "Elige tu ROM",
             PickFilter => "ROM de SNES (*.sfc;*.smc)\0*.sfc;*.smc\0Todos los archivos (*.*)\0*.*\0\0",
@@ -204,7 +207,7 @@ mod tests {
     fn every_text_exists_in_both_languages_and_they_differ() {
         use Key::*;
         let all = [
-            WindowTitle, PickPrompt, PickTitle, PickFilter, PickAction, ChangeAction, PlayAction, PlayWith, FirstBuild, Working, CopyDetail,
+            WindowTitle, Tagline, PickPrompt, PickTitle, PickFilter, PickAction, ChangeAction, PlayAction, PlayWith, FirstBuild, Working, CopyDetail,
             Copied, Close, ChooseAnother, DownloadYes, DownloadNo, ErrorTitle, UnknownRomTitle, NoCompilerTitle, BuildFailedTitle, GameFailedTitle,
         ];
         for k in all {
