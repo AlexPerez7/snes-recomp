@@ -9,7 +9,7 @@
 - [x] 2.1 `toolchain::find`: local → `toolchain/tcc/tcc.exe` junto al ejecutable → nada; `SNES_PORT_NO_LOCAL_COMPILER=1` ignora el local
 - [x] 2.2 Prueba: con `SNES_PORT_NO_LOCAL_COMPILER=1`, una caché temporal y un TinyCC en `toolchain/`, el juego se construye sin abrir red (`network_requests() == 0`)
 - [x] 2.3 `scripts/release.ps1`: descargar TinyCC con el SHA-256 fijado de `download.rs`, copiarlo a `toolchain/` con su licencia y el aviso del código fuente; seguir fallando si el paquete lleva ROM o C generado
-- [x] 2.4 Medir con el TinyCC del paquete los fps del juego y anotar el resultado en `design.md` (hecho sin ventana: unos 62 fps frente a 145 con MSVC; falta medir con ventana real, vídeo y audio)
+- [x] 2.4 Medir con el TinyCC del paquete los fps del juego y anotar el resultado en `design.md` (hecho: 117 fps sin ventana frente a 248 con MSVC; con ventana y audio, 60 fps con unos 8 ms libres por fotograma y 1,2 % de fotogramas tardíos; falta probar partida con muchos sprites y un equipo más lento)
 
 ## 3. Ventana del lanzador (Windows)
 
