@@ -41,8 +41,8 @@ uint16_t joy1_state(void);
 /* What player 1 presses for the button `mask` (one bit of joy1_state, such as 0x0080 for A), as the device in use says: the controller
  * when it was the last thing pressed, the keyboard otherwise. Writes it in capitals into `out` (at most `n` bytes, always ended) and
  * returns its kind: 0 nothing is bound (or there is no window), `out` is empty; 1 a key or a button that is not a face button
- * ("RIGHT SHIFT", "START", "L"); 2 a face button (A, B, X or Y) of a PlayStation controller, whose symbol is the cross, circle, square
- * or triangle; 3 a face button of any other controller. */
+ * ("RIGHT SHIFT", "START", "L"); 2 a face button (A, B, X or Y) of any controller but a PlayStation one; 3 a face button of a
+ * PlayStation controller, whose symbol is the cross (A), circle (B), square (X) or triangle (Y). */
 int input_label(uint16_t mask, char *out, size_t n);
 /* Sprite `i` (0-127) is drawn `dx` pixels to the right (negative: left) of the X its OAM entry says, until it is changed. It is
  * how a game puts a sprite in the extra columns on the right of a wider field, since the X of the OAM cannot say 256 to 511
