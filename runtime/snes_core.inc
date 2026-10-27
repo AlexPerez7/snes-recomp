@@ -59,6 +59,7 @@ static int irq_flag;    /* $4211 bit 7: the IRQ line is asserted until $4211 is 
 static int irq_fired;   /* the IRQ of this frame has been raised */
 static uint32_t irqs;
 static unsigned ctx_switches;
+static uint32_t ctx_last_switch; /* frame of the last switch between execution contexts */
 
 /* ---- Joypad 1 ---- */
 
@@ -796,6 +797,7 @@ static void switch_to(Cpu *c, int to) {
     ctx_cpu = c;
     cur_ctx = to;
     ctx_switches++;
+    ctx_last_switch = frames;
     recompute_in_nmi();
     ctx_jump(&ctxs[from], &ctxs[to]);
 }
@@ -910,6 +912,8 @@ static int irq_due(void) {
     return irq_flag;
 }
 
+static void state_script_poll(void);
+
 void rt_poll(Cpu *c) {
     blocks++;
     spc_advance(1);
@@ -923,6 +927,7 @@ void rt_poll(Cpu *c) {
         joy_read_done = 0;
         frames++;
         apply_pokes();
+        state_script_poll();
         if (frame_hook) frame_hook();
         nmi_flag = 1;
         irq_fired = 0;
@@ -934,8 +939,86 @@ void rt_poll(Cpu *c) {
     if (frames >= max_frames && !in_nmi) stop(0, "frames reached");
 }
 
+#include "snes_state.inc"
+
+/* Scripted requests for the frontends without a keyboard (--state-save FILE@N, --state-load FILE@N): at the first pass
+ * through the resume point from frame N on. */
+static const char *st_save_path, *st_load_path;
+static uint32_t st_save_frame, st_load_frame;
+static int st_script; /* 1 save in flight, 2 load in flight */
+
+static int parse_state_script(const char *arg, int save) {
+    const char *at = strrchr(arg, '@');
+    char *end;
+    unsigned long f;
+    if (!at || at == arg) return 0;
+    f = strtoul(at + 1, &end, 10);
+    if (*end || end == at + 1) return 0;
+    {
+        char *copy = (char *)malloc((size_t)(at - arg) + 1);
+        if (!copy) return 0;
+        memcpy(copy, arg, (size_t)(at - arg));
+        copy[at - arg] = 0;
+        if (save) { st_save_path = copy; st_save_frame = (uint32_t)f; }
+        else { st_load_path = copy; st_load_frame = (uint32_t)f; }
+    }
+    return 1;
+}
+
+static void state_script_finish(void) {
+    if (st_script == 1 && state_result == 1) {
+        FILE *f = fopen(st_save_path, "wb");
+        if (f && fwrite(state_data, 1, state_len, f) == state_len) printf("state saved to %s at frame %u (%u bytes)\n", st_save_path, (unsigned)frames, (unsigned)state_len);
+        else printf("cannot write %s\n", st_save_path);
+        if (f) fclose(f);
+    } else if (st_script == 2 && state_result == 1) {
+        printf("state loaded from %s at frame %u\n", st_load_path, (unsigned)frames);
+    } else {
+        printf("state %s failed at frame %u: %s\n", st_script == 1 ? "save" : "load", (unsigned)frames, state_msg);
+    }
+    st_script = 0;
+}
+
+#define STATE_WAIT_FRAMES 600
+static uint32_t st_script_since;
+
+static void state_script_poll(void) {
+    if (st_script) { /* a request that has waited too long for a safe point is dropped */
+        if (state_req && frames - st_script_since > STATE_WAIT_FRAMES) {
+            state_req = 0;
+            state_result = -1;
+            state_script_finish();
+        }
+        return;
+    }
+    st_script_since = frames;
+    if (st_save_path && frames >= st_save_frame) {
+        st_save_frame = ~0u;
+        st_script = 1;
+        state_req = 1;
+    } else if (st_load_path && frames >= st_load_frame) {
+        FILE *f = fopen(st_load_path, "rb");
+        long n = 0;
+        st_load_frame = ~0u;
+        state_release();
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            state_data = (uint8_t *)malloc(n > 0 ? (size_t)n : 1);
+            if (state_data && fread(state_data, 1, (size_t)n, f) == (size_t)n) state_len = (size_t)n;
+            else state_release();
+            fclose(f);
+        }
+        st_script = 2;
+        state_req = 2;
+    }
+}
+
 void rt_resume(Cpu *c) {
-    (void)c; /* save and load states: not yet */
+    if (!state_req) return;
+    state_service(c);
+    if (st_script && !state_req) state_script_finish();
 }
 
 void rt_wai(Cpu *c) {

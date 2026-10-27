@@ -11,6 +11,9 @@ El estado de un juego recompilado está repartido: la memoria y el hardware son 
 5. **Rebobinado.** Anillo de N estados (p. ej. uno cada 4 fotogramas, unos 10 s) comprimidos por diferencia con el anterior; mantener la tecla retrocede un estado por paso y sin sonido. Solo en puntos de reanudación, así que la granularidad es la del bucle principal.
 6. **Determinismo.** Prueba: guardar, avanzar N fotogramas, anotar el hash de la imagen y del audio; cargar y repetir debe dar los mismos hashes. Cualquier desvío indica estado sin serializar.
 
+7. **Contextos sobrantes.** ALttP intercambia pilas entre NMI e IRQ en la intro (más de 1 400 cambios) y deja un contexto suspendido que ya no reanuda en el juego, pero `ctxs[].used` sigue activo. Las pilas nativas de otros contextos no forman parte del estado, así que solo se admite un guardado o una carga si el contexto principal corre sin interrupción en curso y no ha habido cambios de contexto en los últimos 120 fotogramas (`STATE_QUIET_FRAMES`). En la intro del juego no se puede guardar; en la partida sí. Una petición que no está en un punto seguro espera al siguiente paso por `rt_resume`.
+8. **Lo que no se guarda**: los búferes de imagen (se redibuja el fotograma en curso desde la primera fila, así que ese fotograma puede salir con los registros de después), los contadores de la ejecución, las opciones del jugador y los estáticos del C de cada juego.
+
 ## Riesgos
 
 - Estado olvidado (un contador, el eco del DSP): la prueba de determinismo lo detecta, pero hay que escribirla con una secuencia larga de ALttP.

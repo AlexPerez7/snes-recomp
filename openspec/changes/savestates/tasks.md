@@ -6,9 +6,11 @@
 
 ## 2. Estado
 
-- [ ] 2.1 Inventario de todo el estado mutable de `snes_core.inc`, `snes_ppu.inc` y `snes_spc.inc` y lista de lo que no se guarda (con motivo)
-- [ ] 2.2 Funciones `state_save(buf)` / `state_load(buf)` con cabecera (formato, motor, CRC32 de la ROM) y rechazo de estados ajenos
-- [ ] 2.3 `rt_resume`: atender petición de guardado o carga, comprobando `S`, contexto principal y sin NMI/IRQ en curso
+- [x] 2.1 Inventario de todo el estado mutable de `snes_core.inc`, `snes_ppu.inc` y `snes_spc.inc` y lista de lo que no se guarda (con motivo)
+- [x] 2.2 `runtime/snes_state.inc`: una sola lista de campos (`state_io`) para contar, guardar y cargar; cabecera con formato y CRC32 de la ROM; rechazo de estados ajenos o de otra pila
+- [x] 2.3 `rt_resume`: atender petición de guardado o carga; si no es un punto seguro la petición espera al siguiente paso
+- [x] 2.4 `--state-save FILE@N` y `--state-load FILE@N` en el frontal sin ventana
+- [x] 4.1 Determinismo con ALttP en juego (guardar en 3500, cargar en 3600 con otras entradas): WRAM, VRAM, CGRAM, OAM, registros de la PPU e imagen idénticos; sin cargar, la WRAM difiere (falta convertirlo en prueba automática y comparar el audio)
 
 ## 3. Frontal
 

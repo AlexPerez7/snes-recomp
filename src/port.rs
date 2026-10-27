@@ -94,6 +94,7 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         codegen::RUNTIME_CORE,
         codegen::RUNTIME_PPU,
         codegen::RUNTIME_SPC,
+        codegen::RUNTIME_STATE,
         codegen::PLAY_RUNTIME,
         codegen::PLAY_CFG,
         codegen::PLAY_UI,

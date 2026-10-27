@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -72,6 +72,7 @@ fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen:
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
     files.extend(rom.map(|bytes| ("rom.sfc".to_string(), bytes)));
@@ -127,6 +128,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
         ("rom.sfc".into(), image_bytes),
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
@@ -168,6 +170,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
         ("rom.sfc".into(), image_bytes),
         ("hooks.c".into(), game_c.as_bytes().to_vec()),
     ];

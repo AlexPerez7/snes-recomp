@@ -7,10 +7,14 @@
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png] [--wav FILE.wav]
  *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]... [--press BUTTONS@A-B]...
  *              [--poke ADDR=BYTES@N]... [--wide N]
+ *              [--state-save FILE@N] [--state-load FILE@N]
  *
  * --press holds buttons of joypad 1 down during frames A to B (BUTTONS: B Y SELECT START UP DOWN LEFT RIGHT A X L R
  * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
  * serial read ($4016). With no --press nothing is held.
+ *
+ * --state-save FILE@N saves a state to FILE at the first pass through the resume point of the profile ([resume]) from frame N on;
+ * --state-load FILE@N loads it there. They need a game whose profile has [resume].
  *
  * --game-opt KEY=NUMBER sets an option of the C code of the game (game_opt in snes_rt.h).
  * --game-dir DIR sets the folder of the profile of the game (game_dir in snes_rt.h; by default, the folder of the ROM).
@@ -70,6 +74,10 @@ int main(int argc, char **argv) {
             watch_any = 1;
         } else if (!strcmp(argv[i], "--poke") && i + 1 < argc) {
             if (!parse_poke(argv[++i])) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--state-save") && i + 1 < argc) {
+            if (!parse_state_script(argv[++i], 1)) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--state-load") && i + 1 < argc) {
+            if (!parse_state_script(argv[++i], 0)) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) {
             if (!parse_game_opt(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--wide") && i + 1 < argc) {
