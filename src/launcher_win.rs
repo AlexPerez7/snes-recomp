@@ -151,6 +151,8 @@ extern "system" {
     fn GetDC(h: Hwnd) -> isize;
     fn ReleaseDC(h: Hwnd, dc: isize) -> i32;
     fn GetSysColorBrush(index: i32) -> isize;
+    fn InvalidateRect(h: Hwnd, r: *const Rect, erase: i32) -> i32;
+    fn UpdateWindow(h: Hwnd) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -349,6 +351,14 @@ fn draw(screen: &Screen) {
         set_text(c.copy, t(Key::CopyDetail));
     }
     *g.screen.lock().unwrap() = screen.clone();
+    // what was hidden or shown is painted now, not at the next occasion
+    let h = g.hwnd.load(Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            InvalidateRect(h, std::ptr::null(), 1);
+            UpdateWindow(h);
+        }
+    }
 }
 
 fn post_screen(screen: Screen) {
@@ -640,14 +650,14 @@ impl Ui for WindowUi {
                 notice.name,
                 notice.kib,
                 notice.url,
-                notice.dir.display()
+                launcher::shorten_path(&notice.dir.display().to_string(), 48)
             ),
             Lang::Es => format!(
                 "No se ha encontrado ningún compilador de C en este equipo. Para construir el juego se puede descargar {} ({} KiB) de {} y guardarlo en {}.\n\nNo se envía nada de tu ROM; es la única descarga.",
                 notice.name,
                 notice.kib,
                 notice.url,
-                notice.dir.display()
+                launcher::shorten_path(&notice.dir.display().to_string(), 48)
             ),
         };
         self.ask(text)

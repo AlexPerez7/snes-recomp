@@ -164,6 +164,16 @@ pub fn game_failed(lang: Lang, code: i32) -> Screen {
     Screen::Failed { title: text(lang, Key::GameFailedTitle).to_string(), detail }
 }
 
+/// A long path shortened from the left (`...snes-port toolchain`) so that the window does not cut it at the edge.
+pub fn shorten_path(path: &str, max: usize) -> String {
+    let n = path.chars().count();
+    if n <= max {
+        return path.to_string();
+    }
+    let tail: String = path.chars().skip(n - (max - 3)).collect();
+    format!("...{tail}")
+}
+
 /// Where the ROM of a launch comes from, as a file name for the window (the folder is not shown).
 pub fn rom_label(rom: &Path) -> String {
     rom.file_name().map_or_else(|| rom.display().to_string(), |n| n.to_string_lossy().into_owned())
@@ -246,6 +256,15 @@ mod tests {
         std::fs::remove_file(&rom).unwrap();
         assert_eq!(first_screen(&cache), Screen::Pick, "a moved ROM is asked for again");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_long_path_is_shortened_from_the_left_and_a_short_one_is_left_alone() {
+        assert_eq!(shorten_path(r"C:\a\b", 20), r"C:\a\b");
+        let long = r"C:\Users\someone\AppData\Local\snes-port\toolchain";
+        let s = shorten_path(long, 30);
+        assert_eq!(s.chars().count(), 30);
+        assert!(s.starts_with("...") && s.ends_with(r"snes-port\toolchain"), "{s}");
     }
 
     #[test]
