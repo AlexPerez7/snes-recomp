@@ -8,6 +8,9 @@ mod discover;
 mod download;
 mod games;
 mod graph;
+mod launcher;
+#[cfg(windows)]
+mod launcher_win;
 #[cfg(test)]
 mod headless;
 mod opcodes;

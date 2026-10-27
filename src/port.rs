@@ -8,7 +8,7 @@
 use crate::crc32::crc32;
 use crate::rom::Rom;
 use crate::toolchain::{self, Compiler};
-use crate::ui::{ConsoleUi, Ui};
+use crate::ui::{ConsoleUi, DownloadNotice, Ui};
 use crate::{codegen, config::Config, discover, download, games, graph};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -641,6 +641,7 @@ pub fn build_port_ui(opts: &Options, compiler: Option<Compiler>, sdl: Option<Pat
         cmd.arg("--game-dir").arg(dir);
     }
     cmd.args(&opts.game_args);
+    ui.launching();
     let game = if opts.capture {
         match cmd.output() {
             Ok(o) => (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)),
@@ -683,15 +684,11 @@ fn portable_compiler(cache: &Path, yes: bool, ui: &dyn Ui) -> Option<Compiler> {
     if let Some(exe) = download::installed(cache, &TINYCC) {
         return Some(Compiler::Tcc(exe));
     }
-    ui.status("No C compiler found on this machine.");
-    ui.status(&format!(
-        "{} ({} KiB) can be downloaded from {} and kept in {}. Nothing about your ROM is sent; it is the only download.",
-        TINYCC.name,
-        TINYCC.size / 1024,
-        TINYCC.url,
-        download::toolchain_dir(cache).display()
-    ));
-    if !yes && !ui.confirm("Download it now?") {
+    let notice = DownloadNotice { name: TINYCC.name.to_string(), kib: TINYCC.size / 1024, url: TINYCC.url.to_string(), dir: download::toolchain_dir(cache) };
+    if yes {
+        ui.status("No C compiler found on this machine.");
+        ui.status(&notice.text());
+    } else if !ui.offer_download(&notice) {
         return None;
     }
     match download::install(cache, &TINYCC) {
@@ -735,12 +732,15 @@ pub fn recalled_rom(cache: &Path) -> Option<PathBuf> {
 }
 
 /// The folder where the dialog for the ROM starts: that of the last ROM (empty if none).
-fn start_dir(cache: &Path) -> PathBuf {
+pub fn start_dir(cache: &Path) -> PathBuf {
     PathBuf::from(std::fs::read_to_string(cache.join("last-rom-dir.txt")).unwrap_or_default().trim())
 }
 
 /// `snes-port ...` as the user types it; returns the exit code.
 pub fn main(args: &[String]) -> i32 {
+    // snes-port.exe has no console of its own: from a terminal it takes that one; a double click or a drop has none
+    #[cfg(windows)]
+    let console = crate::launcher_win::attach_console();
     let mut rom: Option<PathBuf> = None;
     let mut cache: Option<PathBuf> = None;
     let (mut launch, mut fast, mut clean_cmd, mut download_yes) = (true, false, false, false);
@@ -807,8 +807,17 @@ pub fn main(args: &[String]) -> i32 {
             }
         };
     }
-    // started without a ROM (double click): the launcher asks for it, remembers the folder, and keeps the window open if
-    // something goes wrong so the message can be read
+    // started without a ROM (double click): the launcher window asks for it. With only a ROM and no terminal (dropped on
+    // the program) the window opens only if there is something to say.
+    #[cfg(windows)]
+    {
+        if rom.is_none() && args.is_empty() {
+            return crate::launcher_win::run_launcher(&cache);
+        }
+        if let (false, Some(r)) = (console, rom.clone()) {
+            return crate::launcher_win::run_rom(r, &cache, launch, fast, download_yes, game_args, profiles);
+        }
+    }
     let launcher = rom.is_none() && args.is_empty();
     let rom = match rom {
         Some(r) => r,
@@ -830,7 +839,7 @@ Press Enter to close.");
     code
 }
 
-fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>, profiles: Vec<PathBuf>, ui: &dyn Ui) -> i32 {
+pub fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>, profiles: Vec<PathBuf>, ui: &dyn Ui) -> i32 {
     // the game starts in its cache folder, so the ROM must not be a relative path
     let rom = std::path::absolute(&rom).unwrap_or(rom);
     // absolute for the same reason as the ROM
