@@ -47,21 +47,35 @@ pub fn installed(cache: &Path, p: &Portable) -> Option<PathBuf> {
     exe.exists().then_some(exe)
 }
 
+/// How many times a download is tried before giving up.
+const ATTEMPTS: usize = 4;
+
 /// Downloads `url` into `dest`, keeping it only if its SHA-256 is `sha256` (hex). A file that does not match is
 /// deleted and an error says so.
 pub fn fetch_verified(url: &str, sha256: &str, dest: &Path) -> Result<(), String> {
     REQUESTS.with(|r| r.set(r.get() + 1));
     let part = dest.with_extension("part");
     let _ = std::fs::remove_file(&part);
-    let out = Command::new("curl")
-        .args(["--fail", "--silent", "--show-error", "--location", "--max-time", "300", "--output"])
-        .arg(&part)
-        .arg(url)
-        .output()
-        .map_err(|e| format!("cannot run curl to download {url}: {e}"))?;
-    if !out.status.success() {
+    // the download site redirects each request to one of its mirrors, and some of them are down or slow: a failed attempt
+    // is tried again (the next request may land on another mirror), waiting at most 10 s to connect
+    let mut failure = String::new();
+    let mut done = false;
+    for _ in 0..ATTEMPTS {
+        let out = Command::new("curl")
+            .args(["--fail", "--silent", "--show-error", "--location", "--connect-timeout", "10", "--max-time", "300", "--output"])
+            .arg(&part)
+            .arg(url)
+            .output()
+            .map_err(|e| format!("cannot run curl to download {url}: {e}"))?;
+        if out.status.success() {
+            done = true;
+            break;
+        }
+        failure = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    }
+    if !done {
         let _ = std::fs::remove_file(&part);
-        return Err(format!("the download of {url} failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("the download of {url} failed: {failure}"));
     }
     let data = std::fs::read(&part).map_err(|e| format!("{}: {e}", part.display()))?;
     let got = hex(&sha256_of(&data));
