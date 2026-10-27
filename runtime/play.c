@@ -310,6 +310,53 @@ static uint16_t read_pad(int player) {
     return m;
 }
 
+/* The device player 1 used last, for input_label: 1 a controller, 0 the keyboard. */
+static int last_input_pad;
+
+/* The name a pad button has in the label: the face buttons by their letter, the others as the console names them. */
+static const char *pad_label(int code) {
+    switch (code) {
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return "L";
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return "R";
+    case SDL_CONTROLLER_BUTTON_START: return "START";
+    case SDL_CONTROLLER_BUTTON_BACK: return "SELECT";
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: return "UP";
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return "DOWN";
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return "LEFT";
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return "RIGHT";
+    default: return NULL;
+    }
+}
+
+/* input_label (snes_rt.h): the first button of the preferred device bound to `mask`; if that device has none, the other one. */
+static int play_input_label(uint16_t mask, char *out, size_t n) {
+    int first = last_input_pad && pads[0] ? BIND_PAD : BIND_KEY, pass, i;
+    for (pass = 0; pass < 2; pass++) {
+        int dev = pass ? !first : first;
+        if (dev == BIND_PAD && !pads[0]) continue;
+        for (i = 0; i < nbinds; i++) {
+            const char *name;
+            int kind = 1;
+            if (binds[i].dev != dev || binds[i].player != 0 || binds[i].button != mask) continue;
+            if (dev == BIND_KEY) {
+                name = SDL_GetScancodeName((SDL_Scancode)binds[i].code);
+            } else if (binds[i].code >= SDL_CONTROLLER_BUTTON_A && binds[i].code <= SDL_CONTROLLER_BUTTON_Y) {
+                SDL_GameControllerType t = SDL_GameControllerGetType(pads[0]);
+                static const char *const face[4] = {"A", "B", "X", "Y"}; /* SDL_CONTROLLER_BUTTON_A, B, X, Y in this order */
+                name = face[binds[i].code - SDL_CONTROLLER_BUTTON_A];
+                kind = t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5 ? 2 : 3;
+            } else {
+                name = pad_label(binds[i].code);
+            }
+            if (!name || !*name) continue;
+            for (i = 0; name[i] && (size_t)i + 1 < n; i++) out[i] = (char)toupper((unsigned char)name[i]);
+            out[i] = 0;
+            return kind;
+        }
+    }
+    return 0;
+}
+
 /* ---- the picture ---- */
 
 static uint64_t st_present;
@@ -929,6 +976,8 @@ static void handle_events(void) {
                 }
             open_pads();
         }
+        if (e.type == SDL_CONTROLLERBUTTONDOWN) last_input_pad = 1;
+        if (e.type == SDL_KEYDOWN) last_input_pad = 0;
         if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             SDL_Scancode sc = e.key.keysym.scancode;
@@ -1286,5 +1335,6 @@ int main(int argc, char **argv) {
         t_next = st_start = SDL_GetPerformanceCounter(); /* opening the device can take a while */
     }
     frame_hook = play_frame;
+    input_label_hook = play_input_label;
     return run_rom();
 }

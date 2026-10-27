@@ -91,6 +91,14 @@ static uint16_t joy_now(void) {
 /* For the C code of a game (snes_rt.h). */
 uint16_t joy1_state(void) { return joy_now(); }
 
+/* Set by a frontend that has keys and controllers; without it (headless) nothing is bound. */
+static int (*input_label_hook)(uint16_t mask, char *out, size_t n);
+
+int input_label(uint16_t mask, char *out, size_t n) {
+    if (n) out[0] = 0;
+    return input_label_hook && n ? input_label_hook(mask, out, n) : 0;
+}
+
 #define MAX_GAME_OPT 16
 static struct { char key[32]; long val; } game_opts[MAX_GAME_OPT];
 static int ngame_opts;
