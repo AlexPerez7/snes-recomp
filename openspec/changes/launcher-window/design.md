@@ -41,7 +41,7 @@ Ver `proposal.md` para el motivo. Estado actual (leído en `src/port.rs`, `src/t
 
 ## Risks / Trade-offs
 
-- **Rendimiento de TinyCC**: da la mitad que MSVC; en un equipo mucho más lento que el de desarrollo podría no llegar a 60 fps. Mitigación: medir en el primer arranque y, si va corto, sugerir en la ventana instalar Build Tools (sin bloquear).
+- **Rendimiento de TinyCC**: medido el 2026-10-27 en la máquina de desarrollo con el runtime actual (ALttP, 1 200 fotogramas del título y la intro, sin ventana, sin audio): TinyCC 16,2 ms por fotograma (unos 62 fps) frente a 6,9 ms con MSVC (unos 145 fps). Es 2,3 veces más lento y apenas rebasa los 60 fps sin contar el vídeo ni el audio de una sesión real; la medida de `rom-to-port-builder` (118 fps) ya no se cumple con el runtime actual. En un equipo más lento no llegaría. Mitigación: medir con ventana real antes de dar por buena la vía TinyCC, buscar qué parte del runtime pesa más para TinyCC (o un compilador portátil que optimice, como el de w64devkit o clang) y, si va corto, sugerir en la ventana instalar Build Tools (sin bloquear).
 - **Antivirus**: un ejecutable que descarga un compilador y compila C al arrancar puede dar falsos positivos, sobre todo sin firma. Mitigación: documentarlo en el README del juego; la firma de código queda fuera de este cambio.
 - **FFI manual**: `unsafe` y errores de ciclo de vida de ventanas. Mitigación: módulo pequeño, aislado, con el trabajo real fuera de él.
 - **Enganchar la consola**: la salida desde terminal con un binario de ventanas tiene aristas (redirecciones, paginación). Mitigación: probar `> fichero`, `| more` y el código de salida.

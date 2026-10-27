@@ -1,15 +1,15 @@
 ## 1. Separar la lógica de la presentación
 
-- [ ] 1.1 `trait Ui` (`status`, `error`, `confirm`, `ask_rom`) y su implementación de consola con los textos y códigos de salida de hoy
-- [ ] 1.2 `build_port`, `run_port` y `portable_compiler` reciben el `Ui`; las pruebas existentes de `port.rs` pasan sin cambios con el de consola
-- [ ] 1.3 Guardar y leer `<caché>/last-rom.txt` (solo tras lanzar con éxito); pruebas de la ruta presente, ausente y movida
+- [x] 1.1 `trait Ui` (`status`, `error`, `confirm`, `ask_rom`) y su implementación de consola con los textos y códigos de salida de hoy
+- [x] 1.2 `build_port`, `run_port` y `portable_compiler` reciben el `Ui`; las pruebas existentes de `port.rs` pasan sin cambios con el de consola
+- [x] 1.3 Guardar y leer `<caché>/last-rom.txt` (solo tras lanzar con éxito); pruebas de la ruta presente, ausente y movida
 
 ## 2. Compilador del paquete
 
-- [ ] 2.1 `toolchain::find`: local → `toolchain/tcc/tcc.exe` junto al ejecutable → nada; `SNES_PORT_NO_LOCAL_COMPILER=1` ignora el local
-- [ ] 2.2 Prueba: con `SNES_PORT_NO_LOCAL_COMPILER=1`, una caché temporal y un TinyCC en `toolchain/`, el juego se construye sin abrir red (`network_requests() == 0`)
-- [ ] 2.3 `scripts/release.ps1`: descargar TinyCC con el SHA-256 fijado de `download.rs`, copiarlo a `toolchain/` con su licencia y el aviso del código fuente; seguir fallando si el paquete lleva ROM o C generado
-- [ ] 2.4 Medir con el TinyCC del paquete los fps del juego con ventana y anotar el resultado en `design.md`
+- [x] 2.1 `toolchain::find`: local → `toolchain/tcc/tcc.exe` junto al ejecutable → nada; `SNES_PORT_NO_LOCAL_COMPILER=1` ignora el local
+- [x] 2.2 Prueba: con `SNES_PORT_NO_LOCAL_COMPILER=1`, una caché temporal y un TinyCC en `toolchain/`, el juego se construye sin abrir red (`network_requests() == 0`)
+- [x] 2.3 `scripts/release.ps1`: descargar TinyCC con el SHA-256 fijado de `download.rs`, copiarlo a `toolchain/` con su licencia y el aviso del código fuente; seguir fallando si el paquete lleva ROM o C generado
+- [x] 2.4 Medir con el TinyCC del paquete los fps del juego y anotar el resultado en `design.md` (hecho sin ventana: unos 62 fps frente a 145 con MSVC; falta medir con ventana real, vídeo y audio)
 
 ## 3. Ventana del lanzador (Windows)
 
