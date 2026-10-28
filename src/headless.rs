@@ -292,8 +292,11 @@ fn the_game_knows_the_folder_of_the_rom_and_the_folder_of_its_profile() {
     assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
     let Some(r) = run("dirs-slash", "./rom.sfc", &[]) else { return };
     assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
-    let Some(r) = run("dirs-backslash", ".\\rom.sfc", &[]) else { return };
-    assert!(r.out.contains("dirs rom=[.\\] game=[.\\]"), "{}", r.out);
+    // a backslash separates folders only on Windows; elsewhere `.\rom.sfc` is a file name
+    if cfg!(windows) {
+        let Some(r) = run("dirs-backslash", ".\\rom.sfc", &[]) else { return };
+        assert!(r.out.contains("dirs rom=[.\\] game=[.\\]"), "{}", r.out);
+    }
     // --game-dir sets only the folder of the profile, and gets its separator
     let Some(r) = run("dirs-game", "rom.sfc", &["--game-dir", "games/x"]) else { return };
     assert!(r.out.contains("dirs rom=[./] game=[games/x/]"), "{}", r.out);
