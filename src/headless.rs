@@ -1477,6 +1477,21 @@ fn a_srm_of_the_wrong_size_is_ignored_and_one_without_changes_is_not_rewritten()
     assert!(!r.out.contains("sram: loaded"), "{}", r.out);
 }
 
+#[test]
+fn with_saves_dir_the_srm_goes_there_and_one_next_to_the_rom_is_imported() {
+    // Run 1 finds the $33 of a `rom.srm` beside the ROM (before `saves`), then writes $5A; run 2 finds the $5A from `saves/rom.srm`.
+    let code = prog(&[read_sram(), vec![0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70]]);
+    let seg = [(0x8000, code.as_slice())];
+    let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50", "--saves-dir", "saves"];
+    let mut old = vec![0u8; 0x8000];
+    old[0] = 0x33;
+    let Some(r) = run_play_times("play-srm-saves", &seg, &[0x8000], &args, &[("rom.srm", &old)], 2) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let seen: Vec<&str> = r.out.lines().filter(|l| l.starts_with("  $2134 ")).map(|l| l.rsplit("last=").next().unwrap()).collect();
+    assert_eq!(seen, ["33", "5A"], "{}", r.out);
+    assert!(r.out.contains("saves/rom.srm") || r.out.contains("saves\rom.srm"), "{}", r.out);
+}
+
 fn tile8(pixels: &[(usize, usize, u8)]) -> Vec<u16> {
     let mut t = vec![0u16; 32];
     for &(x, y, c) in pixels {
