@@ -48,6 +48,26 @@ the cache; --download-compiler agrees beforehand. With a compiler on the machine
 
 // ---- the cache ----
 
+/// Where the saved games and states go: `saves` next to the program, or `%APPDATA%\snes-port\saves` (`$XDG_DATA_HOME`
+/// or `~/.local/share` elsewhere) when that one cannot be written. None leaves them next to the ROM.
+pub fn saves_dir() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("saves")));
+    let fallback = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("snes-port").join("saves"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(|d| PathBuf::from(d).join("snes-port").join("saves"))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share").join("snes-port").join("saves")))
+    };
+    beside.into_iter().chain(fallback).find(|d| writable_dir(d))
+}
+
+/// The folder exists (it is made if not) and a file can be created in it.
+fn writable_dir(d: &Path) -> bool {
+    let probe = d.join(".write-test");
+    std::fs::create_dir_all(d).is_ok() && std::fs::write(&probe, b"").is_ok() && std::fs::remove_file(&probe).is_ok()
+}
+
 /// The cache folder: `SNES_PORT_CACHE`, else `%LOCALAPPDATA%\snes-port` (or the usual place of the system).
 pub fn default_cache_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("SNES_PORT_CACHE") {
@@ -640,6 +660,9 @@ pub fn build_port_ui(opts: &Options, compiler: Option<Compiler>, sdl: Option<Pat
     cmd.current_dir(&built.dir).arg(&opts.rom);
     if let Some(dir) = game_dir_arg(profile) {
         cmd.arg("--game-dir").arg(dir);
+    }
+    if let Some(dir) = saves_dir() {
+        cmd.arg("--saves-dir").arg(dir);
     }
     cmd.args(&opts.game_args);
     ui.launching();

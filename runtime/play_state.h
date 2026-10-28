@@ -2,7 +2,7 @@
  * notices. No SDL in here, so the headless frontend runs the same code for the tests (--state-script).
  *
  * Keys (play.c): F5 saves the current slot, F7 loads it, F3 and F4 change the slot (1 to 9), Backspace held rewinds. The state
- * of slot N lives in `<rom without extension>.sN.sst`, next to the ROM. A state holds the memory of the game: it is never
+ * of slot N lives in `<rom without extension>.sN.sst`, in the saves folder (--saves-dir) or next to the ROM. A state holds the memory of the game: it is never
  * published (.gitignore, `scan` and release.ps1 reject *.sst).
  *
  * The runtime only takes or loads a state at a safe pass through the resume point (rt_resume), so a request waits there;
@@ -150,7 +150,7 @@ static void st_ring_push(const uint8_t *data, size_t n) {
 static int st_path(int slot, char *out, size_t n) {
     char ext[16];
     snprintf(ext, sizeof ext, ".s%d.sst", slot);
-    return st_rom_path[0] && sibling_path(st_rom_path, ext, out, n);
+    return st_rom_path[0] && save_path(st_rom_path, ext, out, n);
 }
 
 static int st_write_file(const char *path, const uint8_t *data, size_t n) {
@@ -184,9 +184,14 @@ static void st_request(int kind) {
     state_result = 0;
     if (kind == 2) { /* load the file of the slot */
         char path[1110];
-        FILE *f;
+        FILE *f = NULL;
         long n = 0;
-        if (!st_path(st_slot, path, sizeof path) || !(f = fopen(path, "rb"))) {
+        if (st_path(st_slot, path, sizeof path) && !(f = fopen(path, "rb")) && saves_dir[0]) { /* a state from before `saves` */
+            char ext[16];
+            snprintf(ext, sizeof ext, ".s%d.sst", st_slot);
+            if (sibling_path(st_rom_path, ext, path, sizeof path)) f = fopen(path, "rb");
+        }
+        if (!f) {
             char t[64];
             snprintf(t, sizeof t, tr("Slot %d is empty"), st_slot);
             st_say(t);

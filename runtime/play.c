@@ -41,6 +41,9 @@
 #pragma comment(lib, "comdlg32.lib")
 #define HAVE_FILE_DIALOG
 #endif
+#else
+#include <errno.h>
+#include <sys/stat.h>
 #endif
 
 static int opt_no_window, opt_fullscreen, opt_scale;
@@ -100,6 +103,35 @@ static int sibling_path(const char *rom_path, const char *ext, char *out, size_t
     memcpy(out, rom_path, base);
     strcpy(out + base, ext);
     return 1;
+}
+
+/* Saved games and states go to `saves_dir` (--saves-dir, which snes-port sets to `saves` next to the program) as
+ * `<name of the rom without extension><ext>`; without it they stay next to the ROM. */
+static char saves_dir[1000];
+
+static int save_path(const char *rom_path, const char *ext, char *out, size_t n) {
+    const char *slash = strrchr(rom_path, '/'), *bslash = strrchr(rom_path, 92), *name = rom_path;
+    char tail[1100];
+    if (!saves_dir[0]) return sibling_path(rom_path, ext, out, n);
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    if (slash) name = slash + 1;
+    if (!sibling_path(name, ext, tail, sizeof tail)) return 0;
+    if (strlen(saves_dir) + 1 + strlen(tail) + 1 > n) return 0;
+    snprintf(out, n, "%s/%s", saves_dir, tail);
+    return 1;
+}
+
+/* Makes sure `saves_dir` exists; if it cannot be made, the saves stay next to the ROM. */
+static void saves_dir_prepare(void) {
+    if (!saves_dir[0]) return;
+#ifdef _WIN32
+    if (!CreateDirectoryA(saves_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+#else
+    if (mkdir(saves_dir, 0777) != 0 && errno != EEXIST) {
+#endif
+        fprintf(stderr, "warning: cannot create %s: the saves stay next to the ROM\n", saves_dir);
+        saves_dir[0] = 0;
+    }
 }
 
 /* ---- the configuration ---- */
@@ -1104,10 +1136,16 @@ static void srm_save(void) {
 static void srm_load(const char *rom_path) {
     FILE *f;
     long n;
+    int legacy = 0;
     sram_len = sram_mask + 1;
-    if (!sibling_path(rom_path, ".srm", srm_path, sizeof srm_path)) { srm_path[0] = 0; return; }
+    if (!save_path(rom_path, ".srm", srm_path, sizeof srm_path)) { srm_path[0] = 0; return; }
     atexit(srm_save);
     f = fopen(srm_path, "rb");
+    if (!f && saves_dir[0]) { /* a game saved next to the ROM before `saves`: read it; the next save copies it over */
+        char old[1100];
+        if (sibling_path(rom_path, ".srm", old, sizeof old) && (f = fopen(old, "rb"))) printf("sram: importing %s\n", old);
+        legacy = f != NULL;
+    }
     if (!f) return;
     fseek(f, 0, SEEK_END);
     n = ftell(f);
@@ -1336,6 +1374,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) { if (!parse_game_opt(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--game-dir") && i + 1 < argc) set_game_dir(argv[++i]);
+        else if (!strcmp(argv[i], "--saves-dir") && i + 1 < argc) { snprintf(saves_dir, sizeof saves_dir, "%s", argv[++i]); }
         else if (argv[i][0] != '-' && !path) path = argv[i];
         else { bad = 1; break; }
     }
@@ -1343,7 +1382,7 @@ int main(int argc, char **argv) {
     if (bad || !path || max_frames == 0 || frame_len == 0 || (cli_scale && opt_scale < 1)) {
         fprintf(stderr, "usage: %s [<rom>] [--scale N] [--fullscreen] [--no-window] [--frames N] [--screenshot FILE]\n"
                         "       [--wav FILE] [--frame-blocks N] [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n"
-                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--game-dir DIR] [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n"
+                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--game-dir DIR] [--saves-dir DIR] [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n"
                         "       [--state-script save@N,load@N,slot+@N,rewind@A-B,...]\n", argv[0]);
         return 2;
     }
@@ -1353,6 +1392,7 @@ int main(int argc, char **argv) {
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
     ppu_set_wide(cfg.eff.v[O_WIDE]);
+    saves_dir_prepare();
     srm_load(path);
     play_state_init(path);
     st_echo = opt_no_window;
