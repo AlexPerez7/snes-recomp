@@ -15,7 +15,7 @@ Cada juego vive en su propio repositorio (perfil, C propio y paquete jugable en 
 | Juego | Repositorio | Estado |
 |---|---|---|
 | *The Legend of Zelda: A Link to the Past* (USA) | [alttp-recomp](https://github.com/AlexPerez7/alttp-recomp) | jugable, con mejoras y traducción al español |
-| *Donkey Kong Country 2: Diddy's Kong Quest* (USA, Rev 1) | dkc2-recomp (aún sin publicar) | solo la base; falta el mapeo HiROM del motor y el perfil |
+| *Donkey Kong Country 2: Diddy's Kong Quest* (USA, Rev 1) | [dkc2-recomp](https://github.com/AlexPerez7/dkc2-recomp) | solo la base; falta el mapeo HiROM del motor y el perfil |
 
 ## Cómo funciona
 
