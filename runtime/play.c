@@ -553,13 +553,38 @@ static void menu_lang_sync(void);
 static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad; /* menu_ask: an ASK_* waiting for Enter or Esc */
 static Bind menu_pending;
 static char menu_msg[80];
-static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS};
-static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter"};
+static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS, O_SHADER, O_CRT_MASK, O_CRT_CURVE, O_CRT_BLOOM};
+static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom"};
 #define N_IMAGE ((int)(sizeof image_opts / sizeof image_opts[0]))
+
+/* The rows of the Image tab that are shown (indexes into image_opts, in order). The CRT rows only count with the
+ * shader on, and then `filter` and `grid` are left out: the shader samples the picture sharp by itself and draws its
+ * own mask, so they would do nothing. */
+static int image_rows(int *idx) {
+    int i, n = 0, shader = cfg.eff.v[O_SHADER] == SHADER_CRT;
+    for (i = 0; i < N_IMAGE; i++) {
+        int o = image_opts[i], crt_row = o == O_CRT_MASK || o == O_CRT_CURVE || o == O_CRT_BLOOM;
+        if (shader ? (o == O_FILTER || o == O_GRID) : crt_row) continue;
+        idx[n++] = i;
+    }
+    return n;
+}
+
+static int image_row_count(void) {
+    int idx[N_IMAGE];
+    return image_rows(idx);
+}
+
+/* The row of the Image tab where option `opt` is shown (-1 when it is hidden). */
+static int image_row_of(int opt) {
+    int idx[N_IMAGE], i, n = image_rows(idx);
+    for (i = 0; i < n; i++) if (image_opts[idx[i]] == opt) return i;
+    return -1;
+}
 
 static int menu_count(int tab) {
     switch (tab) {
-    case TAB_IMAGE: return N_IMAGE + 1;
+    case TAB_IMAGE: return image_row_count() + 1;
     case TAB_AUDIO: return 3;
     case TAB_CONTROLS: return 13;
     default: return 1 + GOPTS + 4; /* the fast forward speed, the options of the game, then Resume, Save, Restore and Quit */
@@ -658,8 +683,14 @@ static void menu_change(int dir) {
     menu_msg[0] = 0;
     switch (menu_tab) {
     case TAB_IMAGE:
-        if (s == N_IMAGE) { if (dir == 0) restore_image(); }
-        else opt_change(image_opts[s], dir ? dir : 1);
+        {
+            int idx[N_IMAGE], n = image_rows(idx);
+            if (s == n) { if (dir == 0) restore_image(); }
+            else {
+                opt_change(image_opts[idx[s]], dir ? dir : 1);
+                if (image_opts[idx[s]] == O_SHADER) menu_sel[TAB_IMAGE] = image_row_of(O_SHADER); /* the rows after it come and go: the cursor stays on the option */
+            }
+        }
         break;
     case TAB_AUDIO:
         if (s == 0) { if (dir) opt_change(O_VOLUME, dir); }
@@ -877,7 +908,7 @@ static void opt_label(int opt, char *out, size_t n) {
     const OptDef *d = &opt_defs[opt];
     opt_format(d, cfg.eff.v[opt], out, n);
     if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", tr(cfg.eff.v[opt] ? "On" : "Off"));
-    else if (opt == O_SCANLINES) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
+    else if (opt == O_SCANLINES || opt == O_CRT_MASK || opt == O_CRT_CURVE || opt == O_CRT_BLOOM) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
     else if (d->names) { char w[32]; snprintf(w, sizeof w, "%s", out); snprintf(out, n, "%s", tr(w)); } /* the word as shown; the file keeps the English one */
 }
 
@@ -910,12 +941,16 @@ static void menu_draw(const uint8_t *fb) {
         int on = i == s;
         switch (menu_tab) {
         case TAB_IMAGE:
-            if (i == N_IMAGE) { menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0); break; }
             {
-                const OptDef *d = &opt_defs[image_opts[i]];
-                int v = cfg.eff.v[image_opts[i]];
-                opt_label(image_opts[i], val, sizeof val);
-                menu_row(i, on, image_labels[i], 1, val, 0, !d->names && v <= d->lo, !d->names && v >= d->hi);
+                int idx[N_IMAGE], rows = image_rows(idx);
+                if (i == rows) { menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0); break; }
+                {
+                    int o = image_opts[idx[i]];
+                    const OptDef *d = &opt_defs[o];
+                    int v = cfg.eff.v[o];
+                    opt_label(o, val, sizeof val);
+                    menu_row(i, on, image_labels[idx[i]], 1, val, 0, !d->names && v <= d->lo, !d->names && v >= d->hi);
+                }
             }
             break;
         case TAB_AUDIO:

@@ -15,10 +15,11 @@ static const I18n i18n_table[] = {
     /* the rows of the Image tab */
     {"Fullscreen", "Pant. completa"}, {"VSync", "VSync"}, {"Aspect", "Aspecto"}, {"Scaling", "Escalado"}, {"Filter", "Filtro"},
     {"Overscan", "Overscan"}, {"Wide", "Ancho"}, {"Scanlines", "Líneas CRT"}, {"Grid", "Rejilla"}, {"FPS counter", "Mostrar FPS"},
+    {"Shader", "Shader"}, {"Mask", "Máscara"}, {"Curve", "Curvatura"}, {"Bloom", "Resplandor"},
     {"Restore defaults", "Restaurar valores"},
     /* values */
     {"On", "Sí"}, {"Off", "No"}, {"integer", "entero"}, {"fit", "ajustado"}, {"free", "libre"}, {"nearest", "cercano"},
-    {"bilinear", "bilineal"}, {"sharp", "nítido"}, {"Default", "Por defecto"},
+    {"bilinear", "bilineal"}, {"sharp", "nítido"}, {"Default", "Por defecto"}, {"off", "no"}, {"crt", "CRT"},
     /* Audio and Controls */
     {"Volume", "Volumen"}, {"Output device", "Salida"}, {"Controls of", "Controles de"}, {"Player %d", "Jugador %d"},
     {"Keyboard", "Teclado"}, {"Controller", "Mando"}, {"Up", "Arriba"}, {"Down", "Abajo"}, {"Left", "Izquierda"}, {"Right", "Derecha"},

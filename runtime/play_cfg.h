@@ -11,10 +11,11 @@
 
 /* ---- the options ---- */
 
-enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_FFSPEED, O_COUNT };
+enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_FFSPEED, O_SHADER, O_CRT_MASK, O_CRT_CURVE, O_CRT_BLOOM, O_COUNT };
 enum { ASPECT_43, ASPECT_87, ASPECT_FREE };
 enum { SCALING_INTEGER, SCALING_FIT };
 enum { FILTER_NEAREST, FILTER_BILINEAR, FILTER_SHARP };
+enum { SHADER_OFF, SHADER_CRT };
 
 /* `names` is "a|b|c" for the options that take a word (the value is the index of the word), NULL for a number
  * between lo and hi. `step` is how much the menu changes a number with one key press; `unit` (when above 1) is the
@@ -34,7 +35,17 @@ static const OptDef opt_defs[O_COUNT] = {
     {"volume", 100, 0, 100, NULL, 5},
     {"wide", 0, 0, 96, NULL, 8, 8}, /* extra pixels of picture on each side of the 256 of the console */
     {"ffspeed", 2, 0, 4, "2x|3x|4x|8x|max", 1}, /* fast forward: times the normal speed; `max` does not wait */
+    {"shader", SHADER_OFF, 0, 1, "off|crt", 1}, /* `crt`: the picture goes through an OpenGL shader (see the crt-shader change) */
+    {"crt_mask", 30, 0, 100, NULL, 10},  /* strength of the phosphor mask of the crt shader */
+    {"crt_curve", 15, 0, 100, NULL, 5},  /* curvature of the tube */
+    {"crt_bloom", 20, 0, 100, NULL, 10}, /* glow around the bright pixels */
 };
+
+/* Whether the picture is presented with the shader: the option asks for it and OpenGL 3.3 could be set up. When it
+ * could not, the renderer path draws the picture and the option keeps its value in config.ini. */
+static int use_shader(int shader_opt, int gl_ok) {
+    return shader_opt == SHADER_CRT && gl_ok;
+}
 
 /* The fast forward factor of an `ffspeed` value: 2, 3, 4 or 8 times, 0 for no limit. */
 static int ff_factor(int v) {

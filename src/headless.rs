@@ -2470,6 +2470,16 @@ int main(void) {
     CHECK(s.v[O_FILTER] == FILTER_BILINEAR && s.v[O_VOLUME] == 50 && s.v[O_FULLSCREEN] == 0);
     CHECK(s.v[O_ASPECT] == ASPECT_87 && s.v[O_SCALING] == SCALING_INTEGER && s.v[O_OVERSCAN] == 0 && s.v[O_SCANLINES] == 0);
 
+    /* the shader: off by default with the effect at its starting strengths; it is on only when asked for and OpenGL is there */
+    CHECK(s.v[O_SHADER] == SHADER_OFF && s.v[O_CRT_MASK] == 30 && s.v[O_CRT_CURVE] == 15 && s.v[O_CRT_BLOOM] == 20);
+    CHECK(!use_shader(SHADER_OFF, 1) && !use_shader(SHADER_OFF, 0) && !use_shader(SHADER_CRT, 0) && use_shader(SHADER_CRT, 1));
+    {
+        int v = -1;
+        CHECK(opt_parse(&opt_defs[O_SHADER], "CRT", &v) && v == SHADER_CRT);
+        CHECK(!opt_parse(&opt_defs[O_SHADER], "scanline", &v));
+        CHECK(!opt_parse(&opt_defs[O_CRT_CURVE], "101", &v) && opt_parse(&opt_defs[O_CRT_CURVE], "100", &v) && v == 100);
+    }
+
     /* saving keeps the comments and the unknown keys, and writes every option */
     s.v[O_FILTER] = FILTER_SHARP;
     cfg_store(&s, &ini);
@@ -2834,8 +2844,8 @@ fn restoring_a_tab_only_changes_that_tab() {
 scanlines = 40
 volume = 50
 ";
-    // Image: ten rows of options, then "Restore defaults" (ten Downs); Enter; Escape
-    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
+    // Image: eleven rows of options (the shader is the last with it off), then "Restore defaults" (eleven Downs); Enter; Escape
+    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
     let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = sharp") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
@@ -2843,6 +2853,28 @@ volume = 50
     let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"volume = 100") && l.contains(&"filter = nearest") && l.contains(&"scanlines = 40"), "{}", r.out);
+}
+
+#[test]
+fn the_shader_rows_of_the_image_tab_come_and_go_with_the_shader() {
+    let ini = b"scanlines = 40
+";
+    // the shader is the eleventh row (ten Downs); Right turns it on, and then the rows of the effect follow it:
+    // Down to the mask, Right makes it 40 (30 is the default), Escape saves
+    let down10 = "Down,Down,Down,Down,Down,Down,Down,Down,Down,Down";
+    let keys = format!("F1,{down10},Right,Down,Right,Escape");
+    let Some(r) = run_menu("menu-shader-on", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"shader = crt") && l.contains(&"crt_mask = 40") && l.contains(&"crt_curve = 15") && l.contains(&"crt_bloom = 20"), "{}", r.out);
+    // off again with Right, Right: the cursor stays on the shader row, so one Down reaches "Restore defaults"
+    let keys = format!("F1,{down10},Right,Right,Down,Return,Escape");
+    let Some(r) = run_menu("menu-shader-off-again", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"shader = off") && l.contains(&"scanlines = 0"), "{}", r.out);
+    // the rows after the shader have nothing to change while it is off: Restore is right below it
+    let keys = format!("F1,{down10},Down,Return,Escape");
+    let Some(r) = run_menu("menu-shader-restore-row", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    assert!(config_lines(&r).contains(&"scanlines = 0"), "{}", r.out);
 }
 
 #[test]
@@ -3284,9 +3316,9 @@ int main(void) {
     {
         enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
         static const Group groups[] = {
-            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Volume", "Output device", "Controls of", "Fast forward", "Language"}},
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Output device", "Controls of", "Fast forward", "Language"}},
             {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit"}},
-            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "max", "Player %d"}},
+            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "off", "crt", "max", "Player %d"}},
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
             {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
             {"title", 120, {"OPTIONS"}},
