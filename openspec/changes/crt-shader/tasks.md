@@ -1,8 +1,8 @@
 ## 1. Opciones y respaldo (sin OpenGL)
 
-- [ ] 1.1 `shader`, `crt_mask`, `crt_curve`, `crt_bloom` en `play_cfg.h` (tabla, `config.ini`, `--opt`, `--print-config`); pruebas del INI con claves nuevas, valores por defecto y claves desconocidas conservadas
-- [ ] 1.2 Filas nuevas en la pestaña Image del menú F1 y textos `{inglés, español}` en `play_i18n.h`; las pruebas que miden cada cadena contra su hueco pasan
-- [ ] 1.3 Decisión de camino al arrancar y al cambiar `shader`: función pura que, dada la opción y si OpenGL está disponible, dice si se usa el shader o el respaldo; prueba del respaldo
+- [x] 1.1 `shader`, `crt_mask`, `crt_curve`, `crt_bloom` en `play_cfg.h` (tabla, `config.ini`, `--opt`, `--print-config`); pruebas del INI con claves nuevas, valores por defecto y claves desconocidas conservadas
+- [x] 1.2 Filas nuevas en la pestaña Image del menú F1 y textos `{inglés, español}` en `play_i18n.h`; las pruebas que miden cada cadena contra su hueco pasan
+- [x] 1.3 Decisión de camino al arrancar y al cambiar `shader`: función pura que, dada la opción y si OpenGL está disponible, dice si se usa el shader o el respaldo; prueba del respaldo
 
 ## 2. Ruta con OpenGL
 
