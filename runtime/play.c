@@ -1153,7 +1153,7 @@ static void srm_load(const char *rom_path) {
     if (n != (long)sram_len) {
         fprintf(stderr, "warning: %s has %ld bytes, the cartridge SRAM has %u: ignoring it\n", srm_path, n, (unsigned)sram_len);
     } else if (fread(sram, 1, sram_len, f) == sram_len) {
-        memcpy(sram_saved, sram, sram_len);
+        if (!legacy) memcpy(sram_saved, sram, sram_len); /* a legacy one stays "changed" so it is written to `saves` */
         printf("sram: loaded %s\n", srm_path);
     }
     fclose(f);
