@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_GL, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -125,6 +125,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
         ("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()),
+        ("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()),
         ("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()),
         ("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
@@ -181,6 +182,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         files.push(("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()));
         files.push(("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()));
         files.push(("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()));
+        files.push(("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()));
         files.push(("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()));
         files.push(("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()));
     } else {
@@ -2906,6 +2908,75 @@ fn the_menu_picture_is_the_same_every_time_and_goes_through_the_presenter() {
     let Some(r) = run_play("play-menushot-sharp", &seg, &[0x8000], &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("present-shot: 600x450"), "{}", r.out);
+}
+
+/// The Game tab of the menu (it does not show the options under test) drawn over the picture, presented at 3x (768x672) with the given options: the PNG of `--present-shot`, or None
+/// when there is no SDL2 or (for the shader) no OpenGL 3.3, which are skipped like the tests that need the ROM.
+fn present_menu_shot(name: &str, opts: &[&str]) -> Option<Vec<u8>> {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let dir = std::env::temp_dir().join(format!("snes-recomp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.png").to_string_lossy().into_owned();
+    let mut args = vec!["rom.sfc", "--no-window", "--frames", "8", "--frame-blocks", "20", "--menu-keys", "F1,W,W,W", "--present-shot", &path, "--present-size", "768x672", "--opt", "scaling=fit"];
+    for o in opts {
+        args.extend(["--opt", o]);
+    }
+    let r = run_play(name, &seg, &[0x8000], &args);
+    let shot = r.and_then(|r| {
+        assert_eq!(r.code, 0, "{}", r.out);
+        if r.out.contains("no OpenGL 3.3") {
+            eprintln!("skipped {name}: no OpenGL 3.3 here");
+            return None;
+        }
+        Some(std::fs::read(dir.join("p.png")).expect("no present-shot"))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    shot
+}
+
+#[test]
+fn the_crt_shader_without_effects_is_the_same_picture_as_nearest() {
+    let Some(nearest) = present_menu_shot("crt-nearest", &["filter=nearest"]) else { return };
+    let Some(crt) = present_menu_shot("crt-zero", &["shader=crt", "scanlines=0", "crt_mask=0", "crt_curve=0", "crt_bloom=0"]) else { return };
+    if nearest != crt {
+        let (a, b) = (decode_png(&nearest), decode_png(&crt));
+        let diffs: Vec<(usize, usize, [u8; 3], [u8; 3])> = (0..a.h).flat_map(|y| (0..a.w).map(move |x| (x, y))).filter(|&(x, y)| a.rgb(x, y) != b.rgb(x, y)).map(|(x, y)| (x, y, a.rgb(x, y), b.rgb(x, y))).collect();
+        panic!("the shader with every effect at 0 and a whole factor must equal nearest: {} pixels differ, first {:?}", diffs.len(), &diffs[..diffs.len().min(8)]);
+    }
+}
+
+#[test]
+fn each_effect_of_the_crt_shader_changes_the_picture_the_way_it_should() {
+    let zero = ["shader=crt", "scanlines=0", "crt_mask=0", "crt_curve=0", "crt_bloom=0"];
+    let Some(base) = present_menu_shot("crt-base", &zero) else { return };
+    let base = decode_png(&base);
+    let with = |name: &str, key: &str, val: &str| -> Option<Img> {
+        let set = format!("{key}={val}");
+        let opts: Vec<&str> = zero.iter().copied().filter(|o| !o.starts_with(&format!("{key}="))).chain([set.as_str()]).collect();
+        present_menu_shot(name, &opts).map(|b| decode_png(&b))
+    };
+    let lum = |p: [u8; 3]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let total = |i: &Img| i.px.iter().map(|&b| b as u64).sum::<u64>();
+    // the beam darkens the lines between the picture lines: the rows at the edge of each 3-row picture line lose more than its middle
+    let Some(beam) = with("crt-beam", "scanlines", "80") else { return };
+    assert!(total(&beam) < total(&base), "the beam darkens the picture");
+    let (mut edge, mut mid) = (0u64, 0u64);
+    for y in 0..672 {
+        let s: u64 = (0..768).map(|x| lum(base.rgb(x, y)) as u64 - lum(beam.rgb(x, y)).min(lum(base.rgb(x, y))) as u64).sum();
+        if y % 3 == 1 { mid += s } else { edge += s }
+    }
+    assert!(edge > 2 * mid, "the picture loses more at the edges of its lines than in the middle ({edge} vs {mid})");
+    // the mask: the three columns of a triad are not the same colour any more
+    let Some(mask) = with("crt-mask", "crt_mask", "80") else { return };
+    assert!((0..48).any(|y| (0..60).any(|x| mask.rgb(x * 3, y) != mask.rgb(x * 3 + 1, y))), "the mask changes the columns of a triad");
+    // the curvature: the corners fall outside the tube and are black
+    let Some(curve) = with("crt-curve", "crt_curve", "100") else { return };
+    assert!(curve.rgb(0, 0) == [0, 0, 0] && curve.rgb(767, 671) == [0, 0, 0], "the corners are black");
+    assert!(base.rgb(0, 0) != [0, 0, 0] || base.rgb(767, 671) != [0, 0, 0], "and are not without the curvature");
+    // the glow adds light
+    let Some(glow) = with("crt-glow", "crt_bloom", "100") else { return };
+    assert!(total(&glow) > total(&base), "the glow adds light");
 }
 
 #[test]
