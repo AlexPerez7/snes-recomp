@@ -28,6 +28,9 @@ pub const PLAY_UI: &str = include_str!("../runtime/play_ui.h");
 
 /// The text of the menu in Spanish and `tr()`: `play/play_i18n.h` written by `codegen --all`.
 pub const PLAY_I18N: &str = include_str!("../runtime/play_i18n.h");
+/// The OpenGL path of the frontend (option `shader`): `play/play_gl.h` written by `codegen --all`.
+pub const PLAY_GL: &str = include_str!("../runtime/play_gl.h");
+
 /// The default icon of the window (`snes_set_window_icon` replaces it): `play/play_icon.h` written by `codegen --all`.
 pub const PLAY_ICON: &str = include_str!("../runtime/play_icon.h");
 /// Save states in the interactive frontend (slots, rewind, notices): `play/play_state.h` written by `codegen --all`.

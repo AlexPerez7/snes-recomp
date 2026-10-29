@@ -146,7 +146,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `scanlines` | `0` (0 a 100) | oscurece una de cada dos líneas de pantalla en ese porcentaje |
 | `grid` | `false`, `true` | rejilla entre los píxeles de la consola |
 | `fps` | `false`, `true` | muestra los fotogramas por segundo en la esquina de la imagen |
-| `shader` | `off`, `crt` | `crt` presentará la imagen con un shader de OpenGL (haz de scanline, máscara de fósforo, curvatura y resplandor); en desarrollo (cambio `crt-shader`): la opción y el menú ya existen, pero todavía no cambia la imagen. Con `crt` el menú oculta `filter` y `grid` |
+| `shader` | `off`, `crt` | `crt` presentará la imagen con un shader de OpenGL (haz de scanline, máscara de fósforo, curvatura y resplandor); cambio `crt-shader` en curso: ya dibuja con OpenGL 3.3 (si no lo hay, avisa y sigue con el renderizador). Con `crt` el menú oculta `filter` y `grid` |
 | `crt_mask` | `30` (0 a 100) | fuerza de la máscara de fósforo del shader `crt` |
 | `crt_curve` | `15` (0 a 100) | curvatura del tubo del shader `crt` |
 | `crt_bloom` | `20` (0 a 100) | resplandor alrededor de los píxeles brillantes del shader `crt` |

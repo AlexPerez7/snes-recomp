@@ -34,6 +34,7 @@
 #include "play_cfg.h"
 #include "play_ui.h"
 #include "play_i18n.h"
+#include "play_gl.h"
 #ifdef _WIN32
 #include <windows.h>
 #ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
@@ -51,15 +52,23 @@ static int cli_fullscreen, cli_scale, cli_set[O_COUNT], cli_val[O_COUNT];
 static SDL_Window *win;
 
 #include "play_icon.h"
+static unsigned *icon_copy; /* the icon in use: a recreated window (option `shader`) gets it again */
+static int icon_w, icon_h;
 void snes_set_window_icon(const unsigned *argb, int w, int h) {
     SDL_Surface *s;
     if (!win || !argb || w <= 0 || h <= 0) return;
+    if (argb != icon_copy) {
+        unsigned *c = (unsigned *)malloc((size_t)w * h * sizeof *c);
+        if (c) { memcpy(c, argb, (size_t)w * h * sizeof *c); free(icon_copy); icon_copy = c; icon_w = w; icon_h = h; }
+    }
     s = SDL_CreateRGBSurfaceWithFormatFrom((void *)argb, w, h, 32, w * 4, SDL_PIXELFORMAT_ARGB8888);
     if (!s) return;
     SDL_SetWindowIcon(win, s); /* SDL copies it */
     SDL_FreeSurface(s);
 }
 static SDL_Renderer *ren;
+static SDL_GLContext glctx;
+static int gl_on; /* the picture is drawn by the shader of play_gl.h (a window with an OpenGL context, no renderer) */
 static SDL_Texture *tex;
 static int paused, fast, ff_toggle, fullscreen, shot_n;
 static uint64_t t_next, perf_freq;
@@ -416,11 +425,14 @@ static int view_lines(void) {
 
 /* Draws the picture `fb` (show_w x 224, as shown_frame() set it) in the window with the options: aspect, scaling, filter,
  * overscan and effects. The texture has the size of the picture, so that the filters do not read what lies beyond it. */
+static void present_gl(const uint8_t *fb);
+
 static void present(const uint8_t *fb) {
     int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER], pw = show_w;
     SDL_Rect src, dst;
     Rect r;
     uint64_t p0 = SDL_GetPerformanceCounter();
+    if (gl_on) { present_gl(fb); return; }
     if (!tex || tex_w != pw) {
         if (tex) SDL_DestroyTexture(tex);
         tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, pw, SCREEN_H);
@@ -485,6 +497,19 @@ static void present(const uint8_t *fb) {
     st_present += SDL_GetPerformanceCounter() - p0;
 }
 
+/* The picture through the shader of play_gl.h, in the whole window: same rectangle as the renderer path. */
+static void present_gl(const uint8_t *fb) {
+    int w, h, lines = view_lines();
+    Rect r;
+    uint64_t p0 = SDL_GetPerformanceCounter();
+    SDL_GL_GetDrawableSize(win, &w, &h);
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, show_w);
+    gl_draw(fb, show_w, SCREEN_H, w, h, r.x, r.y, r.w, r.h, cfg.eff.v[O_OVERSCAN], lines,
+            cfg.eff.v[O_SCANLINES], cfg.eff.v[O_CRT_MASK], cfg.eff.v[O_CRT_CURVE], cfg.eff.v[O_CRT_BLOOM]);
+    SDL_GL_SwapWindow(win);
+    st_present += SDL_GetPerformanceCounter() - p0;
+}
+
 /* --present-shot: the picture as present() draws it in a window of W x H, made with the software renderer into a
  * PNG (so the layout, the filters, the overscan and the effects can be seen without a window). When W x H is the
  * size of the picture itself it also says whether the result is the picture byte for byte. */
@@ -493,7 +518,78 @@ static int present_w = 256, present_h = SCREEN_H;
 
 static const uint8_t *shown_frame(void);
 
+/* The same as present_shot() for the shader: a hidden window with an OpenGL context draws into a texture of W x H and
+ * the pixels are read back (top row first). NULL when there is no OpenGL 3.3 (or the window already has the shader). */
+static uint8_t *present_shot_gl(const uint8_t *shown) {
+    SDL_Window *sw = NULL;
+    SDL_GLContext sc = NULL;
+    uint8_t *pix = NULL, *raw = NULL;
+    GLuint_t rt = 0, fbo = 0;
+    int y, ok = 0;
+    if (gl_on || SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return NULL;
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sw = SDL_CreateWindow("present-shot", 0, 0, 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+    if (sw) sc = SDL_GL_CreateContext(sw);
+    if (sc && gl_setup()) {
+        Rect r = view_rect(present_w, present_h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], view_lines(), show_w);
+        gl.GenTextures(1, &rt);
+        gl.BindTexture(GL_TEXTURE_2D_, rt);
+        gl.TexParameteri(GL_TEXTURE_2D_, GL_TEXTURE_MIN_FILTER_, GL_LINEAR_);
+        gl.TexParameteri(GL_TEXTURE_2D_, GL_TEXTURE_MAG_FILTER_, GL_LINEAR_);
+        gl.PixelStorei(GL_UNPACK_ALIGNMENT_, 1);
+        gl.TexImage2D(GL_TEXTURE_2D_, 0, GL_RGB8_, present_w, present_h, 0, GL_RGB_, GL_UNSIGNED_BYTE_, NULL);
+        gl.GenFramebuffers(1, &fbo);
+        gl.BindFramebuffer(GL_FRAMEBUFFER_, fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D_, rt, 0);
+        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER_) == GL_FRAMEBUFFER_COMPLETE_) {
+            gl_draw(shown, show_w, SCREEN_H, present_w, present_h, r.x, r.y, r.w, r.h, cfg.eff.v[O_OVERSCAN], view_lines(),
+                    cfg.eff.v[O_SCANLINES], cfg.eff.v[O_CRT_MASK], cfg.eff.v[O_CRT_CURVE], cfg.eff.v[O_CRT_BLOOM]);
+            raw = (uint8_t *)malloc((size_t)present_w * present_h * 3);
+            pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
+            if (raw && pix) {
+                gl.PixelStorei(GL_PACK_ALIGNMENT_, 1);
+                gl.ReadPixels(0, 0, present_w, present_h, GL_RGB_, GL_UNSIGNED_BYTE_, raw);
+                for (y = 0; y < present_h; y++) memcpy(pix + (size_t)y * present_w * 3, raw + (size_t)(present_h - 1 - y) * present_w * 3, (size_t)present_w * 3);
+                ok = 1;
+            }
+        }
+        gl.BindFramebuffer(GL_FRAMEBUFFER_, 0);
+        if (fbo) gl.DeleteFramebuffers(1, &fbo);
+        if (rt) gl.DeleteTextures(1, &rt);
+        gl_teardown();
+    }
+    if (sc) SDL_GL_DeleteContext(sc);
+    if (sw) SDL_DestroyWindow(sw);
+    free(raw);
+    if (!ok) { free(pix); pix = NULL; }
+    return pix;
+}
+
+static void present_shot_out(const uint8_t *pix, int shown_w, int lines) {
+    if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
+    if (present_w == shown_w && present_h == lines) {
+        size_t diff = 0, i, n = (size_t)shown_w * lines * 3;
+        const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * shown_w * 3;
+        for (i = 0; i < n; i++) diff += pix[i] != src[i];
+        if (diff) printf("present-shot: differs from the picture in %u bytes\n", (unsigned)diff);
+        else printf("present-shot: identical to the picture\n");
+    }
+}
+
+static void present_shot_sw(void);
+
 static void present_shot(void) {
+    if (cfg.eff.v[O_SHADER] == SHADER_CRT) {
+        uint8_t *gpix = present_shot_gl(shown_frame());
+        if (gpix) { present_shot_out(gpix, show_w, view_lines()); free(gpix); return; }
+        printf("present-shot: no OpenGL 3.3, drawn with the renderer\n");
+    }
+    present_shot_sw();
+}
+
+static void present_shot_sw(void) {
     SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, present_w, present_h, 24, SDL_PIXELFORMAT_RGB24);
     SDL_Renderer *sr, *keep_ren = ren;
     SDL_Texture *keep_tex = tex, *keep_pre = tex_pre, *keep_ovl = tex_ovl;
@@ -511,14 +607,7 @@ static void present_shot(void) {
     present(shown);
     pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
     if (pix && SDL_RenderReadPixels(sr, NULL, SDL_PIXELFORMAT_RGB24, pix, present_w * 3) == 0) {
-        if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
-        if (present_w == shown_w && present_h == lines) {
-            size_t diff = 0, i, n = (size_t)shown_w * lines * 3;
-            const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * shown_w * 3;
-            for (i = 0; i < n; i++) diff += pix[i] != src[i];
-            if (diff) printf("present-shot: differs from the picture in %u bytes\n", (unsigned)diff);
-            else printf("present-shot: identical to the picture\n");
-        }
+        present_shot_out(pix, shown_w, lines);
     }
     free(pix);
     if (tex_pre) SDL_DestroyTexture(tex_pre);
@@ -625,9 +714,76 @@ static void menu_audio_device(int dir) {
     set_audio_device(aud_dev_name(i));
 }
 
+/* ---- the window: with the SDL renderer, or with an OpenGL context for the shader ---- */
+
+static char win_title[64];
+static int win_x, win_y, win_w, win_h; /* where and how big the window is made: it follows the real one when it is recreated */
+
+/* Makes the window and what draws in it: with `gl`, an OpenGL 3.3 core context and the shader of play_gl.h; without
+ * it, the SDL renderer. 0 (nothing left open, a notice on stderr for the shader) when it cannot be made. */
+static int create_view(int gl) {
+    SDL_Window *w;
+    Uint32 flags = SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | (gl ? SDL_WINDOW_OPENGL : 0);
+    if (gl) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    }
+    w = SDL_CreateWindow(win_title, win_x, win_y, win_w, win_h, flags);
+    if (!w) return 0;
+    if (gl) {
+        SDL_GLContext c = SDL_GL_CreateContext(w);
+        if (!c || !gl_setup()) {
+            static int told;
+            if (!told) fprintf(stderr, "warning: shader: OpenGL 3.3 is not available (%s), drawing with the renderer\n", c ? "the shader failed" : SDL_GetError());
+            told = 1;
+            if (c) SDL_GL_DeleteContext(c);
+            SDL_DestroyWindow(w);
+            return 0;
+        }
+        SDL_GL_SetSwapInterval(cfg.eff.v[O_VSYNC] ? 1 : 0);
+        win = w; glctx = c; gl_on = 1; ren = NULL;
+    } else {
+        SDL_Renderer *r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0));
+        if (!r) { SDL_DestroyWindow(w); return 0; }
+        win = w; ren = r; gl_on = 0; glctx = NULL;
+    }
+    return 1;
+}
+
+/* Takes down what draws in the window and the window itself. */
+static void destroy_view(void) {
+    if (tex_pre) SDL_DestroyTexture(tex_pre);
+    if (tex_ovl) SDL_DestroyTexture(tex_ovl);
+    if (tex) SDL_DestroyTexture(tex);
+    tex = tex_pre = tex_ovl = NULL;
+    tex_w = pre_w = pre_h = ovl_w = ovl_h = 0;
+    ovl_sl = ovl_grid = -1;
+    if (gl_on) { SDL_GL_MakeCurrent(win, glctx); gl_teardown(); SDL_GL_DeleteContext(glctx); glctx = NULL; gl_on = 0; }
+    if (ren) { SDL_DestroyRenderer(ren); ren = NULL; }
+    if (win) { SDL_DestroyWindow(win); win = NULL; }
+}
+
+/* The option `shader` changed: the context of OpenGL is fixed when the window is made, so the window is made again
+ * where it was (and as big, and full screen if it was), without touching the game. If the shader cannot be had, the
+ * renderer comes back and the option keeps its value. */
+static void apply_shader(void) {
+    int want = cfg.eff.v[O_SHADER] == SHADER_CRT;
+    if (!win || want == gl_on) return;
+    if (!fullscreen) { SDL_GetWindowPosition(win, &win_x, &win_y); SDL_GetWindowSize(win, &win_w, &win_h); }
+    destroy_view();
+    if (!(want && create_view(1)) && !create_view(0)) {
+        fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
+        exit(2);
+    }
+    if (icon_copy) snes_set_window_icon(icon_copy, icon_w, icon_h);
+}
+
 static void apply_option(int opt) {
     if (opt == O_FULLSCREEN) set_fullscreen(cfg.eff.v[O_FULLSCREEN]);
     if (opt == O_VSYNC && ren) SDL_RenderSetVSync(ren, cfg.eff.v[O_VSYNC]);
+    if (opt == O_VSYNC && gl_on) SDL_GL_SetSwapInterval(cfg.eff.v[O_VSYNC] ? 1 : 0);
+    if (opt == O_SHADER) apply_shader();
     if (opt == O_WIDE) ppu_set_wide(cfg.eff.v[O_WIDE]);
 }
 
@@ -1322,11 +1478,13 @@ static int open_window(void) {
     title[21] = 0;
     ww = (int)((SCREEN_W + 2 * cfg.eff.v[O_WIDE]) * scale * (cfg.eff.v[O_ASPECT] == ASPECT_43 ? 7.0 / 6.0 : 1.0) + 0.5);
     wh = SCREEN_H * scale;
-    win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
-                           SDL_WINDOW_RESIZABLE | (cfg.eff.v[O_FULLSCREEN] ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     fullscreen = cfg.eff.v[O_FULLSCREEN];
+    snprintf(win_title, sizeof win_title, "%s", title);
+    win_x = win_y = SDL_WINDOWPOS_CENTERED;
+    win_w = ww;
+    win_h = wh;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    if (!win || !(ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0)))) {
+    if (!create_view(cfg.eff.v[O_SHADER] == SHADER_CRT) && !create_view(0)) {
         fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
         return 0;
     }
