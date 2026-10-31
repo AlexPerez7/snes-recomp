@@ -15,6 +15,9 @@ pub mod generate;
 pub mod graph;
 #[cfg(test)]
 mod headless;
+pub mod launcher;
+#[cfg(windows)]
+pub mod launcher_win;
 pub mod opcodes;
 pub mod port;
 pub mod rom;
@@ -23,3 +26,4 @@ mod rtlib;
 #[cfg(test)]
 mod spctest;
 pub mod toolchain;
+pub mod ui;

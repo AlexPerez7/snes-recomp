@@ -3,7 +3,7 @@
 //! loader joins them at run time with `dlopen`, the way a build on another device would. They need gcc or clang on
 //! Linux (shared libraries and `dlopen`), and are skipped elsewhere.
 
-use crate::codegen::{HEADLESS_RUNTIME, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{RUNTIME_CORE, RUNTIME_HEADER};
 use crate::games::Source;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,18 +52,9 @@ fn cc(cc: &str, dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "{cc} {args:?}\n{}", String::from_utf8_lossy(&out.stderr));
 }
 
-/// Writes the runtime and the game's sources into `dir`.
+/// Writes the runtime (as `codegen --all` does: `snes_headless.c` and the rest) and the game's sources into `dir`.
 fn write_all(dir: &Path, game: &[Source]) {
-    let runtime = [
-        ("snes_rt.h", RUNTIME_HEADER),
-        ("headless.c", HEADLESS_RUNTIME),
-        ("snes_core.inc", RUNTIME_CORE),
-        ("snes_ppu.inc", RUNTIME_PPU),
-        ("snes_spc.inc", RUNTIME_SPC),
-    ];
-    for (n, t) in runtime {
-        std::fs::write(dir.join(n), t).unwrap();
-    }
+    crate::generate::write_files(&crate::generate::runtime_files(), dir).unwrap();
     crate::generate::write_files(game, dir).unwrap();
 }
 
@@ -88,7 +79,7 @@ fn game_objects(cc_: &str, dir: &Path, game: &[Source]) -> Vec<String> {
 
 /// The runtime as `libsnesrt.so` (with no undefined symbol left: nothing of the game) and the loader `run_lib`.
 fn build_library(cc_: &str, dir: &Path) {
-    cc(cc_, dir, &["-shared", "-fPIC", "-DSNES_RT_LIBRARY", "-Wl,--no-undefined", "-o", "libsnesrt.so", "headless.c", "-lm"]);
+    cc(cc_, dir, &["-shared", "-fPIC", "-DSNES_RT_LIBRARY", "-Wl,--no-undefined", "-o", "libsnesrt.so", "snes_headless.c", "-lm"]);
     std::fs::write(dir.join("loader.c"), LOADER).unwrap();
     cc(cc_, dir, &["-o", "run_lib", "loader.c", "-L.", "-lsnesrt", "-Wl,-rpath,$ORIGIN", "-ldl"]);
 }
@@ -102,7 +93,7 @@ fn build_module(cc_: &str, dir: &Path, objects: &[String]) {
 
 /// The runtime and the game linked in one piece, as `build_play.bat` and `snes-port` do: `run_one`.
 fn build_one_piece(cc_: &str, dir: &Path, objects: &[String]) {
-    let mut args = vec!["-o", "run_one", "headless.c"];
+    let mut args = vec!["-o", "run_one", "snes_headless.c"];
     args.extend(objects.iter().map(String::as_str));
     args.push("-lm");
     cc(cc_, dir, &args);
@@ -185,7 +176,7 @@ fn the_real_game_runs_the_same_with_the_runtime_as_a_library() {
     })
     .unwrap_or_else(|e| panic!("{e}"));
     // the contexts on threads (as on Android, which has no ucontext) instead of ucontext
-    let mut args = vec!["-DSNES_RT_THREAD_CONTEXTS", "-o", "run_thr", "headless.c"];
+    let mut args = vec!["-DSNES_RT_THREAD_CONTEXTS", "-o", "run_thr", "snes_headless.c"];
     args.extend(objects.iter().map(String::as_str));
     args.extend(["-lm", "-lpthread"]);
     cc(&cc_, &dir, &args);

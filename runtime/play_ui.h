@@ -74,14 +74,79 @@ static unsigned glyph_bold(unsigned v) {
     return out;
 }
 
+/* The text is UTF-8. The next character of `*ps` as a code point; `*ps` moves past it. A stray continuation byte, a cut
+ * sequence or an overlong/invalid one gives '?' and moves one byte. */
+static int utf8_next(const char **ps) {
+    const unsigned char *s = (const unsigned char *)*ps;
+    int n, cp, i;
+    if (s[0] < 0x80) { *ps += 1; return s[0]; }
+    if (s[0] >= 0xC2 && s[0] <= 0xDF) { n = 2; cp = s[0] & 0x1F; }
+    else if (s[0] >= 0xE0 && s[0] <= 0xEF) { n = 3; cp = s[0] & 0x0F; }
+    else if (s[0] >= 0xF0 && s[0] <= 0xF4) { n = 4; cp = s[0] & 0x07; }
+    else { *ps += 1; return '?'; }
+    for (i = 1; i < n; i++) {
+        if ((s[i] & 0xC0) != 0x80) { *ps += 1; return '?'; }
+        cp = cp << 6 | (s[i] & 0x3F);
+    }
+    *ps += n;
+    return cp;
+}
+
+/* The Spanish letters: a base ASCII character plus an accent drawn over it (two rows, as in the font: bit 4 is the
+ * leftmost pixel). Capitals have no free row, so their accent goes in two extra rows above the seven; lowercase letters
+ * have it in their own empty rows 0 and 1. `flip` turns the base upside down (for the opening marks). */
+typedef struct { int cp, base; uint8_t acc0, acc1; int high, flip; } ExtGlyph;
+#define ACUTE 0x04, 0x08
+#define DIAER 0x0A, 0x00
+#define TILDE 0x0D, 0x00
+static const ExtGlyph ext_glyphs[] = {
+    {0xE1,'a',ACUTE,0,0}, {0xE9,'e',ACUTE,0,0}, {0xED,'i',ACUTE,0,0}, {0xF3,'o',ACUTE,0,0}, {0xFA,'u',ACUTE,0,0},
+    {0xFC,'u',DIAER,0,0}, {0xF1,'n',TILDE,0,0},
+    {0xC1,'A',ACUTE,1,0}, {0xC9,'E',ACUTE,1,0}, {0xCD,'I',ACUTE,1,0}, {0xD3,'O',ACUTE,1,0}, {0xDA,'U',ACUTE,1,0},
+    {0xDC,'U',DIAER,1,0}, {0xD1,'N',TILDE,1,0},
+    {0xA1,'!',0,0,0,1}, {0xBF,'?',0,0,0,1},
+};
+
+/* Symbols with a shape of their own (not a base letter plus an accent): arrows for the keys and a middle dot to tell
+ * several assignments apart. Seven rows of the 5x7 grid, bit 4 the leftmost pixel. */
+typedef struct { int cp; uint8_t rows[7]; } SymGlyph;
+static const SymGlyph sym_glyphs[] = {
+    {0x2190, {0x00,0x04,0x08,0x1F,0x08,0x04,0x00}}, {0x2191, {0x04,0x0E,0x15,0x04,0x04,0x04,0x04}},
+    {0x2192, {0x00,0x04,0x02,0x1F,0x02,0x04,0x00}}, {0x2193, {0x04,0x04,0x04,0x04,0x15,0x0E,0x04}},
+    {0xB7,   {0x00,0x00,0x00,0x04,0x00,0x00,0x00}},
+};
+
+#define GLYPH_ROWS 9 /* two extra rows above the 5x7 grid, for the accents of the capitals */
+#define GLYPH_TOP 2
+
+/* The nine rows (row GLYPH_TOP is the first of the 5x7 grid) of the character `cp`; '?' for one the font lacks. */
+static void glyph_rows(int cp, uint8_t rows[GLYPH_ROWS]) {
+    const ExtGlyph *e = NULL;
+    int base = cp, r;
+    size_t i;
+    for (i = 0; i < sizeof sym_glyphs / sizeof sym_glyphs[0]; i++)
+        if (sym_glyphs[i].cp == cp) {
+            memset(rows, 0, GLYPH_ROWS);
+            for (r = 0; r < 7; r++) rows[GLYPH_TOP + r] = sym_glyphs[i].rows[r];
+            return;
+        }
+    for (i = 0; i < sizeof ext_glyphs / sizeof ext_glyphs[0]; i++) if (ext_glyphs[i].cp == cp) e = &ext_glyphs[i];
+    if (e) base = e->base;
+    else if (cp < 32 || cp > 126) base = '?';
+    memset(rows, 0, GLYPH_ROWS);
+    for (r = 0; r < 7; r++) rows[GLYPH_TOP + r] = font5x7[base - 32][e && e->flip ? 6 - r : r];
+    if (e && e->high) { rows[0] = e->acc0; rows[1] = e->acc1; }
+    else if (e) { rows[GLYPH_TOP] |= e->acc0; rows[GLYPH_TOP + 1] |= e->acc1; }
+}
+
 /* The ink of a character: lowest and highest column after thickening, or hi < lo for a blank. */
 static void glyph_ink(int c, int *lo, int *hi) {
+    uint8_t rows[GLYPH_ROWS];
     int row, b;
+    glyph_rows(c, rows);
     *lo = 99; *hi = -1;
-    if (c < 32 || c > 126) c = '?';
-    for (row = 0; row < 7; row++) {
-        unsigned v = font5x7[c - 32][row];
-        v = glyph_bold(v);
+    for (row = 0; row < GLYPH_ROWS; row++) {
+        unsigned v = glyph_bold(rows[row]);
         for (b = 0; b < 6; b++) if (v >> b & 1) { if (b < *lo) *lo = b; if (b > *hi) *hi = b; }
     }
 }
@@ -95,20 +160,20 @@ static int glyph_adv(int c) {
 
 static int text_w(const char *s) {
     int w = 0;
-    for (; *s; s++) w += glyph_adv((unsigned char)*s);
+    while (*s) w += glyph_adv(utf8_next(&s));
     return w;
 }
 
-/* One character, thickened, at (x, y) in colour `rgb`; returns the advance. */
+/* One character, thickened, at (x, y) in colour `rgb` (y is the top of the 5x7 grid); returns the advance. */
 static int glyph_draw(Canvas *c, int x, int y, int ch, uint32_t rgb) {
+    uint8_t rows[GLYPH_ROWS];
     int row, b, lo, hi;
-    if (ch < 32 || ch > 126) ch = '?';
     glyph_ink(ch, &lo, &hi);
+    glyph_rows(ch, rows);
     if (hi >= lo)
-        for (row = 0; row < 7; row++) {
-            unsigned v = font5x7[ch - 32][row];
-            v = glyph_bold(v);
-            for (b = lo; b <= hi; b++) if (v >> b & 1) cv_put(c, x + (hi - b), y + row, rgb);
+        for (row = 0; row < GLYPH_ROWS; row++) {
+            unsigned v = glyph_bold(rows[row]);
+            for (b = lo; b <= hi; b++) if (v >> b & 1) cv_put(c, x + (hi - b), y + row - GLYPH_TOP, rgb);
         }
     return glyph_adv(ch);
 }
@@ -117,8 +182,8 @@ static int glyph_draw(Canvas *c, int x, int y, int ch, uint32_t rgb) {
 static void text_draw(Canvas *c, int x, int y, const char *s, uint32_t rgb, int shadow) {
     const char *p;
     int px = x;
-    if (shadow) { for (p = s; *p; p++) px += glyph_draw(c, px + 1, y + 1, (unsigned char)*p, UI_SHADOW); px = x; }
-    for (p = s; *p; p++) px += glyph_draw(c, px, y, (unsigned char)*p, rgb);
+    if (shadow) { for (p = s; *p; ) px += glyph_draw(c, px + 1, y + 1, utf8_next(&p), UI_SHADOW); px = x; }
+    for (p = s; *p; ) px += glyph_draw(c, px, y, utf8_next(&p), rgb);
 }
 
 static void text_center(Canvas *c, int x, int w, int y, const char *s, uint32_t rgb) {
@@ -129,12 +194,14 @@ static void text_right(Canvas *c, int xr, int y, const char *s, uint32_t rgb) {
     text_draw(c, xr - text_w(s), y, s, rgb, 1);
 }
 
-/* `s` cut to fit in `maxw` pixels, ending in "..." if something was cut; `out` has room for n bytes. */
+/* `s` cut to fit in `maxw` pixels, ending in "..." if something was cut; `out` has room for n bytes. The cut falls
+ * between characters, never inside a multibyte one. */
 static void text_fit(char *out, size_t n, const char *s, int maxw) {
     size_t len = strlen(s), k;
     if (n == 0) return;
     if (text_w(s) <= maxw && len < n) { memcpy(out, s, len + 1); return; }
     for (k = len < n - 4 ? len : n - 4; ; k--) {
+        while (k > 0 && ((unsigned char)s[k] & 0xC0) == 0x80) k--;
         memcpy(out, s, k);
         memcpy(out + k, "...", 4);
         if (text_w(out) <= maxw || k == 0) return;
@@ -143,17 +210,17 @@ static void text_fit(char *out, size_t n, const char *s, int maxw) {
 
 /* The text twice as big, for titles: the same shapes with every pixel doubled. */
 static void text_draw2x(Canvas *c, int x, int y, const char *s, uint32_t rgb, uint32_t edge) {
-    for (; *s; s++) {
-        int ch = (unsigned char)*s, row, b, lo, hi;
-        if (ch < 32 || ch > 126) ch = '?';
+    while (*s) {
+        uint8_t rows[GLYPH_ROWS];
+        int ch = utf8_next(&s), row, b, lo, hi;
         glyph_ink(ch, &lo, &hi);
+        glyph_rows(ch, rows);
         if (hi >= lo)
-            for (row = 0; row < 7; row++) {
-                unsigned v = font5x7[ch - 32][row];
-                v = glyph_bold(v);
+            for (row = 0; row < GLYPH_ROWS; row++) {
+                unsigned v = glyph_bold(rows[row]);
                 for (b = lo; b <= hi; b++)
                     if (v >> b & 1) {
-                        int px = x + (hi - b) * 2, py = y + row * 2;
+                        int px = x + (hi - b) * 2, py = y + (row - GLYPH_TOP) * 2;
                         cv_rect(c, px + 1, py + 1, 2, 2, edge);
                         cv_rect(c, px, py, 2, 2, rgb);
                     }

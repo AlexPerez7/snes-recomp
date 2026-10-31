@@ -23,6 +23,8 @@ pub struct GameProfile {
     pub sources: Vec<Source>,
     /// Where it came from, for messages: `games/<id>.toml` or the path given to `--game`.
     pub origin: String,
+    /// The folder next to the `.toml` with the same name, if it exists: C code and data files of the game.
+    pub dir: Option<PathBuf>,
 }
 
 impl GameProfile {
@@ -32,13 +34,14 @@ impl GameProfile {
         let Some(game) = cfg.game else {
             return Err(format!("{origin}: the profile has no [game] section (id, name and crc32)"));
         };
-        Ok(GameProfile { id: game.id, name: game.name, crc32: game.crc32, config: config.to_string(), sources, origin: origin.to_string() })
+        Ok(GameProfile { id: game.id, name: game.name, crc32: game.crc32, config: config.to_string(), sources, origin: origin.to_string(), dir: None })
     }
 
     /// A profile from a `.toml` file and the `*.c`/`*.h` files of the folder with the same name next to it, if any.
     pub fn load(path: &Path) -> Result<GameProfile, String> {
         let config = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
         let mut sources = Vec::new();
+        let mut folder = None;
         if let Some(dir) = path.file_stem().map(|s| path.with_file_name(s)).filter(|d| d.is_dir()) {
             let entries = std::fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
             for entry in entries {
@@ -50,8 +53,11 @@ impl GameProfile {
                 }
             }
             sources.sort_by(|a, b| a.name.cmp(&b.name));
+            folder = Some(dir);
         }
-        GameProfile::from_text(&config, sources, &path.display().to_string())
+        let mut profile = GameProfile::from_text(&config, sources, &path.display().to_string())?;
+        profile.dir = folder;
+        Ok(profile)
     }
 }
 
@@ -245,6 +251,9 @@ mod tests {
         let p = GameProfile::load(&dir.join("g.toml")).unwrap();
         let names: Vec<&str> = p.sources.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["a.h", "b.c"]);
+        assert_eq!(p.dir.as_deref(), Some(dir.join("g").as_path()), "the profile remembers its folder");
+        std::fs::write(dir.join("h.toml"), toml("h", "0000ABCE")).unwrap();
+        assert_eq!(GameProfile::load(&dir.join("h.toml")).unwrap().dir, None, "no folder, no dir");
         assert!(GameProfile::load(&dir.join("missing.toml")).unwrap_err().contains("missing.toml"));
         let _ = std::fs::remove_dir_all(&dir);
     }

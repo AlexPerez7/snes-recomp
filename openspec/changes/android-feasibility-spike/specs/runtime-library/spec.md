@@ -18,7 +18,7 @@ El runtime SHALL poder compilarse y enlazarse como biblioteca sin ningún ficher
 - **THEN** no se encuentra ningún fragmento de la ROM
 
 ### Requirement: El código del juego se une en tiempo de ejecución
-El código generado SHALL depender del runtime solo a través de las funciones declaradas en `snes_rt.h`. El runtime SHALL obtener el despacho por dirección de un punto de entrada que el módulo del juego registra antes de ejecutar el vector de reset. Si se ejecuta sin un módulo registrado, el runtime MUST terminar con un error que lo indique, sin ejecutar código del juego.
+El código generado SHALL depender del runtime solo a través de las funciones declaradas en `snes_rt.h`. El runtime SHALL obtener el despacho por dirección, y la tabla de opciones del juego, de lo que el módulo del juego registra antes de ejecutar el vector de reset. Si se ejecuta sin un módulo registrado, el runtime MUST terminar con un error que lo indique, sin ejecutar código del juego.
 
 #### Scenario: Módulo registrado
 - **WHEN** un módulo con el C generado se carga, registra su punto de entrada y se arranca el juego

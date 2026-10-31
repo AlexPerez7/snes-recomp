@@ -9,7 +9,7 @@ pub enum Compiler {
     Gnu(String),
     /// MSVC, through the `vcvars64.bat` of a Visual Studio installation.
     Msvc(PathBuf),
-    /// The TinyCC downloaded into the cache (`download::install`); `find` never returns it.
+    /// TinyCC: downloaded into the cache (`download::install`) or bundled with the package (`bundled`); `find` never returns it.
     Tcc(PathBuf),
 }
 
@@ -46,6 +46,23 @@ pub fn find() -> Option<Compiler> {
         }
     }
     find_msvc().map(Compiler::Msvc)
+}
+
+/// The TinyCC that travels with the program: `toolchain/tcc/tcc.exe` next to the executable (`exe_dir`).
+pub fn bundled(exe_dir: &std::path::Path) -> Option<Compiler> {
+    let tcc = exe_dir.join("toolchain").join("tcc").join("tcc.exe");
+    tcc.is_file().then_some(Compiler::Tcc(tcc))
+}
+
+/// What `snes-port` builds with: a compiler of the machine, else the one of the package. `ignore_local` pretends the
+/// machine has none (to test the package on a machine that has one).
+pub fn find_for_port(exe_dir: &std::path::Path, ignore_local: bool) -> Option<Compiler> {
+    if !ignore_local {
+        if let Some(c) = find() {
+            return Some(c);
+        }
+    }
+    bundled(exe_dir)
 }
 
 /// The environment `vcvars64.bat` sets up, computed once: running that script in parallel from several

@@ -20,7 +20,8 @@
  * --print-keys lists the keyboard map of player 1 and exits.
  *
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
- * F1 = menu, F11 = full screen, P = pause, Tab (held) = fast forward, F10 = save the picture as snes_NNN.png,
+ * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
+ * F5 = save a state, F7 = load it, F3/F4 = previous/next slot (1 to 9), Backspace held = rewind (games with a [resume] point; see play_state.h),
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
@@ -32,6 +33,8 @@
 #include "snes_core.inc"
 #include "play_cfg.h"
 #include "play_ui.h"
+#include "play_i18n.h"
+#include "play_gl.h"
 #ifdef _WIN32
 #include <windows.h>
 #ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
@@ -39,14 +42,35 @@
 #pragma comment(lib, "comdlg32.lib")
 #define HAVE_FILE_DIALOG
 #endif
+#else
+#include <errno.h>
+#include <sys/stat.h>
 #endif
 
 static int opt_no_window, opt_fullscreen, opt_scale;
 static int cli_fullscreen, cli_scale, cli_set[O_COUNT], cli_val[O_COUNT];
 static SDL_Window *win;
+
+#include "play_icon.h"
+static unsigned *icon_copy; /* the icon in use: a recreated window (option `shader`) gets it again */
+static int icon_w, icon_h;
+void snes_set_window_icon(const unsigned *argb, int w, int h) {
+    SDL_Surface *s;
+    if (!win || !argb || w <= 0 || h <= 0) return;
+    if (argb != icon_copy) {
+        unsigned *c = (unsigned *)malloc((size_t)w * h * sizeof *c);
+        if (c) { memcpy(c, argb, (size_t)w * h * sizeof *c); free(icon_copy); icon_copy = c; icon_w = w; icon_h = h; }
+    }
+    s = SDL_CreateRGBSurfaceWithFormatFrom((void *)argb, w, h, 32, w * 4, SDL_PIXELFORMAT_ARGB8888);
+    if (!s) return;
+    SDL_SetWindowIcon(win, s); /* SDL copies it */
+    SDL_FreeSurface(s);
+}
 static SDL_Renderer *ren;
+static SDL_GLContext glctx;
+static int gl_on; /* the picture is drawn by the shader of play_gl.h (a window with an OpenGL context, no renderer) */
 static SDL_Texture *tex;
-static int paused, fast, fullscreen, shot_n;
+static int paused, fast, ff_toggle, fullscreen, shot_n;
 static uint64_t t_next, perf_freq;
 static uint16_t held; /* --hold */
 static int opt_print_keys, opt_stats, opt_print_config;
@@ -88,6 +112,35 @@ static int sibling_path(const char *rom_path, const char *ext, char *out, size_t
     memcpy(out, rom_path, base);
     strcpy(out + base, ext);
     return 1;
+}
+
+/* Saved games and states go to `saves_dir` (--saves-dir, which snes-port sets to `saves` next to the program) as
+ * `<name of the rom without extension><ext>`; without it they stay next to the ROM. */
+static char saves_dir[1000];
+
+static int save_path(const char *rom_path, const char *ext, char *out, size_t n) {
+    const char *slash = strrchr(rom_path, '/'), *bslash = strrchr(rom_path, 92), *name = rom_path;
+    char tail[1100];
+    if (!saves_dir[0]) return sibling_path(rom_path, ext, out, n);
+    if (bslash && (!slash || bslash > slash)) slash = bslash;
+    if (slash) name = slash + 1;
+    if (!sibling_path(name, ext, tail, sizeof tail)) return 0;
+    if (strlen(saves_dir) + 1 + strlen(tail) + 1 > n) return 0;
+    snprintf(out, n, "%s/%s", saves_dir, tail);
+    return 1;
+}
+
+/* Makes sure `saves_dir` exists; if it cannot be made, the saves stay next to the ROM. */
+static void saves_dir_prepare(void) {
+    if (!saves_dir[0]) return;
+#ifdef _WIN32
+    if (!CreateDirectoryA(saves_dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+#else
+    if (mkdir(saves_dir, 0777) != 0 && errno != EEXIST) {
+#endif
+        fprintf(stderr, "warning: cannot create %s: the saves stay next to the ROM\n", saves_dir);
+        saves_dir[0] = 0;
+    }
 }
 
 /* ---- the configuration ---- */
@@ -197,10 +250,41 @@ static void bindings_store(Ini *out) {
             }
 }
 
+/* The options of the game (snes_game_opts) in the INI as `game.<key> = <name>`. */
+#define GOPTS (snes_game_opt_count < MAX_GAME_OPT ? snes_game_opt_count : MAX_GAME_OPT)
+
+/* Reads them: a value that is not one of the names is reported and keeps the default; what the command line set stays for this run. */
+static void gopts_load(const Ini *in) {
+    char key[64], val[64];
+    int i, k;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++) {
+        const GameOptDef *d = &snes_game_opts[i];
+        snprintf(key, sizeof key, "game.%s", d->key);
+        if (!ini_get(in, key, val, sizeof val)) continue;
+        for (k = 0; k < d->n; k++) if (!strcmp(d->names[k], val)) break;
+        if (k == d->n) { fprintf(stderr, "warning: config: invalid value '%s' for %s, using the default\n", val, key); continue; }
+        gopt_file[i] = k;
+        if (!(gopt_cli >> i & 1)) gopt_eff[i] = k;
+    }
+}
+
+/* Writes what config.ini holds (not what the command line changed). */
+static void gopts_store(Ini *out) {
+    char key[64];
+    int i;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++) {
+        snprintf(key, sizeof key, "game.%s", snes_game_opts[i].key);
+        ini_set(out, key, snes_game_opts[i].names[gopt_file[i]]);
+    }
+}
+
 /* Writes config.ini: the options of the file (not what the command line changed) and the key map. */
 static void config_save(void) {
     if (!cfg_writable || !cfg_path[0]) return;
     cfg_store(&cfg.file, &ini);
+    gopts_store(&ini);
     bindings_store(&ini);
     if (!ini_save(&ini, cfg_path)) fprintf(stderr, "warning: cannot write %s\n", cfg_path);
 }
@@ -228,6 +312,7 @@ static void config_load(const char *rom_path) {
             fprintf(stderr, "config: imported %s\n", keys_path);
     }
     cfg_apply(&file, &ini);
+    gopts_load(&ini);
     config_init(&cfg, &file);
     if (cli_fullscreen) config_override(&cfg, O_FULLSCREEN, 1);
     if (cli_scale) config_override(&cfg, O_SCALE, opt_scale);
@@ -277,6 +362,53 @@ static uint16_t read_pad(int player) {
     return m;
 }
 
+/* The device player 1 used last, for input_label: 1 a controller, 0 the keyboard. */
+static int last_input_pad;
+
+/* The name a pad button has in the label: the face buttons by their letter, the others as the console names them. */
+static const char *pad_label(int code) {
+    switch (code) {
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return "L";
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return "R";
+    case SDL_CONTROLLER_BUTTON_START: return "START";
+    case SDL_CONTROLLER_BUTTON_BACK: return "SELECT";
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: return "UP";
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return "DOWN";
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return "LEFT";
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: return "RIGHT";
+    default: return NULL;
+    }
+}
+
+/* input_label (snes_rt.h): the first button of the preferred device bound to `mask`; if that device has none, the other one. */
+static int play_input_label(uint16_t mask, char *out, size_t n) {
+    int first = last_input_pad && pads[0] ? BIND_PAD : BIND_KEY, pass, i;
+    for (pass = 0; pass < 2; pass++) {
+        int dev = pass ? !first : first;
+        if (dev == BIND_PAD && !pads[0]) continue;
+        for (i = 0; i < nbinds; i++) {
+            const char *name;
+            int kind = 1;
+            if (binds[i].dev != dev || binds[i].player != 0 || binds[i].button != mask) continue;
+            if (dev == BIND_KEY) {
+                name = SDL_GetScancodeName((SDL_Scancode)binds[i].code);
+            } else if (binds[i].code >= SDL_CONTROLLER_BUTTON_A && binds[i].code <= SDL_CONTROLLER_BUTTON_Y) {
+                SDL_GameControllerType t = SDL_GameControllerGetType(pads[0]);
+                static const char *const face[4] = {"A", "B", "X", "Y"}; /* SDL_CONTROLLER_BUTTON_A, B, X, Y in this order */
+                name = face[binds[i].code - SDL_CONTROLLER_BUTTON_A];
+                kind = t == SDL_CONTROLLER_TYPE_PS3 || t == SDL_CONTROLLER_TYPE_PS4 || t == SDL_CONTROLLER_TYPE_PS5 ? 3 : 2;
+            } else {
+                name = pad_label(binds[i].code);
+            }
+            if (!name || !*name) continue;
+            for (i = 0; name[i] && (size_t)i + 1 < n; i++) out[i] = (char)toupper((unsigned char)name[i]);
+            out[i] = 0;
+            return kind;
+        }
+    }
+    return 0;
+}
+
 /* ---- the picture ---- */
 
 static uint64_t st_present;
@@ -293,11 +425,14 @@ static int view_lines(void) {
 
 /* Draws the picture `fb` (show_w x 224, as shown_frame() set it) in the window with the options: aspect, scaling, filter,
  * overscan and effects. The texture has the size of the picture, so that the filters do not read what lies beyond it. */
+static void present_gl(const uint8_t *fb);
+
 static void present(const uint8_t *fb) {
     int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER], pw = show_w;
     SDL_Rect src, dst;
     Rect r;
     uint64_t p0 = SDL_GetPerformanceCounter();
+    if (gl_on) { present_gl(fb); return; }
     if (!tex || tex_w != pw) {
         if (tex) SDL_DestroyTexture(tex);
         tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, pw, SCREEN_H);
@@ -311,10 +446,12 @@ static void present(const uint8_t *fb) {
     SDL_UpdateTexture(tex, NULL, fb, pw * 3);
     SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
     SDL_RenderClear(ren);
+    if (filter == FILTER_SHARP && dst.w % pw == 0 && dst.h % lines == 0) filter = FILTER_NEAREST; /* whole factor: nothing to smooth */
     if (filter == FILTER_SHARP) {
         /* scale up by a whole factor with nearest, then down to the final size with bilinear: the edges of the
-         * pixels stay sharp and the factor that is not whole is smoothed */
-        int k = (dst.w + pw - 1) / pw;
+         * pixels stay sharp and the factor that is not whole is smoothed. The factor covers both axes (they differ
+         * with aspect `free`) */
+        int kx = (dst.w + pw - 1) / pw, ky = (dst.h + lines - 1) / lines, k = kx > ky ? kx : ky;
         if (k < 1) k = 1;
         if (k > 8) k = 8;
         if (!tex_pre || pre_w != pw * k || pre_h != lines * k) {
@@ -360,6 +497,19 @@ static void present(const uint8_t *fb) {
     st_present += SDL_GetPerformanceCounter() - p0;
 }
 
+/* The picture through the shader of play_gl.h, in the whole window: same rectangle as the renderer path. */
+static void present_gl(const uint8_t *fb) {
+    int w, h, lines = view_lines();
+    Rect r;
+    uint64_t p0 = SDL_GetPerformanceCounter();
+    SDL_GL_GetDrawableSize(win, &w, &h);
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, show_w);
+    gl_draw(fb, show_w, SCREEN_H, w, h, r.x, r.y, r.w, r.h, cfg.eff.v[O_OVERSCAN], lines,
+            cfg.eff.v[O_SCANLINES], cfg.eff.v[O_CRT_MASK], cfg.eff.v[O_CRT_CURVE], cfg.eff.v[O_CRT_BLOOM]);
+    SDL_GL_SwapWindow(win);
+    st_present += SDL_GetPerformanceCounter() - p0;
+}
+
 /* --present-shot: the picture as present() draws it in a window of W x H, made with the software renderer into a
  * PNG (so the layout, the filters, the overscan and the effects can be seen without a window). When W x H is the
  * size of the picture itself it also says whether the result is the picture byte for byte. */
@@ -368,7 +518,78 @@ static int present_w = 256, present_h = SCREEN_H;
 
 static const uint8_t *shown_frame(void);
 
+/* The same as present_shot() for the shader: a hidden window with an OpenGL context draws into a texture of W x H and
+ * the pixels are read back (top row first). NULL when there is no OpenGL 3.3 (or the window already has the shader). */
+static uint8_t *present_shot_gl(const uint8_t *shown) {
+    SDL_Window *sw = NULL;
+    SDL_GLContext sc = NULL;
+    uint8_t *pix = NULL, *raw = NULL;
+    GLuint_t rt = 0, fbo = 0;
+    int y, ok = 0;
+    if (gl_on || SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) return NULL;
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    sw = SDL_CreateWindow("present-shot", 0, 0, 64, 64, SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+    if (sw) sc = SDL_GL_CreateContext(sw);
+    if (sc && gl_setup()) {
+        Rect r = view_rect(present_w, present_h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], view_lines(), show_w);
+        gl.GenTextures(1, &rt);
+        gl.BindTexture(GL_TEXTURE_2D_, rt);
+        gl.TexParameteri(GL_TEXTURE_2D_, GL_TEXTURE_MIN_FILTER_, GL_LINEAR_);
+        gl.TexParameteri(GL_TEXTURE_2D_, GL_TEXTURE_MAG_FILTER_, GL_LINEAR_);
+        gl.PixelStorei(GL_UNPACK_ALIGNMENT_, 1);
+        gl.TexImage2D(GL_TEXTURE_2D_, 0, GL_RGB8_, present_w, present_h, 0, GL_RGB_, GL_UNSIGNED_BYTE_, NULL);
+        gl.GenFramebuffers(1, &fbo);
+        gl.BindFramebuffer(GL_FRAMEBUFFER_, fbo);
+        gl.FramebufferTexture2D(GL_FRAMEBUFFER_, GL_COLOR_ATTACHMENT0_, GL_TEXTURE_2D_, rt, 0);
+        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER_) == GL_FRAMEBUFFER_COMPLETE_) {
+            gl_draw(shown, show_w, SCREEN_H, present_w, present_h, r.x, r.y, r.w, r.h, cfg.eff.v[O_OVERSCAN], view_lines(),
+                    cfg.eff.v[O_SCANLINES], cfg.eff.v[O_CRT_MASK], cfg.eff.v[O_CRT_CURVE], cfg.eff.v[O_CRT_BLOOM]);
+            raw = (uint8_t *)malloc((size_t)present_w * present_h * 3);
+            pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
+            if (raw && pix) {
+                gl.PixelStorei(GL_PACK_ALIGNMENT_, 1);
+                gl.ReadPixels(0, 0, present_w, present_h, GL_RGB_, GL_UNSIGNED_BYTE_, raw);
+                for (y = 0; y < present_h; y++) memcpy(pix + (size_t)y * present_w * 3, raw + (size_t)(present_h - 1 - y) * present_w * 3, (size_t)present_w * 3);
+                ok = 1;
+            }
+        }
+        gl.BindFramebuffer(GL_FRAMEBUFFER_, 0);
+        if (fbo) gl.DeleteFramebuffers(1, &fbo);
+        if (rt) gl.DeleteTextures(1, &rt);
+        gl_teardown();
+    }
+    if (sc) SDL_GL_DeleteContext(sc);
+    if (sw) SDL_DestroyWindow(sw);
+    free(raw);
+    if (!ok) { free(pix); pix = NULL; }
+    return pix;
+}
+
+static void present_shot_out(const uint8_t *pix, int shown_w, int lines) {
+    if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
+    if (present_w == shown_w && present_h == lines) {
+        size_t diff = 0, i, n = (size_t)shown_w * lines * 3;
+        const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * shown_w * 3;
+        for (i = 0; i < n; i++) diff += pix[i] != src[i];
+        if (diff) printf("present-shot: differs from the picture in %u bytes\n", (unsigned)diff);
+        else printf("present-shot: identical to the picture\n");
+    }
+}
+
+static void present_shot_sw(void);
+
 static void present_shot(void) {
+    if (cfg.eff.v[O_SHADER] == SHADER_CRT) {
+        uint8_t *gpix = present_shot_gl(shown_frame());
+        if (gpix) { present_shot_out(gpix, show_w, view_lines()); free(gpix); return; }
+        printf("present-shot: no OpenGL 3.3, drawn with the renderer\n");
+    }
+    present_shot_sw();
+}
+
+static void present_shot_sw(void) {
     SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, present_w, present_h, 24, SDL_PIXELFORMAT_RGB24);
     SDL_Renderer *sr, *keep_ren = ren;
     SDL_Texture *keep_tex = tex, *keep_pre = tex_pre, *keep_ovl = tex_ovl;
@@ -386,14 +607,7 @@ static void present_shot(void) {
     present(shown);
     pix = (uint8_t *)malloc((size_t)present_w * present_h * 3);
     if (pix && SDL_RenderReadPixels(sr, NULL, SDL_PIXELFORMAT_RGB24, pix, present_w * 3) == 0) {
-        if (write_png(present_shot_path, pix, present_w, present_h)) printf("present-shot: %dx%d\n", present_w, present_h);
-        if (present_w == shown_w && present_h == lines) {
-            size_t diff = 0, i, n = (size_t)shown_w * lines * 3;
-            const uint8_t *src = fb_front + (size_t)cfg.eff.v[O_OVERSCAN] * shown_w * 3;
-            for (i = 0; i < n; i++) diff += pix[i] != src[i];
-            if (diff) printf("present-shot: differs from the picture in %u bytes\n", (unsigned)diff);
-            else printf("present-shot: identical to the picture\n");
-        }
+        present_shot_out(pix, shown_w, lines);
     }
     free(pix);
     if (tex_pre) SDL_DestroyTexture(tex_pre);
@@ -423,19 +637,46 @@ static Canvas cv = {fb_menu, SCREEN_W, SCREEN_H};
 
 enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game"};
-static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad;
+enum { ASK_NONE, ASK_RESTORE, ASK_QUIT };
+static void menu_lang_sync(void);
+static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad; /* menu_ask: an ASK_* waiting for Enter or Esc */
 static Bind menu_pending;
 static char menu_msg[80];
-static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS};
-static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter"};
+static const int image_opts[] = {O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALING, O_FILTER, O_OVERSCAN, O_WIDE, O_SCANLINES, O_GRID, O_FPS, O_SHADER, O_CRT_MASK, O_CRT_CURVE, O_CRT_BLOOM};
+static const char *const image_labels[] = {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom"};
 #define N_IMAGE ((int)(sizeof image_opts / sizeof image_opts[0]))
+
+/* The rows of the Image tab that are shown (indexes into image_opts, in order). The CRT rows only count with the
+ * shader on, and then `filter` and `grid` are left out: the shader samples the picture sharp by itself and draws its
+ * own mask, so they would do nothing. */
+static int image_rows(int *idx) {
+    int i, n = 0, shader = cfg.eff.v[O_SHADER] == SHADER_CRT;
+    for (i = 0; i < N_IMAGE; i++) {
+        int o = image_opts[i], crt_row = o == O_CRT_MASK || o == O_CRT_CURVE || o == O_CRT_BLOOM;
+        if (shader ? (o == O_FILTER || o == O_GRID) : crt_row) continue;
+        idx[n++] = i;
+    }
+    return n;
+}
+
+static int image_row_count(void) {
+    int idx[N_IMAGE];
+    return image_rows(idx);
+}
+
+/* The row of the Image tab where option `opt` is shown (-1 when it is hidden). */
+static int image_row_of(int opt) {
+    int idx[N_IMAGE], i, n = image_rows(idx);
+    for (i = 0; i < n; i++) if (image_opts[idx[i]] == opt) return i;
+    return -1;
+}
 
 static int menu_count(int tab) {
     switch (tab) {
-    case TAB_IMAGE: return N_IMAGE + 1;
+    case TAB_IMAGE: return image_row_count() + 1;
     case TAB_AUDIO: return 3;
     case TAB_CONTROLS: return 13;
-    default: return 4;
+    default: return 1 + GOPTS + 4; /* the fast forward speed, the options of the game, then Resume, Save, Restore and Quit */
     }
 }
 
@@ -473,9 +714,76 @@ static void menu_audio_device(int dir) {
     set_audio_device(aud_dev_name(i));
 }
 
+/* ---- the window: with the SDL renderer, or with an OpenGL context for the shader ---- */
+
+static char win_title[64];
+static int win_x, win_y, win_w, win_h; /* where and how big the window is made: it follows the real one when it is recreated */
+
+/* Makes the window and what draws in it: with `gl`, an OpenGL 3.3 core context and the shader of play_gl.h; without
+ * it, the SDL renderer. 0 (nothing left open, a notice on stderr for the shader) when it cannot be made. */
+static int create_view(int gl) {
+    SDL_Window *w;
+    Uint32 flags = SDL_WINDOW_RESIZABLE | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) | (gl ? SDL_WINDOW_OPENGL : 0);
+    if (gl) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    }
+    w = SDL_CreateWindow(win_title, win_x, win_y, win_w, win_h, flags);
+    if (!w) return 0;
+    if (gl) {
+        SDL_GLContext c = SDL_GL_CreateContext(w);
+        if (!c || !gl_setup()) {
+            static int told;
+            if (!told) fprintf(stderr, "warning: shader: OpenGL 3.3 is not available (%s), drawing with the renderer\n", c ? "the shader failed" : SDL_GetError());
+            told = 1;
+            if (c) SDL_GL_DeleteContext(c);
+            SDL_DestroyWindow(w);
+            return 0;
+        }
+        SDL_GL_SetSwapInterval(cfg.eff.v[O_VSYNC] ? 1 : 0);
+        win = w; glctx = c; gl_on = 1; ren = NULL;
+    } else {
+        SDL_Renderer *r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0));
+        if (!r) { SDL_DestroyWindow(w); return 0; }
+        win = w; ren = r; gl_on = 0; glctx = NULL;
+    }
+    return 1;
+}
+
+/* Takes down what draws in the window and the window itself. */
+static void destroy_view(void) {
+    if (tex_pre) SDL_DestroyTexture(tex_pre);
+    if (tex_ovl) SDL_DestroyTexture(tex_ovl);
+    if (tex) SDL_DestroyTexture(tex);
+    tex = tex_pre = tex_ovl = NULL;
+    tex_w = pre_w = pre_h = ovl_w = ovl_h = 0;
+    ovl_sl = ovl_grid = -1;
+    if (gl_on) { SDL_GL_MakeCurrent(win, glctx); gl_teardown(); SDL_GL_DeleteContext(glctx); glctx = NULL; gl_on = 0; }
+    if (ren) { SDL_DestroyRenderer(ren); ren = NULL; }
+    if (win) { SDL_DestroyWindow(win); win = NULL; }
+}
+
+/* The option `shader` changed: the context of OpenGL is fixed when the window is made, so the window is made again
+ * where it was (and as big, and full screen if it was), without touching the game. If the shader cannot be had, the
+ * renderer comes back and the option keeps its value. */
+static void apply_shader(void) {
+    int want = cfg.eff.v[O_SHADER] == SHADER_CRT;
+    if (!win || want == gl_on) return;
+    if (!fullscreen) { SDL_GetWindowPosition(win, &win_x, &win_y); SDL_GetWindowSize(win, &win_w, &win_h); }
+    destroy_view();
+    if (!(want && create_view(1)) && !create_view(0)) {
+        fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
+        exit(2);
+    }
+    if (icon_copy) snes_set_window_icon(icon_copy, icon_w, icon_h);
+}
+
 static void apply_option(int opt) {
     if (opt == O_FULLSCREEN) set_fullscreen(cfg.eff.v[O_FULLSCREEN]);
     if (opt == O_VSYNC && ren) SDL_RenderSetVSync(ren, cfg.eff.v[O_VSYNC]);
+    if (opt == O_VSYNC && gl_on) SDL_GL_SetSwapInterval(cfg.eff.v[O_VSYNC] ? 1 : 0);
+    if (opt == O_SHADER) apply_shader();
     if (opt == O_WIDE) ppu_set_wide(cfg.eff.v[O_WIDE]);
 }
 
@@ -496,20 +804,23 @@ static void restore_opt(int opt) {
 static void restore_image(void) {
     int i;
     for (i = 0; i < N_IMAGE; i++) restore_opt(image_opts[i]);
-    snprintf(menu_msg, sizeof menu_msg, "Image options restored");
+    snprintf(menu_msg, sizeof menu_msg, tr("Image options restored"));
 }
 
 static void restore_audio(void) {
     restore_opt(O_VOLUME);
     set_audio_device("");
-    snprintf(menu_msg, sizeof menu_msg, "Audio options restored");
+    snprintf(menu_msg, sizeof menu_msg, tr("Audio options restored"));
 }
 
 static void restore_all(void) {
+    int i;
+    for (i = 0; i < GOPTS; i++) gopt_set_user(i, snes_game_opts[i].def);
+    restore_opt(O_FFSPEED);
     restore_image();
     restore_audio();
     bind_defaults();
-    snprintf(menu_msg, sizeof menu_msg, "Everything restored to the defaults");
+    snprintf(menu_msg, sizeof menu_msg, tr("Everything restored to the defaults"));
 }
 
 static void menu_close(void) {
@@ -528,8 +839,14 @@ static void menu_change(int dir) {
     menu_msg[0] = 0;
     switch (menu_tab) {
     case TAB_IMAGE:
-        if (s == N_IMAGE) { if (dir == 0) restore_image(); }
-        else opt_change(image_opts[s], dir ? dir : 1);
+        {
+            int idx[N_IMAGE], n = image_rows(idx);
+            if (s == n) { if (dir == 0) restore_image(); }
+            else {
+                opt_change(image_opts[idx[s]], dir ? dir : 1);
+                if (image_opts[idx[s]] == O_SHADER) menu_sel[TAB_IMAGE] = image_row_of(O_SHADER); /* the rows after it come and go: the cursor stays on the option */
+            }
+        }
         break;
     case TAB_AUDIO:
         if (s == 0) { if (dir) opt_change(O_VOLUME, dir); }
@@ -538,14 +855,23 @@ static void menu_change(int dir) {
         break;
     case TAB_CONTROLS:
         if (s == 0) menu_player = (menu_player + (dir ? dir : 1) + 2) % 2;
-        else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, "Press a key or a controller button"); }
+        else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, tr("Press a key or a controller button")); }
         break;
     default:
+        if (s == 0) { opt_change(O_FFSPEED, dir ? dir : 1); break; }
+        s--;
+        if (s < GOPTS) { /* an option of the game: a list that goes round */
+            const GameOptDef *d = &snes_game_opts[s];
+            gopt_init();
+            gopt_set_user(s, (gopt_eff[s] + (dir ? dir : 1) + d->n) % d->n);
+            break;
+        }
+        s -= GOPTS;
         if (dir) break;
         if (s == 0) menu_close();
-        else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, "Saved game written"); }
-        else if (s == 2) { menu_ask = 1; snprintf(menu_msg, sizeof menu_msg, "Enter restores everything, Esc cancels"); }
-        else stop(0, "quit from the menu");
+        else if (s == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, tr("Saved game written")); }
+        else if (s == 2) { menu_ask = ASK_RESTORE; snprintf(menu_msg, sizeof menu_msg, tr("Enter restores everything, Esc cancels")); }
+        else { menu_ask = ASK_QUIT; snprintf(menu_msg, sizeof menu_msg, tr("Enter quits the game, Esc cancels")); }
         break;
     }
 }
@@ -558,7 +884,7 @@ static void menu_assign(int dev, int code) {
         int o = bind_find(binds, nbinds, dev, code);
         menu_pending.dev = dev; menu_pending.code = code; menu_pending.player = menu_player; menu_pending.button = mask;
         menu_confirm = 1;
-        snprintf(menu_msg, sizeof menu_msg, "Used by P%d %s: Enter replaces, Esc cancels", binds[o].player + 1, button_name((uint16_t)binds[o].button));
+        snprintf(menu_msg, sizeof menu_msg, tr("Used by P%d %s: Enter replaces, Esc cancels"), binds[o].player + 1, button_name((uint16_t)binds[o].button));
     } else {
         menu_capture = -1;
         menu_msg[0] = 0;
@@ -574,6 +900,7 @@ static void menu_move(int d) {
 /* A key pressed while the menu is open, or while the menu is being opened (F1). */
 static void menu_key(SDL_Scancode sc) {
     menu_by_pad = 0;
+    menu_lang_sync();
     if (menu_confirm) {
         if (sc == SDL_SCANCODE_RETURN) {
             bind_assign(binds, &nbinds, MAX_BINDS, menu_pending.dev, menu_pending.code, menu_pending.player, menu_pending.button, 1);
@@ -584,8 +911,12 @@ static void menu_key(SDL_Scancode sc) {
         return;
     }
     if (menu_ask) {
-        if (sc == SDL_SCANCODE_RETURN) { menu_ask = 0; restore_all(); }
-        else if (sc == SDL_SCANCODE_ESCAPE) { menu_ask = 0; menu_msg[0] = 0; }
+        if (sc == SDL_SCANCODE_RETURN) {
+            int what = menu_ask;
+            menu_ask = ASK_NONE;
+            if (what == ASK_QUIT) stop(0, "quit from the menu");
+            else restore_all();
+        } else if (sc == SDL_SCANCODE_ESCAPE) { menu_ask = ASK_NONE; menu_msg[0] = 0; }
         return;
     }
     if (menu_capture >= 0) {
@@ -627,28 +958,74 @@ static void menu_pad(SDL_GameControllerButton b) {
     menu_by_pad = 1;
 }
 
-/* The keys and buttons of `button` for the menu line, e.g. "Space, Z | a". */
-static void bind_text(char *out, size_t n, int player, int button) {
-    char name[64];
-    int i, k = 0, any;
+/* The keys (`dev` BIND_KEY) or controller buttons (BIND_PAD) of `button` for the menu, as the player reads them ("Space ·
+ * Z"). Empty when there is none. The names are for the eye only: config.ini keeps the ones from bind_name. */
+static void bind_cell(char *out, size_t n, int dev, int player, int button) {
+    char name[64], tmp[64];
+    int i;
     out[0] = 0;
-    for (any = 0; any < 2; any++) {
-        int first = 1;
-        for (i = 0; i < nbinds; i++) {
-            if (binds[i].dev != any || binds[i].player != player || binds[i].button != button) continue;
-            bind_name(name, sizeof name, any, binds[i].code);
-            if (strlen(out) + strlen(name) + 4 >= n) break;
-            if (!first) strcat(out, ",");
-            else if (any == 1 && k) strcat(out, " | ");
-            strcat(out, name);
-            first = 0;
-        }
-        if (!first) k = 1;
+    for (i = 0; i < nbinds; i++) {
+        const char *shown;
+        if (binds[i].dev != dev || binds[i].player != player || binds[i].button != button) continue;
+        bind_name(name, sizeof name, dev, binds[i].code);
+        shown = bind_label(name, tmp, sizeof tmp);
+        if (strlen(out) + strlen(shown) + 5 >= n) break;
+        if (out[0]) strcat(out, " · ");
+        strcat(out, shown);
     }
 }
 
 /* Where the panel puts things (the picture is 256 by 224). */
 enum { PX = 10, PY = 6, PW = 236, PH = 214, ROW_X = 22, ROW_W = 212, ROW_Y = 52, ROW_H = 11, VAL_R = 228, VAL_W = 92 };
+/* The Controls tab has its own rows, a little closer, under a line with the names of the two columns. */
+enum { CTL_HEAD = 51, CTL_Y = 61, CTL_H = 10, CTL_LAB = 38, CTL_PAD = 170, CTL_PADW = 64 };
+
+static const char *const btn_labels[12] = {"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"};
+
+/* The columns of the Controls tab: the buttons take what the widest name needs in the current language, the controller
+ * buttons a fixed strip on the right, and the keys what is left between them. */
+static void ctl_cols(int *labw, int *keyx, int *keyw) {
+    int b, w = 0;
+    for (b = 0; b < 12; b++) if (text_w(tr(btn_labels[b])) > w) w = text_w(tr(btn_labels[b]));
+    *labw = w;
+    *keyx = CTL_LAB + w + 6;
+    *keyw = CTL_PAD - 4 - *keyx;
+}
+
+/* One row of the Controls tab: row 0 picks the player; the others show a console button, with its keys and its controller
+ * buttons in two columns ("..." in both while it waits for a key). */
+static void ctl_row(int i, int on, int player) {
+    int y = CTL_Y + i * CTL_H, bob = on ? (menu_tick / 10) % 2 : 0;
+    char val[96], fit[96];
+    if (on) cv_rect(&cv, ROW_X, y - 2, ROW_W, CTL_H - 1, 0x34489Cu);
+    if (on) ui_cursor(&cv, ROW_X + 3 + bob, y);
+    if (i == 0) {
+        int w, cx = ROW_X + ROW_W / 2;
+        snprintf(val, sizeof val, tr("Player %d"), player + 1);
+        w = text_w(val);
+        ui_arrow(&cv, cx - w / 2 - 12, y, -1, on ? UI_TEXT : UI_DIM);
+        text_center(&cv, ROW_X, ROW_W, y, val, on ? UI_GOOD : UI_TEXT);
+        ui_arrow(&cv, cx + w / 2 + 6, y, 1, on ? UI_TEXT : UI_DIM);
+        return;
+    }
+    {
+        int labw, keyx, keyw, d, x[2], w[2];
+        ctl_cols(&labw, &keyx, &keyw);
+        text_fit(fit, sizeof fit, tr(btn_labels[i - 1]), labw);
+        text_draw(&cv, CTL_LAB, y, fit, on ? UI_GOLD : UI_TEXT, 1);
+        x[0] = keyx; x[1] = CTL_PAD; w[0] = keyw; w[1] = CTL_PADW;
+        for (d = 0; d < 2; d++) {
+            uint32_t col = on ? UI_GOOD : UI_TEXT;
+            if (menu_capture == i - 1) snprintf(val, sizeof val, "...");
+            else {
+                bind_cell(val, sizeof val, d, player, 0x8000 >> (i - 1));
+                if (!val[0]) { snprintf(val, sizeof val, "-"); col = UI_DIM; }
+            }
+            text_fit(fit, sizeof fit, val, w[d]);
+            text_draw(&cv, x[d], y, fit, col, 1);
+        }
+    }
+}
 
 /* One row. `kind`: 0 an action, 1 a value with arrows (`dimL`/`dimR` dim an arrow), 2 a bar at `pct`, 3 only text. */
 static void menu_row(int i, int on, const char *label, int kind, const char *value, int pct, int dimL, int dimR) {
@@ -656,10 +1033,10 @@ static void menu_row(int i, int on, const char *label, int kind, const char *val
     char fit[96];
     if (on) cv_rect(&cv, ROW_X, y - 2, ROW_W, ROW_H - 1, 0x34489Cu);
     if (on) ui_cursor(&cv, ROW_X + 3 + bob, y);
-    text_draw(&cv, ROW_X + 16, y, label, on ? UI_GOLD : UI_TEXT, 1);
+    text_draw(&cv, ROW_X + 16, y, tr(label), on ? UI_GOLD : UI_TEXT, 1);
     if (kind == 1) {
         int left = VAL_R - VAL_W - 4;
-        text_fit(fit, sizeof fit, value, VAL_W - 4);
+        text_fit(fit, sizeof fit, tr(value), VAL_W - 4);
         ui_arrow(&cv, left, y, -1, dimL ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
         text_center(&cv, left + 6, VAL_W - 4, y, fit, on ? UI_GOOD : UI_TEXT);
         ui_arrow(&cv, VAL_R - 4, y, 1, dimR ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
@@ -672,42 +1049,64 @@ static void menu_row(int i, int on, const char *label, int kind, const char *val
     }
 }
 
+/* The menu is in Spanish when the game has an option `language` whose value is `es`. A notice written in the other
+ * language is dropped when it changes. */
+static void menu_lang_sync(void) {
+    int i, es = 0;
+    gopt_init();
+    for (i = 0; i < GOPTS; i++)
+        if (!strcmp(snes_game_opts[i].key, "language") && !strcmp(snes_game_opts[i].names[gopt_eff[i]], "es")) es = 1;
+    if (es != ui_es) { ui_es = es; menu_msg[0] = 0; }
+}
+
 /* The value of an option as the menu shows it ("Off"/"On" for the yes-or-no ones). */
 static void opt_label(int opt, char *out, size_t n) {
     const OptDef *d = &opt_defs[opt];
     opt_format(d, cfg.eff.v[opt], out, n);
-    if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", cfg.eff.v[opt] ? "On" : "Off");
-    else if (opt == O_SCANLINES) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
+    if (d->names && !strcmp(d->names, "false|true")) snprintf(out, n, "%s", tr(cfg.eff.v[opt] ? "On" : "Off"));
+    else if (opt == O_SCANLINES || opt == O_CRT_MASK || opt == O_CRT_CURVE || opt == O_CRT_BLOOM) snprintf(out, n, "%d%%", cfg.eff.v[opt]);
+    else if (d->names) { char w[32]; snprintf(w, sizeof w, "%s", out); snprintf(out, n, "%s", tr(w)); } /* the word as shown; the file keeps the English one */
 }
 
 /* The menu over the picture `fb`, into fb_menu. */
 static void menu_draw(const uint8_t *fb) {
     char val[96], line[96];
+    menu_lang_sync();
     int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab], extra, used = 0;
     const char *help;
     ui_backdrop(&cv, fb);
     ui_panel(&cv, PX, PY, PW, PH);
-    for (t = 0; t < TAB_COUNT; t++) used += text_w(tab_names[t]) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
+    for (t = 0; t < TAB_COUNT; t++) used += text_w(tr(tab_names[t])) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
     extra = (ROW_W - 8 - used + 3) / TAB_COUNT;
-    text_draw2x(&cv, PX + (PW - text_w2x("OPTIONS")) / 2, PY + 7, "OPTIONS", UI_GOLD, UI_SHADOW);
+    text_draw2x(&cv, PX + (PW - text_w2x(tr("OPTIONS"))) / 2, PY + 7, tr("OPTIONS"), UI_GOLD, UI_SHADOW);
     ui_rule(&cv, PX + 10, PY + 25, PW - 20);
     for (t = 0, x = ROW_X + 4; t < TAB_COUNT; t++) {
-        int on = t == menu_tab, w = text_w(tab_names[t]) + 12 + extra;
+        int on = t == menu_tab, w = text_w(tr(tab_names[t])) + 12 + extra;
         if (on) { cv_rect(&cv, x, PY + 30, w, 13, 0x4A64C8u); cv_rect(&cv, x, PY + 30, w, 1, 0xE8ECFAu); }
         else cv_rect(&cv, x, PY + 33, w, 10, 0x141C50u);
-        text_center(&cv, x, w, PY + (on ? 33 : 34), tab_names[t], on ? UI_GOLD : UI_DIM);
+        text_center(&cv, x, w, PY + (on ? 33 : 34), tr(tab_names[t]), on ? UI_GOLD : UI_DIM);
         x += w + 3;
+    }
+    if (menu_tab == TAB_CONTROLS) {
+        int labw, keyx, keyw;
+        ctl_cols(&labw, &keyx, &keyw);
+        text_draw(&cv, keyx, CTL_HEAD, tr("Keyboard"), UI_DIM, 1);
+        text_draw(&cv, CTL_PAD, CTL_HEAD, tr("Controller"), UI_DIM, 1);
     }
     for (i = 0; i < n; i++) {
         int on = i == s;
         switch (menu_tab) {
         case TAB_IMAGE:
-            if (i == N_IMAGE) { menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0); break; }
             {
-                const OptDef *d = &opt_defs[image_opts[i]];
-                int v = cfg.eff.v[image_opts[i]];
-                opt_label(image_opts[i], val, sizeof val);
-                menu_row(i, on, image_labels[i], 1, val, 0, !d->names && v <= d->lo, !d->names && v >= d->hi);
+                int idx[N_IMAGE], rows = image_rows(idx);
+                if (i == rows) { menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0); break; }
+                {
+                    int o = image_opts[idx[i]];
+                    const OptDef *d = &opt_defs[o];
+                    int v = cfg.eff.v[o];
+                    opt_label(o, val, sizeof val);
+                    menu_row(i, on, image_labels[idx[i]], 1, val, 0, !d->names && v <= d->lo, !d->names && v >= d->hi);
+                }
             }
             break;
         case TAB_AUDIO:
@@ -716,22 +1115,24 @@ static void menu_draw(const uint8_t *fb) {
             else menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0);
             break;
         case TAB_CONTROLS:
-            if (i == 0) { snprintf(val, sizeof val, "Player %d", menu_player + 1); menu_row(i, on, "Controls of", 1, val, 0, 0, 0); }
-            else {
-                bind_text(val, sizeof val, menu_player, 0x8000 >> (i - 1));
-                menu_row(i, on, btn_names[i - 1], 3, menu_capture == i - 1 ? "..." : val, 0, 0, 0);
-            }
+            ctl_row(i, on, menu_player);
             break;
         default:
-            menu_row(i, on, i == 0 ? "Resume" : i == 1 ? "Save game now" : i == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
+            if (i == 0) { opt_label(O_FFSPEED, val, sizeof val); menu_row(i, on, "Fast forward", 1, val, 0, 0, 0); break; }
+            if (i - 1 < GOPTS) {
+                gopt_init();
+                menu_row(i, on, snes_game_opts[i - 1].label, 1, snes_game_opts[i - 1].names[gopt_eff[i - 1]], 0, 0, 0);
+                break;
+            }
+            menu_row(i, on, i - 1 - GOPTS == 0 ? "Resume" : i - 1 - GOPTS == 1 ? "Save game now" : i - 1 - GOPTS == 2 ? "Restore all defaults" : "Quit", 0, "", 0, 0, 0);
             break;
         }
     }
     if (menu_msg[0]) { text_fit(line, sizeof line, menu_msg, PW - 24); text_center(&cv, PX, PW, PY + PH - 26, line, UI_WARN); }
     ui_rule(&cv, PX + 10, PY + PH - 17, PW - 20);
-    help = menu_capture >= 0 ? "Press the key or button   Esc: cancel"
+    help = tr(menu_capture >= 0 ? "Press the key or button   Esc: cancel"
          : menu_by_pad ? "L/R: tabs   A: select   B: close"
-         : "Q/W: tabs   Enter: select   Esc: close";
+         : "Q/W: tabs   Enter: select   Esc: close");
     text_center(&cv, PX, PW, PY + PH - 13, help, UI_DIM);
     menu_tick++;
 }
@@ -769,26 +1170,39 @@ static void menu_compose(void) {
     }
 }
 
+#include "play_state.h"
+
 /* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and then
  * drawn into fb_show, so the picture itself is never touched), or the menu over it. Sets show_w to its width. */
 static const uint8_t *shown_frame(void) {
     char t[24];
     show_w = fb_front_w;
     if (menu_open) { menu_compose(); return fb_show; }
-    if (!cfg.eff.v[O_FPS]) return fb_front;
+    if (!cfg.eff.v[O_FPS] && st_toast_left <= 0) return fb_front;
     memcpy(fb_show, fb_front, (size_t)SCREEN_H * show_w * 3);
-    snprintf(t, sizeof t, "%d FPS", fps_val);
     {
         Canvas cw = {fb_show, show_w, SCREEN_H};
-        text_draw(&cw, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+        if (cfg.eff.v[O_FPS]) {
+            snprintf(t, sizeof t, "%d FPS", fps_val);
+            text_draw(&cw, 4, 3 + cfg.eff.v[O_OVERSCAN], t, UI_GOOD, 1);
+        }
+        if (st_toast_left > 0) {
+            int y = SCREEN_H - 12 - cfg.eff.v[O_OVERSCAN];
+            text_draw(&cw, 4, y, st_toast, UI_GOLD, 1);
+            if (st_toast2[0]) text_draw(&cw, 4, y - 10, st_toast2, UI_GOLD, 1);
+        }
     }
     return fb_show;
 }
 
-/* Any key: F1 opens or closes the menu; with the menu open, the keys drive it. */
+static void menu_open_now(void) {
+    menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = ASK_NONE; menu_msg[0] = 0; menu_tick = 0;
+}
+
+/* Any key: Esc or F1 opens the menu; with the menu open, the keys drive it (Esc and F1 close it). */
 static void ui_key(SDL_Scancode sc) {
     if (menu_open) { menu_key(sc); return; }
-    if (sc == SDL_SCANCODE_F1) { menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = 0; menu_msg[0] = 0; menu_tick = 0; }
+    if (sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) menu_open_now();
 }
 
 static void handle_events(void) {
@@ -805,14 +1219,20 @@ static void handle_events(void) {
                 }
             open_pads();
         }
+        if (e.type == SDL_CONTROLLERBUTTONDOWN) last_input_pad = 1;
+        if (e.type == SDL_KEYDOWN) last_input_pad = 0;
         if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             SDL_Scancode sc = e.key.keysym.scancode;
-            if (menu_open || sc == SDL_SCANCODE_F1) { ui_key(sc); continue; }
+            if (menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
             switch (sc) {
-            case SDL_SCANCODE_ESCAPE: stop(0, "quit"); break;
             case SDL_SCANCODE_P: paused = !paused; break;
+            case SDL_SCANCODE_F2: ff_toggle = !ff_toggle; break;
             case SDL_SCANCODE_F10: save_picture(); break;
+            case SDL_SCANCODE_F5: st_request(1); break;
+            case SDL_SCANCODE_F7: st_request(2); break;
+            case SDL_SCANCODE_F3: st_change_slot(-1); break;
+            case SDL_SCANCODE_F4: st_change_slot(1); break;
             case SDL_SCANCODE_F11:
                 config_user_set(&cfg, O_FULLSCREEN, !fullscreen);
                 set_fullscreen(!fullscreen);
@@ -839,7 +1259,11 @@ static void print_stats(void) {
 static void pace(void) {
     uint64_t now = SDL_GetPerformanceCounter(), period = (uint64_t)((double)perf_freq / 60.0988), w0 = now;
     st_frames++;
-    if (fast) { t_next = now; return; }
+    if (fast) {
+        int k = ff_factor(cfg.eff.v[O_FFSPEED]);
+        if (k == 0) { t_next = now; return; }
+        period /= (uint64_t)k;
+    }
     t_next += period;
     if (now > t_next) st_late++;
     if (now > t_next + 3 * period) {
@@ -903,10 +1327,16 @@ static void srm_save(void) {
 static void srm_load(const char *rom_path) {
     FILE *f;
     long n;
+    int legacy = 0;
     sram_len = sram_mask + 1;
-    if (!sibling_path(rom_path, ".srm", srm_path, sizeof srm_path)) { srm_path[0] = 0; return; }
+    if (!save_path(rom_path, ".srm", srm_path, sizeof srm_path)) { srm_path[0] = 0; return; }
     atexit(srm_save);
     f = fopen(srm_path, "rb");
+    if (!f && saves_dir[0]) { /* a game saved next to the ROM before `saves`: read it; the next save copies it over */
+        char old[1100];
+        if (sibling_path(rom_path, ".srm", old, sizeof old) && (f = fopen(old, "rb"))) printf("sram: importing %s\n", old);
+        legacy = f != NULL;
+    }
     if (!f) return;
     fseek(f, 0, SEEK_END);
     n = ftell(f);
@@ -914,7 +1344,7 @@ static void srm_load(const char *rom_path) {
     if (n != (long)sram_len) {
         fprintf(stderr, "warning: %s has %ld bytes, the cartridge SRAM has %u: ignoring it\n", srm_path, n, (unsigned)sram_len);
     } else if (fread(sram, 1, sram_len, f) == sram_len) {
-        memcpy(sram_saved, sram, sram_len);
+        if (!legacy) memcpy(sram_saved, sram, sram_len); /* a legacy one stays "changed" so it is written to `saves` */
         printf("sram: loaded %s\n", srm_path);
     }
     fclose(f);
@@ -949,7 +1379,7 @@ static void flush_audio(void) {
     queued = SDL_GetQueuedAudioSize(adev);
     st_queued_sum += queued;
     if (queued == 0) st_underruns++;
-    if (fast || paused || menu_open) SDL_ClearQueuedAudio(adev);
+    if (fast || paused || menu_open || st_rewound) SDL_ClearQueuedAudio(adev);
     else if (queued < 5 * 533 * 4) SDL_QueueAudio(adev, afr, (Uint32)nafr * 4);
     else st_dropped++;
     nafr = 0;
@@ -990,6 +1420,12 @@ static int menu_shot_page;
 static void play_frame(void) {
     if (++srm_frames >= 60) { srm_frames = 0; srm_save(); }
     fps_tick();
+    {
+        int rew = play_state_script();
+        if (!opt_no_window && SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]) rew = 1;
+        play_state_tick(rew, !opt_no_window && (paused || menu_open));
+        if (st_toast_left > 0) st_toast_left--;
+    }
     if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
     if (menu_shot_path && frames + 1 >= max_frames) {
         menu_open = 1;
@@ -1015,7 +1451,7 @@ static void play_frame(void) {
     }
     present(shown_frame());
     handle_events();
-    fast = SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
+    fast = ff_toggle || SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
     flush_audio();
     if (paused || menu_open) {
         while (paused || menu_open) {
@@ -1042,14 +1478,17 @@ static int open_window(void) {
     title[21] = 0;
     ww = (int)((SCREEN_W + 2 * cfg.eff.v[O_WIDE]) * scale * (cfg.eff.v[O_ASPECT] == ASPECT_43 ? 7.0 / 6.0 : 1.0) + 0.5);
     wh = SCREEN_H * scale;
-    win = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
-                           SDL_WINDOW_RESIZABLE | (cfg.eff.v[O_FULLSCREEN] ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0));
     fullscreen = cfg.eff.v[O_FULLSCREEN];
+    snprintf(win_title, sizeof win_title, "%s", title);
+    win_x = win_y = SDL_WINDOWPOS_CENTERED;
+    win_w = ww;
+    win_h = wh;
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    if (!win || !(ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE | (cfg.eff.v[O_VSYNC] ? SDL_RENDERER_PRESENTVSYNC : 0)))) {
+    if (!create_view(cfg.eff.v[O_SHADER] == SHADER_CRT) && !create_view(0)) {
         fprintf(stderr, "error: cannot open the window: %s\n", SDL_GetError());
         return 0;
     }
+    snes_set_window_icon(play_icon, PLAY_ICON_SIZE, PLAY_ICON_SIZE);
     perf_freq = SDL_GetPerformanceFrequency();
     t_next = st_start = SDL_GetPerformanceCounter();
     if (opt_stats) atexit(print_stats);
@@ -1122,9 +1561,13 @@ int main(int argc, char **argv) {
             if (bad) break;
         }
         else if (!strcmp(argv[i], "--press") && i + 1 < argc) { if (!parse_press(argv[++i])) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--hash-wram")) st_hash_wram = 1;
+        else if (!strcmp(argv[i], "--state-script") && i + 1 < argc) { if (!parse_state_keys(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) { int m = parse_buttons(argv[++i]); if (m < 0) { bad = 1; break; } held |= (uint16_t)m; }
         else if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!parse_poke(argv[++i])) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) { if (!parse_game_opt(argv[++i])) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--game-dir") && i + 1 < argc) set_game_dir(argv[++i]);
+        else if (!strcmp(argv[i], "--saves-dir") && i + 1 < argc) { snprintf(saves_dir, sizeof saves_dir, "%s", argv[++i]); }
         else if (argv[i][0] != '-' && !path) path = argv[i];
         else { bad = 1; break; }
     }
@@ -1132,7 +1575,8 @@ int main(int argc, char **argv) {
     if (bad || !path || max_frames == 0 || frame_len == 0 || (cli_scale && opt_scale < 1)) {
         fprintf(stderr, "usage: %s [<rom>] [--scale N] [--fullscreen] [--no-window] [--frames N] [--screenshot FILE]\n"
                         "       [--wav FILE] [--frame-blocks N] [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]...\n"
-                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n", argv[0]);
+                        "       [--opt KEY=VALUE]... [--game-opt KEY=NUMBER]... [--game-dir DIR] [--saves-dir DIR] [--present-shot FILE --present-size WxH] [--menu-keys NAME,...] [--menu-shot FILE] [--menu-page N] [--print-config]\n"
+                        "       [--state-script save@N,load@N,slot+@N,rewind@A-B,...]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
@@ -1141,7 +1585,11 @@ int main(int argc, char **argv) {
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
     ppu_set_wide(cfg.eff.v[O_WIDE]);
+    saves_dir_prepare();
     srm_load(path);
+    play_state_init(path);
+    st_echo = opt_no_window;
+    if (st_hash_wram) atexit(st_print_hash);
     if (opt_print_keys) {
         for (i = 0; i < nbinds; i++)
             if (binds[i].dev == BIND_KEY && binds[i].player == 0) printf("%s = %s\n", SDL_GetScancodeName((SDL_Scancode)binds[i].code), button_name((uint16_t)binds[i].button));
@@ -1157,5 +1605,6 @@ int main(int argc, char **argv) {
         t_next = st_start = SDL_GetPerformanceCounter(); /* opening the device can take a while */
     }
     frame_hook = play_frame;
+    input_label_hook = play_input_label;
     return run_rom();
 }

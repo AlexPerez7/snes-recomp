@@ -3,6 +3,7 @@
 *.sfc
 *.smc
 *.srm
+*.sst
 /roms/
 /out/
 *.log

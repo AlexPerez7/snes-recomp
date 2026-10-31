@@ -1,6 +1,6 @@
 //! C code generation: one C function per function of the graph, one label per basic block.
 
-use crate::config::{Hook, HookKind, HookReturn};
+use crate::config::{GameOption, Hook, HookKind, HookReturn};
 use crate::disasm::{fmt_addr, Flags, Flow, Instr};
 use crate::discover::{Discovery, EdgeKind};
 use crate::graph::{Block, Graph, SuccKind};
@@ -26,12 +26,23 @@ pub const PLAY_CFG: &str = include_str!("../runtime/play_cfg.h");
 /// The look of the menu without SDL (font, panel, cursor): `play/play_ui.h` written by `codegen --all`.
 pub const PLAY_UI: &str = include_str!("../runtime/play_ui.h");
 
+/// The text of the menu in Spanish and `tr()`: `play/play_i18n.h` written by `codegen --all`.
+pub const PLAY_I18N: &str = include_str!("../runtime/play_i18n.h");
+/// The OpenGL path of the frontend (option `shader`): `play/play_gl.h` written by `codegen --all`.
+pub const PLAY_GL: &str = include_str!("../runtime/play_gl.h");
+
+/// The default icon of the window (`snes_set_window_icon` replaces it): `play/play_icon.h` written by `codegen --all`.
+pub const PLAY_ICON: &str = include_str!("../runtime/play_icon.h");
+/// Save states in the interactive frontend (slots, rewind, notices): `play/play_state.h` written by `codegen --all`.
+pub const PLAY_STATE: &str = include_str!("../runtime/play_state.h");
+
 /// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
 pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
 
 /// PPU renderer and PNG writer, included by `snes_core.inc`.
 pub const RUNTIME_PPU: &str = include_str!("../runtime/snes_ppu.inc");
 pub const RUNTIME_SPC: &str = include_str!("../runtime/snes_spc.inc");
+pub const RUNTIME_STATE: &str = include_str!("../runtime/snes_state.inc");
 
 pub fn func_name(entry: u32) -> String {
     format!("f_{:02X}_{:04X}", entry >> 16, entry & 0xFFFF)
@@ -318,6 +329,9 @@ pub struct Emitter<'a> {
     g: &'a Graph,
     /// Calls to C functions of the game, by the entry of the function they hook.
     hooks: BTreeMap<u32, Vec<Hook>>,
+    options: Vec<GameOption>,
+    /// The block where the runtime may save and load states: it starts with a call to rt_resume.
+    resume: Option<u32>,
 }
 
 /// A function body under construction: the blocks it owns and what it refers to.
@@ -351,7 +365,18 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g, hooks: BTreeMap::new() }
+        Emitter { d, g, hooks: BTreeMap::new(), options: Vec::new(), resume: None }
+    }
+
+    /// Marks the block at `addr` as the resume point of the profile (`[resume]`): it must be the start of a block of the graph.
+    pub fn with_resume(mut self, addr: Option<u32>) -> Result<Self, String> {
+        if let Some(a) = addr {
+            if !self.g.blocks.contains_key(&a) {
+                return Err(format!("[resume]: {} is not the start of a block", fmt_addr(a)));
+            }
+        }
+        self.resume = addr;
+        Ok(self)
     }
 
     /// Hooks the functions of the game's profile: a hook runs `before` the body of the function at `addr`, `after` it
@@ -365,6 +390,33 @@ impl<'a> Emitter<'a> {
             self.hooks.entry(h.addr).or_default().push(h.clone());
         }
         Ok(self)
+    }
+
+    /// The options of the game's profile (`[[option]]`): `generate_all` writes them into `snes_entry.c`, where the runtime finds them.
+    pub fn with_options(mut self, options: &[GameOption]) -> Self {
+        self.options = options.to_vec();
+        self
+    }
+
+    /// The options of the profile as C data (see `GameOptDef` in snes_rt.h). Without options there is an empty table, so the
+    /// runtime always finds the symbols.
+    fn options_c(&self) -> String {
+        let q = |t: &str| format!("\"{}\"", t.replace('\\', "\\\\").replace('"', "\\\""));
+        let mut out = String::from("\n/* Options of the game for the player (`[[option]]` of the profile). */\n");
+        if self.options.is_empty() {
+            out.push_str("const GameOptDef snes_game_opts[1] = {{0}};\nconst int snes_game_opt_count = 0;\n");
+            return out;
+        }
+        for (i, o) in self.options.iter().enumerate() {
+            let names: Vec<String> = o.names.iter().map(|n| q(n)).collect();
+            out.push_str(&format!("static const char *const snes_game_opt_names_{i}[] = {{{}}};\n", names.join(", ")));
+        }
+        out.push_str("const GameOptDef snes_game_opts[] = {\n");
+        for (i, o) in self.options.iter().enumerate() {
+            out.push_str(&format!("    {{{}, {}, {}, snes_game_opt_names_{i}, {}}},\n", q(&o.key), q(&o.label), o.names.len(), o.default));
+        }
+        out.push_str(&format!("}};\nconst int snes_game_opt_count = {};\n", self.options.len()));
+        out
     }
 
     /// The names of the C functions the hooks call, each once.
@@ -510,6 +562,9 @@ impl<'a> Emitter<'a> {
             v.cur = (block.end(), *widths.last().expect("a block has at least one instruction"));
         }
         let mut out = vec!["rt_tick(c);".to_string(), format!("rt_check_flags(c, 0x{:06X}, {}, {});", block.start, m, x)];
+        if self.resume == Some(block.start) {
+            out.push("rt_resume(c);".to_string());
+        }
         let dispatch: Vec<u32> = block
             .succs
             .iter()
@@ -794,8 +849,9 @@ impl<'a> Emitter<'a> {
             entry.push_str(&format!("    case 0x{f:06X}: {}(c); return 1;\n", func_name(f)));
         }
         entry.push_str("    default: return 0;\n    }\n}\n");
-        entry.push_str("\n/* Registers snes_call_entry with the runtime (needed when the runtime is a library of its own). */\n");
-        entry.push_str("void snes_rt_module_init(void) { snes_rt_register_entry(snes_call_entry); }\n");
+        entry.push_str(&self.options_c());
+        entry.push_str("\n/* Registers snes_call_entry and the options with the runtime (needed when it is a library of its own). */\n");
+        entry.push_str("void snes_rt_module_init(void) {\n    snes_rt_register_entry(snes_call_entry);\n    snes_rt_register_options(snes_game_opts, snes_game_opt_count);\n}\n");
         FullOutput { header, entry, banks, functions: self.g.functions.len(), unsupported }
     }
 }
@@ -1140,7 +1196,7 @@ sep xf=1 x=0034 p=10
         let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
         let d = crate::discover::discover(&rom, &cfg, &r);
         let g = Graph::build(&d, roots);
-        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all()
+        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).generate_all()
     }
 
     /// Roots 00:8000 (widths in conflict, so it cannot be translated), 00:9000 and 01:8000.
@@ -1187,6 +1243,19 @@ sep xf=1 x=0034 p=10
     }
 
     #[test]
+    fn the_options_of_the_profile_become_a_table_in_the_entry_file() {
+        let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..])];
+        let cfg = "[[option]]\nkey=\"language\"\nlabel=\"Say \\\"hi\\\"\"\nnames=[\"en\",\"es\"]\ndefault=\"es\"\n[[option]]\nkey=\"b\"\nlabel=\"B\"\nnames=[\"x\",\"y\",\"z\"]\ndefault=\"x\"";
+        let out = gen_all(&rom, cfg, &[0x8000]);
+        assert!(out.entry.contains("snes_game_opt_names_0[] = {\"en\", \"es\"};"), "{}", out.entry);
+        assert!(out.entry.contains("{\"language\", \"Say \\\"hi\\\"\", 2, snes_game_opt_names_0, 1},"), "{}", out.entry);
+        assert!(out.entry.contains("{\"b\", \"B\", 3, snes_game_opt_names_1, 0},"), "{}", out.entry);
+        assert!(out.entry.contains("const int snes_game_opt_count = 2;"), "{}", out.entry);
+        let none = gen_all(&rom, "", &[0x8000]);
+        assert!(none.entry.contains("const int snes_game_opt_count = 0;") && !none.entry.contains("snes_game_opt_names"), "{}", none.entry);
+    }
+
+    #[test]
     fn entry_dispatch_calls_a_function_by_address_and_rejects_the_rest() {
         // 00:8000: LDA #$42 ; STA $10 ; RTS     00:9000: LDA #$77 ; STA $10 ; RTS
         let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..]), (0x9000, &[0xA9, 0x77, 0x85, 0x10, 0x60][..])];
@@ -1199,7 +1268,11 @@ sep xf=1 x=0034 p=10
                 || l.starts_with("/*")
                 || l.starts_with("#include")
                 || l.starts_with("int snes_call_entry")
-                || l == "void snes_rt_module_init(void) { snes_rt_register_entry(snes_call_entry); }"
+                || l.starts_with("const GameOptDef snes_game_opts[1]") // the empty table of the options of the game
+                || l == "const int snes_game_opt_count = 0;"
+                || l == "void snes_rt_module_init(void) {"
+                || l == "    snes_rt_register_entry(snes_call_entry);"
+                || l == "    snes_rt_register_options(snes_game_opts, snes_game_opt_count);"
                 || l.trim_start().starts_with("case 0x00")
                 || ["    switch (addr & 0xFFFFFF) {", "    default: return 0;", "    }", "}"].contains(&l);
             assert!(known, "unexpected line: {l}");
@@ -1410,6 +1483,27 @@ exit=\"00:820F\"";
         let b = body(&out, "f_00_8000");
         assert_eq!(b.last().unwrap(), "return;");
         assert_eq!(b.iter().filter(|l| l.starts_with("// ")).count(), 1, "the table bytes are not instructions");
+    }
+
+    #[test]
+    fn the_resume_block_calls_rt_resume_after_the_tick_and_no_other_does() {
+        // 8000: BNE $8003 ; 8002: NOP ; 8003: RTS  (three blocks)
+        let rom = test_rom(&[(0x8000, &[0xD0, 0x01, 0xEA, 0x60])]);
+        let cfg = crate::config::Config::parse("").unwrap();
+        let r = vec![(0x8000, Flags::RESET)];
+        let d = crate::discover::discover(&rom, &cfg, &r);
+        let g = Graph::build(&d, &[0x8000]);
+        let out = Emitter::new(&d, &g).with_resume(Some(0x8003)).unwrap().generate(0x8000, 0).unwrap();
+        let b = body(&out, "f_00_8000");
+        assert_eq!(b.iter().filter(|l| *l == "rt_resume(c);").count(), 1, "{b:?}");
+        let i = b.iter().position(|l| l == "rt_resume(c);").unwrap();
+        assert!(b[i - 1].starts_with("rt_check_flags(") && b[i - 2] == "rt_tick(c);", "{b:?}");
+        // Without [resume] nothing changes.
+        let plain = Emitter::new(&d, &g).generate(0x8000, 0).unwrap();
+        assert!(!plain.contains("rt_resume"));
+        // An address that is not the start of a block is an error that names it.
+        let err = Emitter::new(&d, &g).with_resume(Some(0x8001)).err().unwrap();
+        assert!(err.contains("[resume]") && err.contains("00:8001"), "{err}");
     }
 
     #[test]

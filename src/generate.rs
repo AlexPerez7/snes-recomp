@@ -43,7 +43,7 @@ pub fn generate_with_config(rom: &Rom, cfg: &Config, game: &[Source]) -> Result<
     let d = discover::discover(rom, cfg, &roots);
     let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
     let g = graph::Graph::build(&d, &root_addrs);
-    let output = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.generate_all();
+    let output = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.with_options(&cfg.options).with_resume(cfg.resume)?.generate_all();
     let mut sources = vec![
         Source { name: "snes_funcs.h".into(), text: output.header.clone() },
         Source { name: "snes_entry.c".into(), text: output.entry.clone() },
@@ -93,9 +93,14 @@ pub fn runtime_files() -> Vec<Source> {
         f("snes_core.inc", codegen::RUNTIME_CORE),
         f("snes_ppu.inc", codegen::RUNTIME_PPU),
         f("snes_spc.inc", codegen::RUNTIME_SPC),
+        f("snes_state.inc", codegen::RUNTIME_STATE),
         f("play/snes_play.c", codegen::PLAY_RUNTIME),
         f("play/play_cfg.h", codegen::PLAY_CFG),
         f("play/play_ui.h", codegen::PLAY_UI),
+        f("play/play_i18n.h", codegen::PLAY_I18N),
+        f("play/play_gl.h", codegen::PLAY_GL),
+        f("play/play_icon.h", codegen::PLAY_ICON),
+        f("play/play_state.h", codegen::PLAY_STATE),
         f("build_play.bat", &codegen::BUILD_PLAY_BAT.replace('\r', "").replace('\n', "\r\n")), // cmd.exe wants CRLF
     ]
 }

@@ -8,6 +8,7 @@
 use crate::crc32::crc32;
 use crate::rom::Rom;
 use crate::toolchain::{self, Compiler};
+use crate::ui::{ConsoleUi, DownloadNotice, Ui};
 use crate::{codegen, download, games, generate};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,26 @@ folder next to this program). Without a compiler it offers to download TinyCC (a
 the cache; --download-compiler agrees beforehand. With a compiler on the machine nothing is ever downloaded.";
 
 // ---- the cache ----
+
+/// Where the saved games and states go: `saves` next to the program, or `%APPDATA%\snes-port\saves` (`$XDG_DATA_HOME`
+/// or `~/.local/share` elsewhere) when that one cannot be written. None leaves them next to the ROM.
+pub fn saves_dir() -> Option<PathBuf> {
+    let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("saves")));
+    let fallback = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("snes-port").join("saves"))
+    } else {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(|d| PathBuf::from(d).join("snes-port").join("saves"))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share").join("snes-port").join("saves")))
+    };
+    beside.into_iter().chain(fallback).find(|d| writable_dir(d))
+}
+
+/// The folder exists (it is made if not) and a file can be created in it.
+fn writable_dir(d: &Path) -> bool {
+    let probe = d.join(".write-test");
+    std::fs::create_dir_all(d).is_ok() && std::fs::write(&probe, b"").is_ok() && std::fs::remove_file(&probe).is_ok()
+}
 
 /// The cache folder: `SNES_PORT_CACHE`, else `%LOCALAPPDATA%\snes-port` (or the usual place of the system).
 pub fn default_cache_dir() -> PathBuf {
@@ -94,9 +115,14 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         codegen::RUNTIME_CORE,
         codegen::RUNTIME_PPU,
         codegen::RUNTIME_SPC,
+        codegen::RUNTIME_STATE,
         codegen::PLAY_RUNTIME,
         codegen::PLAY_CFG,
         codegen::PLAY_UI,
+        codegen::PLAY_I18N,
+        codegen::PLAY_GL,
+        codegen::PLAY_ICON,
+        codegen::PLAY_STATE,
         include_str!("codegen.rs"),
         include_str!("discover.rs"),
         include_str!("graph.rs"),
@@ -451,10 +477,30 @@ pub fn find_rom_bytes(rom: &[u8], dir: &Path) -> Option<PathBuf> {
 
 /// `snes-recomp scan`: fails, naming the file, when anything under `dir` holds bytes of the ROM (before publishing).
 pub fn scan(rom: &[u8], dir: &Path) -> Result<(), String> {
+    if let Some(f) = find_state_file(dir) {
+        return Err(format!("{}: a save state (.sst) holds the memory of the game and is never published", f.display()));
+    }
     match find_rom_bytes_at(rom, dir) {
         Some((file, at, r)) => Err(format!("{}: bytes of the ROM (file offset {at}, ROM offset {r:#X})", file.display())),
         None => Ok(()),
     }
+}
+
+/// The first save state (`*.sst`) under `dir`.
+fn find_state_file(dir: &Path) -> Option<PathBuf> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "sst") {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Like `find_rom_bytes`, also saying where: (file, offset in the file, offset in the ROM).
@@ -514,6 +560,11 @@ pub struct Outcome {
 /// Identifies the ROM, builds the game unless it is in the cache, and starts it. `compiler` and `sdl` are what the
 /// machine offers (`None`: not found).
 pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBuf>) -> Result<Outcome, Failure> {
+    build_port_ui(opts, compiler, sdl, &ConsoleUi)
+}
+
+/// `build_port` telling the person what it does through `ui` (the console, or the launcher window).
+pub fn build_port_ui(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBuf>, ui: &dyn Ui) -> Result<Outcome, Failure> {
     let rom = match Rom::load(&opts.rom) {
         Ok(r) => r,
         Err(e) => return fail(1, e),
@@ -523,7 +574,7 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         Err(e) => return fail(1, format!("error: {e}")),
     };
     for w in catalog.warnings() {
-        eprintln!("{w}");
+        ui.status(w);
     }
     let crc = rom.crc32();
     let Some(profile) = catalog.identify(crc) else {
@@ -551,7 +602,7 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         let Some(sdl) = sdl.as_ref() else {
             return Err("no sdl".to_string());
         };
-        eprintln!("Building {} for the first time: this takes a few minutes and happens only once.", profile.name);
+        ui.status(&format!("Building {} for the first time: this takes a few minutes and happens only once.", profile.name));
         generate(&rom, profile, tmp)?;
         compile(compiler, tmp, sdl, opts.fast)?;
         if !tmp.join(exe_name()).exists() {
@@ -583,7 +634,15 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         return Ok(Outcome { built, game: None });
     }
     let mut cmd = Command::new(built.dir.join(exe_name()));
-    cmd.current_dir(&built.dir).arg(&opts.rom).args(&opts.game_args);
+    cmd.current_dir(&built.dir).arg(&opts.rom);
+    if let Some(dir) = game_dir_arg(profile) {
+        cmd.arg("--game-dir").arg(dir);
+    }
+    if let Some(dir) = saves_dir() {
+        cmd.arg("--saves-dir").arg(dir);
+    }
+    cmd.args(&opts.game_args);
+    ui.launching();
     let game = if opts.capture {
         match cmd.output() {
             Ok(o) => (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr)),
@@ -596,6 +655,12 @@ pub fn build_port(opts: &Options, compiler: Option<Compiler>, sdl: Option<PathBu
         }
     };
     Ok(Outcome { built, game: Some(game) })
+}
+
+/// The folder of the profile for `--game-dir`. The game runs in the cache folder, so the folder with its data files
+/// (such as `lang/es.txt`) goes by absolute path.
+fn game_dir_arg(profile: &games::GameProfile) -> Option<PathBuf> {
+    profile.dir.as_ref().and_then(|d| std::path::absolute(d).ok())
 }
 
 fn cache_has(cache: &Path, name: &str) -> bool {
@@ -615,33 +680,68 @@ fn needs_no_build(opts: &Options) -> bool {
 
 /// The last resort when the machine has no C compiler: the portable one in the cache, or, if the user agrees
 /// (`--download-compiler`, or `y` at the question), downloaded into it with its SHA-256 checked.
-fn portable_compiler(cache: &Path, yes: bool, input: &mut dyn std::io::BufRead) -> Option<Compiler> {
+fn portable_compiler(cache: &Path, yes: bool, ui: &dyn Ui) -> Option<Compiler> {
     use download::TINYCC;
     if let Some(exe) = download::installed(cache, &TINYCC) {
         return Some(Compiler::Tcc(exe));
     }
-    eprintln!("No C compiler found on this machine.");
-    eprintln!(
-        "{} ({} KiB) can be downloaded from {} and kept in {}. Nothing about your ROM is sent; it is the only download.",
-        TINYCC.name,
-        TINYCC.size / 1024,
-        TINYCC.url,
-        download::toolchain_dir(cache).display()
-    );
-    if !yes && !download::confirm("Download it now?", input) {
+    let notice = DownloadNotice { name: TINYCC.name.to_string(), kib: TINYCC.size / 1024, url: TINYCC.url.to_string(), dir: download::toolchain_dir(cache) };
+    if yes {
+        ui.status("No C compiler found on this machine.");
+        ui.status(&notice.text());
+    } else if !ui.offer_download(&notice) {
         return None;
     }
     match download::install(cache, &TINYCC) {
         Ok(exe) => Some(Compiler::Tcc(exe)),
         Err(e) => {
-            eprintln!("error: {e}");
+            ui.error(&format!("error: {e}"));
             None
         }
     }
 }
 
+/// The compiler to build with: one of the machine, else the one in the package (`toolchain/` next to the program),
+/// else, if something must be built, the one that can be downloaded (only with the person's consent).
+/// `ignore_local` pretends the machine has no compiler of its own (tests, and `SNES_PORT_NO_LOCAL_COMPILER=1`).
+fn pick_compiler(cache: &Path, exe_dir: &Path, ignore_local: bool, yes: bool, needs_build: bool, ui: &dyn Ui) -> Option<Compiler> {
+    let found = toolchain::find_for_port(exe_dir, ignore_local);
+    if found.is_none() && needs_build {
+        return portable_compiler(cache, yes, ui);
+    }
+    found
+}
+
+// ---- the last ROM ----
+
+/// Remembers the ROM that was launched, for the launcher to offer it next time. Nothing leaves the machine.
+pub fn remember_rom(cache: &Path, rom: &Path) {
+    if std::fs::create_dir_all(cache).is_err() {
+        return;
+    }
+    let _ = std::fs::write(cache.join("last-rom.txt"), rom.to_string_lossy().as_bytes());
+    if let Some(dir) = rom.parent() {
+        let _ = std::fs::write(cache.join("last-rom-dir.txt"), dir.to_string_lossy().as_bytes());
+    }
+}
+
+/// The ROM remembered by `remember_rom`, only while the file is still there.
+pub fn recalled_rom(cache: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(cache.join("last-rom.txt")).ok()?;
+    let path = PathBuf::from(text.trim());
+    path.is_file().then_some(path)
+}
+
+/// The folder where the dialog for the ROM starts: that of the last ROM (empty if none).
+pub fn start_dir(cache: &Path) -> PathBuf {
+    PathBuf::from(std::fs::read_to_string(cache.join("last-rom-dir.txt")).unwrap_or_default().trim())
+}
+
 /// `snes-port ...` as the user types it; returns the exit code.
 pub fn main(args: &[String]) -> i32 {
+    // snes-port.exe has no console of its own: from a terminal it takes that one; a double click or a drop has none
+    #[cfg(windows)]
+    let console = crate::launcher_win::attach_console();
     let mut rom: Option<PathBuf> = None;
     let mut cache: Option<PathBuf> = None;
     let (mut launch, mut fast, mut clean_cmd, mut download_yes) = (true, false, false, false);
@@ -708,12 +808,21 @@ pub fn main(args: &[String]) -> i32 {
             }
         };
     }
-    // started without a ROM (double click): the launcher asks for it, remembers the folder, and keeps the window open if
-    // something goes wrong so the message can be read
+    // started without a ROM (double click): the launcher window asks for it. With only a ROM and no terminal (dropped on
+    // the program) the window opens only if there is something to say.
+    #[cfg(windows)]
+    {
+        if rom.is_none() && args.is_empty() {
+            return crate::launcher_win::run_launcher(&cache);
+        }
+        if let (false, Some(r)) = (console, rom.clone()) {
+            return crate::launcher_win::run_rom(r, &cache, launch, fast, download_yes, game_args, profiles);
+        }
+    }
     let launcher = rom.is_none() && args.is_empty();
     let rom = match rom {
         Some(r) => r,
-        None if launcher => match pick_rom(&cache) {
+        None if launcher => match ConsoleUi.ask_rom(&start_dir(&cache)) {
             Some(r) => r,
             None => return 0,
         },
@@ -722,7 +831,7 @@ pub fn main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let code = run_port(rom, cache, launch, fast, download_yes, game_args, profiles);
+    let code = run_port(rom, cache, launch, fast, download_yes, game_args, profiles, &ConsoleUi);
     if launcher && code != 0 {
         eprintln!("
 Press Enter to close.");
@@ -731,38 +840,22 @@ Press Enter to close.");
     code
 }
 
-/// The ROM chosen in the Windows "open file" dialog (through PowerShell, which every Windows has), starting in the
-/// folder of the last one; `None` if cancelled or there is no dialog.
-fn pick_rom(cache: &Path) -> Option<PathBuf> {
-    let last = cache.join("last-rom-dir.txt");
-    let start = std::fs::read_to_string(&last).unwrap_or_default().trim().to_string();
-    println!("snes-port: choose your ROM in the window that opens (A Link to the Past, USA).");
-    let script = "Add-Type -AssemblyName System.Windows.Forms;         $d = New-Object System.Windows.Forms.OpenFileDialog;         $d.Title = 'snes-port: choose your ROM';         $d.Filter = 'SNES ROM (*.sfc;*.smc)|*.sfc;*.smc|All files (*.*)|*.*';         if ($env:SNES_PORT_START -and (Test-Path $env:SNES_PORT_START)) { $d.InitialDirectory = $env:SNES_PORT_START };         if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.FileName) }";
-    let out = Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]).env("SNES_PORT_START", start).output().ok()?;
-    let chosen = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    if chosen.as_os_str().is_empty() {
-        return None;
-    }
-    if let (Some(dir), Ok(())) = (chosen.parent(), std::fs::create_dir_all(cache)) {
-        let _ = std::fs::write(&last, dir.to_string_lossy().as_bytes());
-    }
-    Some(chosen)
-}
-
-fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>, profiles: Vec<PathBuf>) -> i32 {
+pub fn run_port(rom: PathBuf, cache: PathBuf, launch: bool, fast: bool, download_yes: bool, game_args: Vec<String>, profiles: Vec<PathBuf>, ui: &dyn Ui) -> i32 {
     // the game starts in its cache folder, so the ROM must not be a relative path
     let rom = std::path::absolute(&rom).unwrap_or(rom);
     // absolute for the same reason as the ROM
     let games = profiles.into_iter().map(|p| std::path::absolute(&p).unwrap_or(p)).collect();
     let opts = Options { rom, cache, launch, fast, capture: false, game_args, games, search: None };
-    let mut compiler = toolchain::find();
-    if compiler.is_none() && !needs_no_build(&opts) {
-        compiler = portable_compiler(&opts.cache, download_yes, &mut std::io::stdin().lock());
-    }
-    match build_port(&opts, compiler, find_sdl2()) {
-        Ok(o) => o.game.map_or(0, |(code, _)| code),
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
+    let ignore_local = std::env::var_os("SNES_PORT_NO_LOCAL_COMPILER").is_some_and(|v| v == "1");
+    let compiler = pick_compiler(&opts.cache, &exe_dir, ignore_local, download_yes, !needs_no_build(&opts), ui);
+    match build_port_ui(&opts, compiler, find_sdl2(), ui) {
+        Ok(o) => {
+            remember_rom(&opts.cache, &opts.rom);
+            o.game.map_or(0, |(code, _)| code)
+        }
         Err(f) => {
-            eprintln!("{}", f.message);
+            ui.error(&f.message);
             f.code
         }
     }
@@ -841,7 +934,7 @@ mod tests {
     #[test]
     fn rom_bytes_are_found_raw_or_as_hex_and_padding_is_not_taken_for_them() {
         let rom = fake_rom();
-        let dir = temp("scan-hex");
+        let dir = temp("scan-bytes");
         std::fs::write(dir.join("clean.bin"), vec![0u8; 5000]).unwrap();
         std::fs::write(dir.join("padding.bin"), vec![0xFFu8; 5000]).unwrap();
         std::fs::write(dir.join("a.c"), "int x = 0x12; /* 0xAB */ int y[] = {0x01, 0x02};").unwrap();
@@ -882,6 +975,10 @@ mod tests {
         std::fs::write(dir.join("t.c"), format!("const unsigned char t[] = {{ {hex} }};")).unwrap();
         let e = scan(&rom, &dir).unwrap_err();
         assert!(e.contains("t.c"), "{e}");
+        std::fs::remove_file(dir.join("t.c")).unwrap();
+        std::fs::write(dir.join("game.s1.sst"), b"not a byte of the ROM").unwrap();
+        let e = scan(&rom, &dir).unwrap_err();
+        assert!(e.contains("game.s1.sst") && e.contains("save state"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1118,6 +1215,32 @@ addr=\"00:8000\"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn the_folder_of_the_profile_goes_to_the_game_by_absolute_path_and_its_data_files_do_not_change_the_build() {
+        let dir = temp("game-dir");
+        let toml = "[game]
+id=\"g\"
+name=\"G\"
+crc32=\"0000ABCD\"
+";
+        std::fs::write(dir.join("g.toml"), toml).unwrap();
+        std::fs::write(dir.join("lone.toml"), toml.replace("\"g\"", "\"lone\"")).unwrap();
+        std::fs::create_dir_all(dir.join("g").join("lang")).unwrap();
+        std::fs::write(dir.join("g").join("a.c"), "int a;").unwrap();
+        let p = games::GameProfile::load(&dir.join("g.toml")).unwrap();
+        let arg = game_dir_arg(&p).expect("the profile has a folder");
+        assert!(arg.is_absolute() && arg.ends_with("g"), "{}", arg.display());
+        assert_eq!(game_dir_arg(&games::GameProfile::load(&dir.join("lone.toml")).unwrap()), None, "no folder, no --game-dir");
+        // a data file next to the C does not change the version of the cache, and so does not rebuild
+        let before = current_version(false, Some(&p));
+        std::fs::write(dir.join("g").join("lang").join("es.txt"), "@000
+hola").unwrap();
+        std::fs::write(dir.join("g").join("notes.txt"), "x").unwrap();
+        let p = games::GameProfile::load(&dir.join("g.toml")).unwrap();
+        assert_eq!(current_version(false, Some(&p)), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The portable compiler path (3.2), when `SNES_TCC_EXE` names a TinyCC (the download itself is tested in `download`).
     #[test]
     fn it_builds_the_game_with_tinycc() {
@@ -1135,6 +1258,65 @@ addr=\"00:8000\"
         let (code, out) = r.game.expect("started");
         assert_eq!(code, 0, "{out}");
         assert!(out.contains("frames: 200"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- the last ROM and the compiler of the package (launcher-window, groups 1 and 2) ----
+
+    #[test]
+    fn the_last_rom_is_remembered_only_while_it_exists() {
+        let dir = temp("lastrom");
+        let cache = dir.join("cache");
+        assert_eq!(recalled_rom(&cache), None, "nothing remembered yet");
+        let rom = dir.join("roms").join("alttp.sfc");
+        std::fs::create_dir_all(rom.parent().unwrap()).unwrap();
+        std::fs::write(&rom, b"rom").unwrap();
+        remember_rom(&cache, &rom);
+        assert_eq!(recalled_rom(&cache), Some(rom.clone()));
+        assert_eq!(start_dir(&cache), rom.parent().unwrap(), "the dialog starts where the ROM is");
+        std::fs::remove_file(&rom).unwrap();
+        assert_eq!(recalled_rom(&cache), None, "a ROM that was moved is asked for again");
+        assert_eq!(start_dir(&dir.join("other")), PathBuf::new(), "no cache, no folder");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_compiler_of_the_package_is_used_before_asking_or_downloading() {
+        let dir = temp("bundled");
+        let exe_dir = dir.join("pkg");
+        let cache = dir.join("cache");
+        let tcc = exe_dir.join("toolchain").join("tcc").join("tcc.exe");
+        std::fs::create_dir_all(tcc.parent().unwrap()).unwrap();
+        std::fs::write(&tcc, b"").unwrap();
+        let ui = crate::ui::TestUi::new(true);
+        let requests = download::network_requests();
+        // a machine without compiler of its own: the one of the package, with no question and no network
+        match pick_compiler(&cache, &exe_dir, true, false, true, &ui) {
+            Some(Compiler::Tcc(p)) => assert_eq!(p, tcc),
+            _ => panic!("the TinyCC of the package should be used"),
+        }
+        assert!(ui.asked.borrow().is_empty() && ui.said.borrow().is_empty(), "nothing asked or said");
+        assert_eq!(download::network_requests(), requests);
+        // a machine with its own compiler keeps using it
+        if toolchain::find().is_some() {
+            assert!(!matches!(pick_compiler(&cache, &exe_dir, false, false, true, &ui), Some(Compiler::Tcc(_))));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn without_any_compiler_it_asks_once_and_a_no_downloads_nothing() {
+        let dir = temp("nocc");
+        let ui = crate::ui::TestUi::new(false);
+        let requests = download::network_requests();
+        assert!(pick_compiler(&dir.join("cache"), &dir.join("pkg"), true, false, true, &ui).is_none());
+        assert_eq!(ui.asked.borrow().len(), 1, "one question about the download");
+        assert!(ui.said.borrow().iter().any(|m| m.contains("No C compiler found")), "{:?}", ui.said.borrow());
+        assert_eq!(download::network_requests(), requests, "a no opens no connection");
+        // when the game is already built there is nothing to ask
+        let quiet = crate::ui::TestUi::new(true);
+        assert!(pick_compiler(&dir.join("cache"), &dir.join("pkg"), true, false, false, &quiet).is_none());
+        assert!(quiet.asked.borrow().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
