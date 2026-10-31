@@ -39,6 +39,7 @@ ROM ──► carga y cabecera ──► descubrimiento de código ──► gra
 | Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32, MSVC/gcc/clang o TinyCC descargado con consentimiento |
 | Opciones de port (menú F1, `config.ini`, filtros) | hecho |
 | Perfiles de juego (entradas, tablas, ganchos y C propio) | hecho: viven en el repositorio de cada juego |
+| Runtime como biblioteca y generador en memoria (base del port a Android) | hecho: el runtime se compila sin nada del juego y el C del juego se le une al arrancar; el generador es una biblioteca con interfaz C. Prueba de factibilidad en Android en curso (cambio `android-feasibility-spike`, `spikes/android`) |
 | Pantalla ancha (`wide`, hasta 96 px por lado) | hecho en el motor, con API para el C del juego; el relleno específico de ALttP (franjas negras donde no hay mapa) está en curso en el cambio `alttp-wide-fill` y la precarga real del exterior queda como trabajo futuro |
 
 Validación: más de 200 pruebas (algunas compilan y ejecutan el C generado; las que necesitan compilador, SDL2 o la ROM se omiten solas si faltan) y suites de *fuzz* de 30 000 fotogramas por mazmorras, overworld y Mundo Oscuro sin paradas ni *stubs* ejecutados.
@@ -148,7 +149,7 @@ cl /MP /TC /std:c11 /DSNES_RT_TICK /DSNES_RT_CHECKS out\rom\*.c /Fe:out\headless
 out\headless.exe roms\alttp_usa.sfc --frames 1200 --screenshot out\shot.png --wav out\audio.wav
 ```
 
-Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir en WRAM), `--dump DIR` (VRAM, CGRAM, OAM, WRAM), `--wide N` (captura ensanchada en N columnas por lado, múltiplo de 8 hasta 96), y con `/DSNES_RT_TRACE` las trazas `--trace-frames`, `--trace-reads` y `--watch`. `snes_play --no-window` ofrece lo mismo con el frontal de SDL2.
+Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir en WRAM), `--dump DIR` (VRAM, CGRAM, OAM, WRAM), `--frame-times F.txt` (microsegundos de cada fotograma, para comparar construcciones y equipos), `--wide N` (captura ensanchada en N columnas por lado, múltiplo de 8 hasta 96), y con `/DSNES_RT_TRACE` las trazas `--trace-frames`, `--trace-reads` y `--watch`. `snes_play --no-window` ofrece lo mismo con el frontal de SDL2.
 
 ## Estructura
 
@@ -158,12 +159,14 @@ Opciones útiles: `--press BOTONES@A-B` (mando), `--poke ADDR=BYTES@N` (escribir
 | `src/opcodes.rs`, `src/disasm.rs` | tabla de opcodes y decodificador |
 | `src/discover.rs`, `src/graph.rs` | descubrimiento de código, bloques y funciones |
 | `src/codegen.rs` | generador de C |
+| `src/lib.rs`, `src/generate.rs` | el generador como biblioteca: el C de un juego en memoria desde los bytes de la ROM y el perfil, y su interfaz C (`generate::ffi`) para Android |
 | `src/config.rs` | formato de los perfiles de juego (`games/<id>.toml`): entradas, tablas de saltos y ganchos |
 | `src/port.rs`, `src/toolchain.rs`, `src/download.rs` | `snes-port`: caché, compilación y descarga opcional de TinyCC |
 | `runtime/snes_rt.h` | interfaz entre el C generado y el runtime |
 | `runtime/snes_core.inc`, `snes_ppu.inc`, `snes_spc.inc` | núcleo de hardware, PPU y sonido |
 | `runtime/headless.c`, `runtime/play.c`, `runtime/play_cfg.h` | frontales sin vídeo e interactivo, y la lógica de opciones sin SDL (INI, imagen, efectos, volumen, teclas) |
-| `src/headless.rs`, `src/spctest.rs`, `src/cctest.rs` | pruebas del runtime y utilidades de compilación |
+| `src/headless.rs`, `src/rtlib.rs`, `src/spctest.rs`, `src/cctest.rs`, `tests/` | pruebas del runtime (también como biblioteca), del generador y utilidades de compilación |
+| `spikes/` | prueba de factibilidad del port a Android: medición en el PC (`bench_pc.sh`, `tcc_host.c`) y app de medición (`spikes/android`); no se publica |
 | `openspec/` | especificaciones y cambios (spec-driven) |
 
 ## Desarrollo

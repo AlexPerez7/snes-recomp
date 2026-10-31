@@ -1,0 +1,59 @@
+// App de la prueba de factibilidad (android-feasibility-spike). Uso personal: no se publica.
+// Antes de compilar, ver spikes/android/README.md (TinyCC, perfil del juego y target de Rust).
+plugins {
+    id 'com.android.application'
+}
+
+def repo = rootProject.file('../..').canonicalPath
+def tinycc = rootProject.file(providers.gradleProperty('snesSpike.tinyccDir').get()).canonicalPath
+def profile = rootProject.file(providers.gradleProperty('snesSpike.gameProfile').get())
+def spikeAssets = layout.buildDirectory.dir('generated/spikeAssets')
+
+android {
+    namespace 'io.github.alexperez7.snesspike'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+
+    defaultConfig {
+        applicationId 'io.github.alexperez7.snesspike'
+        minSdk 29
+        targetSdk 35
+        versionCode 1
+        versionName '0.1-spike'
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild {
+            cmake {
+                arguments "-DSNES_RECOMP_DIR=${repo}", "-DTINYCC_DIR=${tinycc}",
+                        "-DSNES_GEN_LIB=${repo}/target/aarch64-linux-android/release/libsnes_recomp.a"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+    // Las bibliotecas nativas quedan como ficheros en nativeLibraryDir: el plan B (un .so compilado en el teléfono)
+    // se enlaza contra libsnesrt.so desde ahí.
+    packaging { jniLibs { useLegacyPackaging true } }
+    sourceSets { main { assets.srcDirs += spikeAssets.get().asFile } }
+}
+
+// Cabeceras para TinyCC en el teléfono (las suyas, la stdint.h mínima y snes_rt.h) y el perfil del juego con su C propio.
+tasks.register('spikeAssets', Sync) {
+    into spikeAssets
+    from("${tinycc}/include") { into 'tcc_include' }
+    from("${repo}/spikes/tcc_include") { into 'tcc_include' }
+    from("${repo}/runtime") { include 'snes_rt.h'; into 'tcc_include' } // la interfaz del runtime: código propio
+    from(profile) { into 'game'; rename { 'profile.toml' } }
+    from(new File(profile.parentFile, profile.name - '.toml')) { into 'game/c'; include '*.c', '*.h' }
+}
+
+// El generador (Rust) como biblioteca estática para arm64: no necesita el enlazador del NDK.
+tasks.register('cargoGenerator', Exec) {
+    workingDir repo
+    commandLine 'cargo', 'rustc', '--release', '--lib', '--target', 'aarch64-linux-android', '--crate-type', 'staticlib'
+}
+
+tasks.named('preBuild') { dependsOn 'spikeAssets', 'cargoGenerator' }

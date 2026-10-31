@@ -53,6 +53,12 @@ void ppu_wide_blank_clear(void);
 /* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
 int game_opt(const char *key, int def);
 
+/* The module of the game registers its dispatch by address (snes_call_entry) with the runtime. snes_entry.c defines
+ * snes_rt_module_init, which does it; a runtime built as a library of its own (SNES_RT_LIBRARY) needs it called
+ * before the game starts, and stops with code 15 otherwise. */
+void snes_rt_register_entry(int (*fn)(Cpu *c, uint32_t addr));
+void snes_rt_module_init(void);
+
 /* An indirect jump or call reached a target the recompiler did not know about. */
 void rt_unresolved(Cpu *c, uint32_t site, uint32_t target);
 /* A block was entered with M/X different from what the recompiler assumed. */

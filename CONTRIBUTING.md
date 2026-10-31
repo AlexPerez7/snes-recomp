@@ -27,7 +27,7 @@ cargo build --release
 cargo test
 ```
 
-Necesitas Rust estable y, para las pruebas que compilan el C generado, un compilador (gcc, clang o Visual Studio Build Tools). Las pruebas que necesitan compilador, SDL2 o un juego real **se omiten solas** si faltan, así que `cargo test` pasa sin ROM.
+Necesitas Rust estable y, para las pruebas que compilan el C generado, un compilador (gcc, clang o Visual Studio Build Tools). Las pruebas que necesitan compilador, SDL2 o un juego real **se omiten solas** si faltan, así que `cargo test` pasa sin ROM. Las del runtime como biblioteca (`src/rtlib.rs`: bibliotecas compartidas y `dlopen`) solo corren con gcc o clang en Linux; en Windows se omiten.
 
 Para correr también las pruebas con un juego real, apunta a su perfil y a tu ROM:
 

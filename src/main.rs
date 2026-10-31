@@ -1,22 +1,4 @@
-mod codegen;
-#[cfg(test)]
-mod cctest;
-mod config;
-mod crc32;
-mod disasm;
-mod discover;
-mod download;
-mod games;
-mod graph;
-#[cfg(test)]
-mod headless;
-mod opcodes;
-mod port;
-mod rom;
-#[cfg(test)]
-mod spctest;
-mod toolchain;
-
+use snes_recomp::{codegen, config, disasm, discover, games, generate, graph, port, rom};
 use config::{parse_addr, Config};
 use disasm::{fmt_addr, Flags};
 use rom::Rom;
@@ -107,7 +89,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
             let cfg = load_config(config_path, profile)?;
             let roots: Vec<(u32, Flags)> = match rest.first() {
                 Some(s) => vec![(parse_addr(s)?, flags_from(&args))],
-                None => default_roots(&rom, &cfg),
+                None => generate::default_roots(&rom, &cfg),
             };
             let d = discover::discover(&rom, &cfg, &roots);
             if args.iter().any(|a| a == "--widths") {
@@ -132,7 +114,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         "graph" => {
             let cfg = load_config(config_path, profile)?;
-            let roots = default_roots(&rom, &cfg);
+            let roots = generate::default_roots(&rom, &cfg);
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
             let g = graph::Graph::build(&d, &root_addrs);
@@ -146,24 +128,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
         }
         "codegen" => {
             let cfg = load_config(config_path, profile)?;
-            let roots = default_roots(&rom, &cfg);
+            let roots = generate::default_roots(&rom, &cfg);
             let d = discover::discover(&rom, &cfg, &roots);
             let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
             let g = graph::Graph::build(&d, &root_addrs);
             if args.iter().any(|a| a == "--all") {
                 let dir = option_value(&args, "-o").ok_or("codegen --all needs -o <dir>")?;
-                let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks)?.generate_all();
-                let dir = PathBuf::from(dir);
-                write_full_rom(&out, &dir)?;
-                // the C code of the game (hooks) sits in <dir>/game, like in the builds of snes-port
-                if let Some(p) = profile {
-                    if !p.sources.is_empty() {
-                        std::fs::create_dir_all(dir.join("game")).map_err(|e| e.to_string())?;
-                        for s in &p.sources {
-                            std::fs::write(dir.join("game").join(&s.name), &s.text).map_err(|e| format!("{}: {e}", s.name))?;
-                        }
-                    }
-                }
+                // the C code of the game (hooks) goes to <dir>/game, like in the builds of snes-port
+                let game = profile.map(|p| p.sources.as_slice()).unwrap_or(&[]);
+                let generated = generate::generate_with_config(&rom, &cfg, game)?;
+                write_full_rom(&generated, &PathBuf::from(dir))?;
                 return Ok(());
             }
             let addr = parse_addr(rest.first().ok_or(USAGE)?)?;
@@ -190,37 +164,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
 }
 
-/// Writes the C of the whole ROM and the runtime files into `dir`: `rom_BB.c` per bank, `snes_funcs.h`, `snes_rt.h`,
-/// the runtimes and `build_play.bat`. Returns the number of lines of generated C.
-fn write_sources(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<usize, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let write = |name: String, text: &str| {
-        let path = dir.join(name);
-        std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    write("snes_rt.h".into(), codegen::RUNTIME_HEADER)?;
-    write("snes_funcs.h".into(), &out.header)?;
-    write("snes_entry.c".into(), &out.entry)?;
-    write("snes_headless.c".into(), codegen::HEADLESS_RUNTIME)?;
-    write("snes_core.inc".into(), codegen::RUNTIME_CORE)?;
-    write("snes_ppu.inc".into(), codegen::RUNTIME_PPU)?;
-    write("snes_spc.inc".into(), codegen::RUNTIME_SPC)?;
-    std::fs::create_dir_all(dir.join("play")).map_err(|e| format!("{}: {e}", dir.display()))?;
-    write("play/snes_play.c".into(), codegen::PLAY_RUNTIME)?;
-    write("play/play_cfg.h".into(), codegen::PLAY_CFG)?;
-    write("play/play_ui.h".into(), codegen::PLAY_UI)?;
-    write("build_play.bat".into(), &codegen::BUILD_PLAY_BAT.replace('\r', "").replace('\n', "\r\n"))?; // cmd.exe wants CRLF
-    let mut lines = out.header.lines().count();
-    for (bank, text) in &out.banks {
-        write(format!("rom_{bank:02X}.c"), text)?;
-        lines += text.lines().count();
-    }
-    Ok(lines)
-}
-
-/// Writes the sources (see `write_sources`) and summarises on stderr.
-fn write_full_rom(out: &codegen::FullOutput, dir: &std::path::Path) -> Result<(), String> {
-    let lines = write_sources(out, dir)?;
+/// Writes the runtime files and the generated C (see `generate::write_sources`) and summarises on stderr.
+fn write_full_rom(generated: &generate::Generated, dir: &std::path::Path) -> Result<(), String> {
+    let lines = generate::write_sources(generated, dir)?;
+    let out = &generated.output;
     let stubs = out.unsupported.len();
     eprintln!("functions: {} ({} generated, {} stubs)", out.functions, out.functions - stubs, stubs);
     let mut by_cause: std::collections::BTreeMap<codegen::Cause, usize> = Default::default();
@@ -243,15 +190,6 @@ fn load_config(path: Option<String>, profile: Option<&games::GameProfile>) -> Re
         (Some(p), _) => Config::load(p),
         (None, Some(g)) => Config::parse(&g.config).map_err(|e| format!("{}: {e}", g.origin)),
         (None, None) => Ok(Config::default()),
-    }
-}
-
-/// The config's entries, or the reset vector if there are none.
-fn default_roots(rom: &Rom, cfg: &Config) -> Vec<(u32, Flags)> {
-    if cfg.entries.is_empty() {
-        vec![(rom.vectors().emu_reset as u32, Flags::RESET)]
-    } else {
-        cfg.entries.iter().map(|e| (e.addr, e.flags)).collect()
     }
 }
 

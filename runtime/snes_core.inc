@@ -1,14 +1,28 @@
 /* snes_core.inc - hardware core of the runtimes: bus, registers, DMA, clock, execution contexts, report.
- * Included by headless.c (and by play.c); it is not compiled on its own. */
+ * Included by headless.c (and by play.c); it is not compiled on its own.
+ *
+ * Library mode (SNES_RT_LIBRARY): the runtime is built without the generated C and holds nothing derived from the
+ * ROM; the module with the code of the game joins it at run time by calling its snes_rt_module_init (generated in
+ * snes_entry.c), which registers the dispatch by address with snes_rt_register_entry. Without the macro the generated
+ * C is linked in one piece and the dispatch is snes_call_entry from the start. */
+#ifdef SNES_RT_LIBRARY
+#include "snes_rt.h"
+#else
 #include "snes_funcs.h"
+#endif
 #include <stdio.h>
 #include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__ANDROID__) && !defined(SNES_RT_THREAD_CONTEXTS)
+#define SNES_RT_THREAD_CONTEXTS /* bionic has no makecontext/swapcontext */
+#endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(SNES_RT_THREAD_CONTEXTS)
+#include <pthread.h>
 #else
 #include <ucontext.h>
 #endif
@@ -656,6 +670,50 @@ static uint32_t ctx_entry_addr;
 static void *ctx_main_handle(void) { return ConvertThreadToFiber(NULL); }
 static void *ctx_make(void (*fn)(void *)) { return CreateFiber(CTX_STACK, (LPFIBER_START_ROUTINE)fn, NULL); }
 static void ctx_jump(Ctx *from, Ctx *to) { (void)from; SwitchToFiber(to->handle); }
+#elif defined(SNES_RT_THREAD_CONTEXTS)
+/* Each context is a thread of its own and only one runs at a time: ctx_jump lets `to` go on and waits until another
+ * jump lets `from` go on again. For systems without fibres or ucontext (Android); slower to switch, and a game switches
+ * a few times per frame at most. */
+typedef struct { void (*fn)(void *); int run; } ThreadCtx;
+static pthread_mutex_t ctx_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t ctx_cv = PTHREAD_COND_INITIALIZER;
+static void *ctx_thread(void *p) {
+    ThreadCtx *t = (ThreadCtx *)p;
+    pthread_mutex_lock(&ctx_mu);
+    while (!t->run) pthread_cond_wait(&ctx_cv, &ctx_mu);
+    pthread_mutex_unlock(&ctx_mu);
+    t->fn(NULL); /* a context never returns: the run ends through stop() */
+    return NULL;
+}
+static void *ctx_main_handle(void) {
+    ThreadCtx *t = (ThreadCtx *)calloc(1, sizeof(ThreadCtx));
+    t->run = 1;
+    return t;
+}
+static void *ctx_make(void (*fn)(void *)) {
+    ThreadCtx *t = (ThreadCtx *)calloc(1, sizeof(ThreadCtx));
+    pthread_t th;
+    pthread_attr_t a;
+    t->fn = fn;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, CTX_STACK);
+    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th, &a, ctx_thread, t)) {
+        printf("cannot start the thread of an execution context\n");
+        exit(13);
+    }
+    pthread_attr_destroy(&a);
+    return t;
+}
+static void ctx_jump(Ctx *from, Ctx *to) {
+    ThreadCtx *f = (ThreadCtx *)from->handle, *t = (ThreadCtx *)to->handle;
+    pthread_mutex_lock(&ctx_mu);
+    f->run = 0;
+    t->run = 1;
+    pthread_cond_broadcast(&ctx_cv);
+    while (!f->run) pthread_cond_wait(&ctx_cv, &ctx_mu);
+    pthread_mutex_unlock(&ctx_mu);
+}
 #else
 static void (*ctx_fn)(void *);
 static void ctx_tramp(void) { ctx_fn(NULL); }
@@ -705,12 +763,49 @@ void rt_lost_return(Cpu *c) {
     stop(14, "return to an address no call expects");
 }
 
+/* ---- The code of the game ---- */
+
+/* The dispatch by address into the generated code: snes_call_entry when it is linked in one piece, else what the
+ * module of the game registers. */
+#ifdef SNES_RT_LIBRARY
+static int (*entry_fn)(Cpu *c, uint32_t addr);
+#else
+static int (*entry_fn)(Cpu *c, uint32_t addr) = snes_call_entry;
+#endif
+
+void snes_rt_register_entry(int (*fn)(Cpu *c, uint32_t addr)) { entry_fn = fn; }
+
+#ifdef SNES_RT_LIBRARY
+/* What the code of the game may call in the runtime (every function snes_rt.h declares that is not inline), by name,
+ * for a host that compiles that code itself and links it by hand (libtcc's tcc_add_symbol), without looking the
+ * names up in the loaded libraries. Ends with a NULL name. src/rtlib.rs checks it against snes_rt.h. */
+typedef struct { const char *name; void *addr; } SnesRtSymbol;
+const SnesRtSymbol *snes_rt_symbols(void);
+#define RT_SYM(f) { #f, (void *)f }
+static const SnesRtSymbol rt_symbols[] = {
+    RT_SYM(bus_read8), RT_SYM(bus_write8), RT_SYM(joy1_state),
+    RT_SYM(ppu_sprite_xoff), RT_SYM(ppu_sprite_xoff_clear), RT_SYM(ppu_wide), RT_SYM(ppu_wide_blank),
+    RT_SYM(ppu_wide_blank_clear), RT_SYM(game_opt), RT_SYM(snes_rt_register_entry),
+    RT_SYM(rt_unresolved), RT_SYM(rt_flag_mismatch), RT_SYM(rt_unsupported), RT_SYM(rt_wai), RT_SYM(rt_rti),
+    RT_SYM(rt_lost_return), RT_SYM(rt_stp), RT_SYM(rt_brk), RT_SYM(rt_cop), RT_SYM(rt_wdm),
+#ifdef SNES_RT_TICK
+    RT_SYM(rt_poll),
+#endif
+#ifdef SNES_RT_TRACE
+    { "rt_block", (void *)&rt_block },
+#endif
+    { NULL, NULL }
+};
+#undef RT_SYM
+const SnesRtSymbol *snes_rt_symbols(void) { return rt_symbols; }
+#endif
+
 /* Calls the function at `addr` as the CPU would enter it from outside the generated code. Such a function
  * ends with RTI, which leaves c->ret as RT_NO_RET; if an RTS or RTL got here instead, nothing accepted it. */
 static int call_top(Cpu *c, uint32_t addr) {
     int ok;
     c->ret = RT_NO_RET;
-    ok = snes_call_entry(c, addr);
+    ok = entry_fn(c, addr);
     if (ok && c->ret != RT_NO_RET) rt_lost_return(c);
     return ok;
 }
@@ -923,6 +1018,10 @@ static int run_rom(void) {
     spc_reset();
     memset(&c, 0, sizeof c);
     c.e = 1; c.m = 1; c.xf = 1; c.s = 0x01FF; c.irq = 1; /* state right after reset */
+    if (!entry_fn) {
+        printf("no game module: snes_rt_register_entry was never called (snes_rt_module_init of the game)\n");
+        stop(15, "no game module registered");
+    }
     if (!call_top(&c, vector(0xFFFC))) {
         printf("reset vector %04X is not the entry of a function\n", (unsigned)vector(0xFFFC));
         stop(10, "interrupt vector is not a function");

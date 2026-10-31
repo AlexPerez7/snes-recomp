@@ -38,3 +38,15 @@ El juego ejecutado con el runtime en modo biblioteca y el módulo del juego unid
 #### Scenario: Construcción de PC sin cambios
 - **WHEN** `snes-port` o `build_play.bat` construyen el juego como hasta ahora
 - **THEN** el ejecutable se enlaza en una sola pieza y todos los tests existentes pasan
+
+### Requirement: Tabla de símbolos para enlazar a mano
+En modo biblioteca, el runtime SHALL ofrecer una tabla con el nombre y la dirección de cada función de `snes_rt.h` que no es `inline` (terminada en un nombre nulo), para que un anfitrión que compila el C del juego en memoria lo enlace sin buscar símbolos en las bibliotecas cargadas.
+
+#### Scenario: Tabla completa
+- **WHEN** se compara la tabla con las funciones no `inline` que declara `snes_rt.h`
+- **THEN** están todas y no hay ninguna más (salvo `snes_rt_module_init`, que define el módulo del juego)
+
+#### Scenario: Enlace sin bibliotecas del sistema
+- **WHEN** libtcc compila el C del juego con `-nostdinc -nostdlib`, solo con sus cabeceras, una `stdint.h` mínima y `snes_rt.h`, y recibe la tabla con `tcc_add_symbol`
+- **THEN** el juego se ejecuta y deja el mismo estado que la construcción en una pieza
+
