@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_RUNTIME, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_GL, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -72,6 +72,7 @@ fn build_and_run(cc: &crate::cctest::Compiler, name: &str, out: &crate::codegen:
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
     files.extend(rom.map(|bytes| ("rom.sfc".to_string(), bytes)));
@@ -123,9 +124,14 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()),
         ("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()),
         ("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()),
+        ("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()),
+        ("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()),
+        ("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()),
+        ("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
         ("rom.sfc".into(), image_bytes),
     ];
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
@@ -144,6 +150,11 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
 /// Builds `segments` with the hooks of `cfg` and the game's C code `game_c` (a `hooks.c` next to the generated files)
 /// against the headless runtime, or, with `play`, against the interactive frontend, and runs it with `args`.
 fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], cfg: &str, game_c: &str, args: &[&str]) -> Option<Run> {
+    run_hooked_with(name, play, segments, roots, cfg, game_c, args, &[])
+}
+
+/// Like `run_hooked`, with `extra` files (name, contents) next to the ROM, e.g. a `config.ini`.
+fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], cfg: &str, game_c: &str, args: &[&str], extra: &[(&str, &[u8])]) -> Option<Run> {
     let cc = crate::cctest::find()?;
     let sdl = if play { Some(crate::cctest::sdl2_dir().or_else(|| { eprintln!("skipped {name}: no SDL2 development package"); None })?) } else { None };
     let mut all: Vec<(u32, &[u8])> = segments.to_vec();
@@ -154,7 +165,7 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
     let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
     let d = discover(&rom_obj, &cfg, &r);
     let g = Graph::build(&d, roots);
-    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().generate_all();
+    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).with_resume(cfg.resume).unwrap().generate_all();
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
@@ -162,6 +173,7 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
+        ("snes_state.inc".into(), RUNTIME_STATE.as_bytes().to_vec()),
         ("rom.sfc".into(), image_bytes),
         ("hooks.c".into(), game_c.as_bytes().to_vec()),
     ];
@@ -169,10 +181,15 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
         files.push(("snes_play.c".into(), PLAY_RUNTIME.as_bytes().to_vec()));
         files.push(("play_cfg.h".into(), PLAY_CFG.as_bytes().to_vec()));
         files.push(("play_ui.h".into(), PLAY_UI.as_bytes().to_vec()));
+        files.push(("play_i18n.h".into(), PLAY_I18N.as_bytes().to_vec()));
+        files.push(("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()));
+        files.push(("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()));
+        files.push(("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()));
     } else {
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));
     }
     files.extend(out.banks.iter().map(|(b, t)| (format!("rom_{b:02X}.c"), t.clone().into_bytes())));
+    files.extend(extra.iter().map(|(n, b)| (n.to_string(), b.to_vec())));
     let files: Vec<(&str, &[u8])> = files.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect();
     Some(match cc.compile_run_sdl_times(name, &files, &["SNES_RT_TICK"], args, sdl.as_deref(), 1) {
         Ok(out) => Run { code: 0, out },
@@ -181,6 +198,40 @@ fn run_hooked(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u32], 
             Run { code, out: e }
         }
     })
+}
+
+/// LDA #0 ; STA $10 ; then, at 00:8004 (the block of the loop), INC $10 ; JMP $8004: a counter in WRAM that moves every block.
+const COUNTER_ROM: [(u32, &[u8]); 1] = [(0x8000, &[0xA9, 0x00, 0x85, 0x10, 0xE6, 0x10, 0x4C, 0x04, 0x80])];
+const RESUME_CFG: &str = "[resume]\naddr=\"00:8004\"";
+
+fn run_states(name: &str, extra_args: &[&str]) -> Option<Run> {
+    let mut args = vec!["rom.sfc", "--no-window", "--frame-blocks", "50", "--hash-wram"];
+    args.extend(extra_args);
+    run_hooked_with(name, true, &COUNTER_ROM, &[0x8000], RESUME_CFG, "", &args, &[])
+}
+
+fn wram_hash(r: &Run) -> String {
+    r.out.lines().find_map(|l| l.strip_prefix("wram: ")).unwrap_or_else(|| panic!("no wram hash: {}", r.out)).to_string()
+}
+
+#[test]
+fn a_state_saved_in_the_main_loop_comes_back_exactly_and_the_rewind_goes_back() {
+    // Save at frame 2 and stop at 6: the memory four frames after the state. Save at 2, load at 6 and stop at 10: the same four.
+    let Some(a) = run_states("states-save", &["--frames", "6", "--state-script", "save@2"]) else { return };
+    assert!(a.out.contains("State saved (slot 1)"), "{}", a.out);
+    let Some(r) = run_states("states-both", &["--frames", "10", "--state-script", "save@2,load@6"]) else { return };
+    assert!(r.out.contains("State saved (slot 1)") && r.out.contains("State loaded (slot 1)"), "{}", r.out);
+    assert_eq!(wram_hash(&a), wram_hash(&r), "the memory after save + 4 frames and after load + 4 frames");
+    // without the load the memory is that of ten frames
+    let Some(c) = run_states("states-none", &["--frames", "10"]) else { return };
+    assert_ne!(wram_hash(&c), wram_hash(&r), "{}", c.out);
+    // an empty slot says so and a slot change is announced
+    let Some(e) = run_states("states-empty", &["--frames", "6", "--state-script", "slot+@2,load@3"]) else { return };
+    assert!(e.out.contains("Slot 2 (") && e.out.contains("Slot 2 is empty"), "{}", e.out);
+    // the rewind: captures every 4 frames, then it steps back and the ring differences check out
+    let Some(w) = run_states("states-rewind", &["--frames", "40", "--state-script", "rewind@30-36"]) else { return };
+    assert!(w.out.contains("rewind step"), "{}", w.out);
+    assert!(!w.out.contains("does not give back"), "{}", w.out);
 }
 
 /// LDA #$05 ; STA $10 ; JSR $8100 ; BRA to itself    and at 00:8100 an RTS.
@@ -202,6 +253,145 @@ fn the_same_c_code_of_a_game_builds_and_runs_with_the_interactive_frontend() {
     let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50", "--press", "START@0-100", "--stats"];
     let Some(r) = run_hooked("hook-play", true, &HOOKED_ROM, &[0x8000, 0x8100], HOOK_CFG, HOOK_C, &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
+}
+
+/// The profile of the tests of game options: the hook of `HOOK_CFG` and one option, `language`.
+const OPT_CFG: &str = "[[hook]]\naddr=\"00:8100\"\nkind=\"before\"\ncall=\"game_hook\"\n[[option]]\nkey=\"language\"\nlabel=\"Language\"\nnames=[\"en\",\"es\"]\ndefault=\"en\"\n";
+/// The game reads its option and one the profile does not declare, and says both (headless: in registers; play: on stdout).
+const OPT_C: &str = "#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {\n    (void)c;\n    bus_write8(0x2105, (uint8_t)game_opt(\"language\", 9));\n    bus_write8(0x2106, (uint8_t)game_opt(\"undeclared\", 7));\n    printf(\"game_opt language=%d undeclared=%d\\n\", game_opt(\"language\", 9), game_opt(\"undeclared\", 7));\n}\n";
+
+#[test]
+fn a_declared_option_is_read_by_the_c_of_the_game_with_its_default_or_the_command_line() {
+    let base = ["rom.sfc", "--frames", "2", "--frame-blocks", "50"];
+    let run = |name: &str, opts: &[&str]| {
+        let args: Vec<&str> = base.iter().chain(opts).copied().collect();
+        run_hooked(name, false, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args)
+    };
+    let Some(r) = run("opt-default", &[]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=00"), "the default is the first name\n{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=07"), "an undeclared key gives `def`\n{}", r.out);
+    let Some(r) = run("opt-name", &["--game-opt", "language=es"]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    let Some(r) = run("opt-index", &["--game-opt", "language=1", "--game-opt", "undeclared=3"]) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=03"), "numbers still work for keys the profile does not declare\n{}", r.out);
+    let Some(r) = run("opt-bad-name", &["--game-opt", "language=fr"]) else { return };
+    assert_ne!(r.code, 0, "a name that is not in the list is refused\n{}", r.out);
+}
+
+/// The game prints the two folders it is told about.
+const DIRS_C: &str = "#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {\n    (void)c;\n    printf(\"dirs rom=[%s] game=[%s]\\n\", rom_dir(), game_dir());\n}\n";
+
+#[test]
+fn the_game_knows_the_folder_of_the_rom_and_the_folder_of_its_profile() {
+    let run = |name: &str, rom: &str, extra: &[&str]| {
+        let mut args = vec![rom, "--frames", "2", "--frame-blocks", "50"];
+        args.extend_from_slice(extra);
+        run_hooked(name, false, &HOOKED_ROM, &[0x8000, 0x8100], HOOK_CFG, DIRS_C, &args)
+    };
+    // the folder of the ROM ends in a separator, `./` when the path has none; without --game-dir the game folder is the same
+    let Some(r) = run("dirs-bare", "rom.sfc", &[]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
+    let Some(r) = run("dirs-slash", "./rom.sfc", &[]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[./]"), "{}", r.out);
+    // a backslash separates folders only on Windows; elsewhere `.\rom.sfc` is a file name
+    if cfg!(windows) {
+        let Some(r) = run("dirs-backslash", ".\\rom.sfc", &[]) else { return };
+        assert!(r.out.contains("dirs rom=[.\\] game=[.\\]"), "{}", r.out);
+    }
+    // --game-dir sets only the folder of the profile, and gets its separator
+    let Some(r) = run("dirs-game", "rom.sfc", &["--game-dir", "games/x"]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[games/x/]"), "{}", r.out);
+    let Some(r) = run("dirs-game-sep", "rom.sfc", &["--game-dir", "games/x/"]) else { return };
+    assert!(r.out.contains("dirs rom=[./] game=[games/x/]"), "{}", r.out);
+}
+
+#[test]
+fn the_options_of_the_game_are_read_from_and_written_to_config_ini() {
+    let run = |name: &str, ini: &[u8], extra: &[&str]| {
+        let mut args = vec!["rom.sfc", "--no-window", "--frames", "3", "--frame-blocks", "50", "--print-config"];
+        args.extend_from_slice(extra);
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let Some(r) = run("opt-ini-es", b"game.language = es\n", &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(r.out.contains("game_opt language=1 undeclared=7"), "{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "the file keeps its value\n{}", r.out);
+    let Some(r) = run("opt-ini-fr", b"game.language = fr\n", &[]) else { return };
+    assert!(r.out.contains("game_opt language=0"), "an unknown name keeps the default\n{}", r.out);
+    let Some(r) = run("opt-ini-cli", b"game.language = es\n", &["--game-opt", "language=en"]) else { return };
+    assert!(r.out.contains("game_opt language=0"), "the command line wins for this run\n{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "and the file is not changed by it\n{}", r.out);
+    // the first run writes the default, with the rest of the options (closing the menu saves, as in the test of the defaults)
+    let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", "F1,Escape"];
+    let Some(r) = run_hooked_with("opt-first", true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[]) else { return };
+    assert!(config_lines(&r).contains(&"game.language = en") && config_lines(&r).contains(&"filter = sharp"), "{}", r.out);
+}
+
+#[test]
+fn the_menu_shows_the_options_of_the_game_first_in_the_game_tab_and_saves_them() {
+    let run = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    // F1, three tabs to the right (Image, Audio, Controls, Game), Right on the first row, Escape closes and saves
+    let Some(r) = run("opt-menu-change", b"game.language = en\n", "F1,W,W,W,Down,Right,Escape") else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
+    // the list goes round
+    let Some(r) = run("opt-menu-round", b"game.language = es\n", "F1,W,W,W,Down,Right,Escape") else { return };
+    assert!(config_lines(&r).contains(&"game.language = en"), "{}", r.out);
+    // Enter on the row also goes to the next name
+    let Some(r) = run("opt-menu-enter", b"game.language = en\n", "F1,W,W,W,Down,Return,Escape") else { return };
+    assert!(config_lines(&r).contains(&"game.language = es"), "{}", r.out);
+    // the system rows come after: Resume, Save, Restore all defaults (Down x3 from the option), Enter twice
+    let Some(r) = run("opt-menu-restore", b"game.language = es\nfilter = nearest\n", "F1,W,W,W,Down,Down,Down,Down,Return,Return,Escape") else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"game.language = en") && l.contains(&"filter = sharp"), "restoring everything also restores the options of the game\n{}", r.out);
+}
+
+#[test]
+fn a_profile_without_options_leaves_the_game_tab_and_the_config_as_they_were() {
+    // Restore is the third system row (Down x2) and Quit the fourth: the same keys as before options existed
+    let Some(r) = run_menu("menu-no-options", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Down,Return"], &[]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(!config_lines(&r).iter().any(|l| l.starts_with("game.")), "{}", r.out);
+}
+
+/// JSR $8100 (the hook runs) ; LDA $8200 -> $2105 ; LDA $8203 -> $2106 ; BRA to itself    at 00:8100 an RTS, at 00:8200 the bytes 11 22 33 44.
+const OVERLAY_ROM: [(u32, &[u8]); 3] = [
+    (0x8000, &[0x20, 0x00, 0x81, 0xAD, 0x00, 0x82, 0x8D, 0x05, 0x21, 0xAD, 0x03, 0x82, 0x8D, 0x06, 0x21, 0x80, 0xFE]),
+    (0x8100, &[0x60]),
+    (0x8200, &[0x11, 0x22, 0x33, 0x44]),
+];
+
+#[test]
+fn rom_overlay_replaces_what_the_recompiled_code_reads_but_not_the_file() {
+    let c = |body: &str| format!("#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) {{\n    static const uint8_t a[4] = {{0xAA, 0xBB, 0xCC, 0xDD}}, b[2] = {{0xEE, 0xFF}};\n    (void)c; (void)a; (void)b;\n{body}\n}}\n");
+    let args = ["rom.sfc", "--frames", "2", "--frame-blocks", "50"];
+    let run = |name: &str, body: &str| run_hooked(name, false, &OVERLAY_ROM, &[0x8000, 0x8100], HOOK_CFG, &c(body), &args);
+    // without a call the code reads the ROM
+    let Some(r) = run("overlay-none", "") else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=11"), "{}", r.out);
+    // the overlay shows in the reads; and the file on disk keeps its byte (the hook reads it with stdio)
+    let body = "    bus_write8(0x2107, (uint8_t)rom_overlay(0x008200, a, 4));\n    { FILE *f = fopen(\"rom.sfc\", \"rb\"); int v = 0; if (f) { fseek(f, 0x200, SEEK_SET); v = fgetc(f); fclose(f); } bus_write8(0x2109, (uint8_t)v); }";
+    let Some(r) = run("overlay-read", body) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=AA"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=DD"), "{}", r.out);
+    assert_eq!(r.reg(0x2107), Some("reads=0 writes=1 last=00"), "a good call returns 0\n{}", r.out);
+    assert_eq!(r.reg(0x2109), Some("reads=0 writes=1 last=11"), "the file on disk is not changed\n{}", r.out);
+    // a later call over the same bytes wins, and the rest is left alone
+    let body = "    rom_overlay(0x008200, a, 4);\n    rom_overlay(0x008200, b, 2);";
+    let Some(r) = run("overlay-last", body) else { return };
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=EE"), "{}", r.out);
+    assert_eq!(r.reg(0x2106), Some("reads=0 writes=1 last=DD"), "the bytes the second call did not cover keep the first\n{}", r.out);
+    // outside the image: an error and nothing written (the last byte of the 64 KiB image is 4 bytes short)
+    let body = "    bus_write8(0x2107, (uint8_t)rom_overlay(0x01FFFE, a, 4));\n    bus_write8(0x2108, (uint8_t)rom_overlay(0x7F8000, a, 4));\n    bus_write8(0x2109, (uint8_t)rom_overlay(0x008200, a, 0));";
+    let Some(r) = run("overlay-outside", body) else { return };
+    assert_eq!(r.reg(0x2107), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2108), Some("reads=0 writes=1 last=01"), "{}", r.out);
+    assert_eq!(r.reg(0x2109), Some("reads=0 writes=1 last=00"), "zero bytes is not an error\n{}", r.out);
+    assert_eq!(r.reg(0x2105), Some("reads=0 writes=1 last=11"), "nothing was written\n{}", r.out);
 }
 
 #[test]
@@ -1292,6 +1482,21 @@ fn a_srm_of_the_wrong_size_is_ignored_and_one_without_changes_is_not_rewritten()
     assert!(!r.out.contains("sram: loaded"), "{}", r.out);
 }
 
+#[test]
+fn with_saves_dir_the_srm_goes_there_and_one_next_to_the_rom_is_imported() {
+    // Run 1 finds the $33 of a `rom.srm` beside the ROM (before `saves`), then writes $5A; run 2 finds the $5A from `saves/rom.srm`.
+    let code = prog(&[read_sram(), vec![0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70]]);
+    let seg = [(0x8000, code.as_slice())];
+    let args = ["rom.sfc", "--no-window", "--frames", "2", "--frame-blocks", "50", "--saves-dir", "saves"];
+    let mut old = vec![0u8; 0x8000];
+    old[0] = 0x33;
+    let Some(r) = run_play_times("play-srm-saves", &seg, &[0x8000], &args, &[("rom.srm", &old)], 2) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
+    let seen: Vec<&str> = r.out.lines().filter(|l| l.starts_with("  $2134 ")).map(|l| l.rsplit("last=").next().unwrap()).collect();
+    assert_eq!(seen, ["33", "5A"], "{}", r.out);
+    assert!(r.out.contains("saves/rom.srm") || r.out.contains("saves\rom.srm"), "{}", r.out);
+}
+
 fn tile8(pixels: &[(usize, usize, u8)]) -> Vec<u16> {
     let mut t = vec![0u16; 32];
     for &(x, y, c) in pixels {
@@ -2267,6 +2472,16 @@ int main(void) {
     CHECK(s.v[O_FILTER] == FILTER_BILINEAR && s.v[O_VOLUME] == 50 && s.v[O_FULLSCREEN] == 0);
     CHECK(s.v[O_ASPECT] == ASPECT_87 && s.v[O_SCALING] == SCALING_INTEGER && s.v[O_OVERSCAN] == 0 && s.v[O_SCANLINES] == 0);
 
+    /* the shader: off by default with the effect at its starting strengths; it is on only when asked for and OpenGL is there */
+    CHECK(s.v[O_SHADER] == SHADER_OFF && s.v[O_CRT_MASK] == 30 && s.v[O_CRT_CURVE] == 15 && s.v[O_CRT_BLOOM] == 20);
+    CHECK(!use_shader(SHADER_OFF, 1) && !use_shader(SHADER_OFF, 0) && !use_shader(SHADER_CRT, 0) && use_shader(SHADER_CRT, 1));
+    {
+        int v = -1;
+        CHECK(opt_parse(&opt_defs[O_SHADER], "CRT", &v) && v == SHADER_CRT);
+        CHECK(!opt_parse(&opt_defs[O_SHADER], "scanline", &v));
+        CHECK(!opt_parse(&opt_defs[O_CRT_CURVE], "101", &v) && opt_parse(&opt_defs[O_CRT_CURVE], "100", &v) && v == 100);
+    }
+
     /* saving keeps the comments and the unknown keys, and writes every option */
     s.v[O_FILTER] = FILTER_SHARP;
     cfg_store(&s, &ini);
@@ -2495,8 +2710,8 @@ fn config_lines(r: &Run) -> Vec<&str> {
 
 #[test]
 fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults() {
-    // F1 opens the menu on Image; four Downs reach `filter`; Right makes it bilinear; Escape closes and saves
-    let keys = "F1,Down,Down,Down,Down,Right,Escape";
+    // F1 opens the menu on Image; four Downs reach `filter`; Left makes it bilinear (sharp is the default); Escape closes and saves
+    let keys = "F1,Down,Down,Down,Down,Left,Escape";
     let Some(r) = run_menu("menu-filter", &["--menu-keys", keys], &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let l = config_lines(&r);
@@ -2505,6 +2720,14 @@ fn the_menu_changes_the_filter_and_saves_it_and_a_first_run_writes_the_defaults(
     assert!(l.iter().any(|x| x.starts_with("# Options of snes_play")), "{}", r.out);
     // closing the menu without changing anything still writes the defaults on the first run
     let Some(r) = run_menu("menu-defaults", &["--menu-keys", "F1,Escape"], &[]) else { return };
+    assert!(config_lines(&r).contains(&"filter = sharp"), "{}", r.out);
+}
+
+#[test]
+fn a_filter_written_in_the_config_file_is_kept_over_the_default() {
+    let Some(r) = run_menu("menu-keep-nearest", &["--menu-keys", "F1,Escape"], &[("config.ini", b"filter = nearest
+")]) else { return };
+    assert_eq!(r.code, 0, "{}", r.out);
     assert!(config_lines(&r).contains(&"filter = nearest"), "{}", r.out);
 }
 
@@ -2544,7 +2767,7 @@ fn the_game_tab_saves_now_restores_everything_and_quits() {
     // Game is the fourth tab: W three times from Image. Down once is "Save game now".
     let code = [0xA9, 0x5A, 0x8F, 0x00, 0x00, 0x70, 0x80, 0xFE];
     let seg = [(0x8000, code.as_slice())];
-    let all = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config", "--menu-keys", "F1,W,W,W,Down,Return,Escape"];
+    let all = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "20", "--print-config", "--menu-keys", "F1,W,W,W,Down,Down,Return,Escape"];
     let Some(r) = run_play_with("menu-save-now", &seg, &[0x8000], &all, &[]) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     let saved = r.out.find("sram: saved").expect(&r.out);
@@ -2552,38 +2775,108 @@ fn the_game_tab_saves_now_restores_everything_and_quits() {
     assert!(saved < config, "the saved game is written when the menu asks, not when the program ends
 {}", r.out);
     // Restore all defaults (Down twice, Enter, Enter to confirm) over a config that changed things
-    let ini = b"filter = sharp
+    let ini = b"filter = nearest
 volume = 50
 scanlines = 40
 p1.key.A = Space
 ";
-    let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
+    let Some(r) = run_menu("menu-restore-all", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
+    assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 100") && l.contains(&"scanlines = 0") && l.contains(&"p1.key.A = S"), "{}", r.out);
     // Escape instead of the second Enter cancels the restoring
-    let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
+    let Some(r) = run_menu("menu-restore-cancel", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return,Escape,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = sharp") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
-    // Quit (the fourth row) ends the program without closing the menu by hand
-    let Some(r) = run_menu("menu-quit", &["--menu-keys", "F1,W,W,W,Down,Down,Down,Return"], &[]) else { return };
-    assert_eq!(r.code, 0, "{}", r.out);
+    assert!(l.contains(&"filter = nearest") && l.contains(&"volume = 50") && l.contains(&"p1.key.A = Space"), "{}", r.out);
+}
+
+/// The program ended because the player chose Quit in the menu (the report names the cause).
+fn quit_from_the_menu(r: &Run) -> bool {
+    r.out.contains("stop: quit from the menu")
+}
+
+/// The game ran to the end of its frames: it never quit.
+fn ran_to_the_end(r: &Run) -> bool {
+    r.code == 0 && !quit_from_the_menu(r)
+}
+
+#[test]
+fn quit_in_the_menu_asks_first_and_escape_cancels() {
+    let to_quit = "F1,W,W,W,Down,Down,Down,Down,Return"; // Quit (the fifth row of Game, after the fast forward speed) asks and the program goes on
+    let Some(r) = run_menu("menu-quit-asks", &["--menu-keys", to_quit], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+    // Enter on the question ends the program
+    let Some(r) = run_menu("menu-quit-yes", &["--menu-keys", &format!("{to_quit},Return")], &[]) else { return };
+    assert!(r.code == 0 && quit_from_the_menu(&r), "{}", r.out);
+    // Escape cancels: the menu stays open (a second Escape closes it) and the program goes on
+    let Some(r) = run_menu("menu-quit-no", &["--menu-keys", &format!("{to_quit},Escape,Escape")], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+}
+
+#[test]
+fn the_question_to_quit_changes_the_menu_picture() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "12", "--frame-blocks", "20", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
+        run_play(name, &seg, &[0x8000], &args)
+    };
+    let Some(without) = shot("menu-quit-pic-a", "F1,W,W,W,Down,Down,Down,Down") else { return };
+    let Some(with) = shot("menu-quit-pic-b", "F1,W,W,W,Down,Down,Down,Down,Return") else { return };
+    assert!(hash(&without.out).is_some() && hash(&with.out).is_some() && hash(&without.out) != hash(&with.out), "{}
+{}", without.out, with.out);
+}
+
+#[test]
+fn escape_opens_the_menu_like_f1_and_does_not_end_the_game() {
+    // the same trip as the F1 test: Escape opens, four Downs reach `filter`, Left makes it bilinear, Escape closes and saves
+    let Some(r) = run_menu("menu-esc-open", &["--menu-keys", "Escape,Down,Down,Down,Down,Left,Escape"], &[]) else { return };
+    assert!(ran_to_the_end(&r), "{}", r.out);
+    assert!(config_lines(&r).contains(&"filter = bilinear"), "{}", r.out);
+    // Escape with the menu closed does not quit: it opens it, and the game is still running at the end
+    let Some(r) = run_menu("menu-esc-alone", &["--menu-keys", "Escape"], &[]) else { return };
+    assert!(ran_to_the_end(&r) && !r.out.contains("stop: quit"), "{}", r.out);
+    // F1 still opens it
+    let Some(r) = run_menu("menu-f1-open", &["--menu-keys", "F1,Down,Down,Down,Down,Left,F1"], &[]) else { return };
+    assert!(config_lines(&r).contains(&"filter = bilinear"), "{}", r.out);
 }
 
 #[test]
 fn restoring_a_tab_only_changes_that_tab() {
-    let ini = b"filter = sharp
+    let ini = b"filter = nearest
 scanlines = 40
 volume = 50
 ";
-    // Image: ten rows of options, then "Restore defaults" (ten Downs); Enter; Escape
-    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
+    // Image: eleven rows of options (the shader is the last with it off), then "Restore defaults" (eleven Downs); Enter; Escape
+    let keys = "F1,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Down,Return,Escape";
     let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"filter = nearest") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
+    assert!(l.contains(&"filter = sharp") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
     // Audio: Restore is the third row of the second tab
     let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
-    assert!(l.contains(&"volume = 100") && l.contains(&"filter = sharp") && l.contains(&"scanlines = 40"), "{}", r.out);
+    assert!(l.contains(&"volume = 100") && l.contains(&"filter = nearest") && l.contains(&"scanlines = 40"), "{}", r.out);
+}
+
+#[test]
+fn the_shader_rows_of_the_image_tab_come_and_go_with_the_shader() {
+    let ini = b"scanlines = 40
+";
+    // the shader is the eleventh row (ten Downs); Right turns it on, and then the rows of the effect follow it:
+    // Down to the mask, Right makes it 40 (30 is the default), Escape saves
+    let down10 = "Down,Down,Down,Down,Down,Down,Down,Down,Down,Down";
+    let keys = format!("F1,{down10},Right,Down,Right,Escape");
+    let Some(r) = run_menu("menu-shader-on", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"shader = crt") && l.contains(&"crt_mask = 40") && l.contains(&"crt_curve = 15") && l.contains(&"crt_bloom = 20"), "{}", r.out);
+    // off again with Right, Right: the cursor stays on the shader row, so one Down reaches "Restore defaults"
+    let keys = format!("F1,{down10},Right,Right,Down,Return,Escape");
+    let Some(r) = run_menu("menu-shader-off-again", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"shader = off") && l.contains(&"scanlines = 0"), "{}", r.out);
+    // the rows after the shader have nothing to change while it is off: Restore is right below it
+    let keys = format!("F1,{down10},Down,Return,Escape");
+    let Some(r) = run_menu("menu-shader-restore-row", &["--menu-keys", &keys], &[("config.ini", ini)]) else { return };
+    assert!(config_lines(&r).contains(&"scanlines = 0"), "{}", r.out);
 }
 
 #[test]
@@ -2615,6 +2908,94 @@ fn the_menu_picture_is_the_same_every_time_and_goes_through_the_presenter() {
     let Some(r) = run_play("play-menushot-sharp", &seg, &[0x8000], &args) else { return };
     assert_eq!(r.code, 0, "{}", r.out);
     assert!(r.out.contains("present-shot: 600x450"), "{}", r.out);
+}
+
+/// The Game tab of the menu (it does not show the options under test) drawn over the picture, presented at 3x (768x672) with the given options: the PNG of `--present-shot`, or None
+/// when there is no SDL2 or (for the shader) no OpenGL 3.3, which are skipped like the tests that need the ROM.
+fn present_menu_shot(name: &str, opts: &[&str]) -> Option<Vec<u8>> {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let dir = std::env::temp_dir().join(format!("snes-recomp-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.png").to_string_lossy().into_owned();
+    let mut args = vec!["rom.sfc", "--no-window", "--frames", "8", "--frame-blocks", "20", "--menu-keys", "F1,W,W,W", "--present-shot", &path, "--present-size", "768x672", "--opt", "scaling=fit"];
+    for o in opts {
+        args.extend(["--opt", o]);
+    }
+    let r = run_play(name, &seg, &[0x8000], &args);
+    let shot = r.and_then(|r| {
+        assert_eq!(r.code, 0, "{}", r.out);
+        if r.out.contains("no OpenGL 3.3") {
+            eprintln!("skipped {name}: no OpenGL 3.3 here");
+            return None;
+        }
+        Some(std::fs::read(dir.join("p.png")).expect("no present-shot"))
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    shot
+}
+
+#[test]
+fn the_crt_shader_without_effects_is_the_same_picture_as_nearest() {
+    let Some(nearest) = present_menu_shot("crt-nearest", &["filter=nearest"]) else { return };
+    let Some(crt) = present_menu_shot("crt-zero", &["shader=crt", "scanlines=0", "crt_mask=0", "crt_curve=0", "crt_bloom=0"]) else { return };
+    if nearest != crt {
+        let (a, b) = (decode_png(&nearest), decode_png(&crt));
+        let diffs: Vec<(usize, usize, [u8; 3], [u8; 3])> = (0..a.h).flat_map(|y| (0..a.w).map(move |x| (x, y))).filter(|&(x, y)| a.rgb(x, y) != b.rgb(x, y)).map(|(x, y)| (x, y, a.rgb(x, y), b.rgb(x, y))).collect();
+        panic!("the shader with every effect at 0 and a whole factor must equal nearest: {} pixels differ, first {:?}", diffs.len(), &diffs[..diffs.len().min(8)]);
+    }
+}
+
+#[test]
+fn each_effect_of_the_crt_shader_changes_the_picture_the_way_it_should() {
+    let zero = ["shader=crt", "scanlines=0", "crt_mask=0", "crt_curve=0", "crt_bloom=0"];
+    let Some(base) = present_menu_shot("crt-base", &zero) else { return };
+    let base = decode_png(&base);
+    let with = |name: &str, key: &str, val: &str| -> Option<Img> {
+        let set = format!("{key}={val}");
+        let opts: Vec<&str> = zero.iter().copied().filter(|o| !o.starts_with(&format!("{key}="))).chain([set.as_str()]).collect();
+        present_menu_shot(name, &opts).map(|b| decode_png(&b))
+    };
+    let lum = |p: [u8; 3]| p[0] as u32 + p[1] as u32 + p[2] as u32;
+    let total = |i: &Img| i.px.iter().map(|&b| b as u64).sum::<u64>();
+    // the beam darkens the lines between the picture lines: the rows at the edge of each 3-row picture line lose more than its middle
+    let Some(beam) = with("crt-beam", "scanlines", "80") else { return };
+    assert!(total(&beam) < total(&base), "the beam darkens the picture");
+    let (mut edge, mut mid) = (0u64, 0u64);
+    for y in 0..672 {
+        let s: u64 = (0..768).map(|x| lum(base.rgb(x, y)) as u64 - lum(beam.rgb(x, y)).min(lum(base.rgb(x, y))) as u64).sum();
+        if y % 3 == 1 { mid += s } else { edge += s }
+    }
+    assert!(edge > 2 * mid, "the picture loses more at the edges of its lines than in the middle ({edge} vs {mid})");
+    // the mask: the three columns of a triad are not the same colour any more
+    let Some(mask) = with("crt-mask", "crt_mask", "80") else { return };
+    assert!((0..48).any(|y| (0..60).any(|x| mask.rgb(x * 3, y) != mask.rgb(x * 3 + 1, y))), "the mask changes the columns of a triad");
+    // the curvature: the corners fall outside the tube and are black
+    let Some(curve) = with("crt-curve", "crt_curve", "100") else { return };
+    assert!(curve.rgb(0, 0) == [0, 0, 0] && curve.rgb(767, 671) == [0, 0, 0], "the corners are black");
+    assert!(base.rgb(0, 0) != [0, 0, 0] || base.rgb(767, 671) != [0, 0, 0], "and are not without the curvature");
+    // the glow adds light
+    let Some(glow) = with("crt-glow", "crt_bloom", "100") else { return };
+    assert!(total(&glow) > total(&base), "the glow adds light");
+}
+
+#[test]
+fn sharp_at_a_whole_factor_is_the_same_picture_as_nearest() {
+    let seg = [(0x8000, [0x80u8, 0xFE].as_slice())];
+    let dir = std::env::temp_dir().join(format!("snes-recomp-sharp3x-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut shots = Vec::new();
+    for f in ["nearest", "sharp"] {
+        let path = dir.join(format!("{f}.png")).to_string_lossy().into_owned();
+        let opt = format!("filter={f}");
+        let args = ["rom.sfc", "--no-window", "--frames", "5", "--frame-blocks", "20", "--present-shot", &path, "--present-size", "768x672", "--opt", &opt, "--opt", "scaling=fit"];
+        let Some(r) = run_play(&format!("play-3x-{f}"), &seg, &[0x8000], &args) else { let _ = std::fs::remove_dir_all(&dir); return };
+        assert_eq!(r.code, 0, "{}", r.out);
+        shots.push(std::fs::read(dir.join(format!("{f}.png"))).expect("no present-shot"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(shots[0] == shots[1], "sharp at 3x must equal nearest");
 }
 
 #[test]
@@ -2919,4 +3300,215 @@ fn the_c_code_of_a_game_moves_a_sprite_into_the_extra_columns_on_the_right() {
     assert_eq!(without.rgb(e + 256, 21), rgb(RED));
     assert_eq!(without.rgb(e + 44, 41), rgb(RED));
     assert_eq!(with.rgb(e + 44, 41), rgb(RED));
+}
+
+/// The C program that checks the Spanish letters of the font, the UTF-8 reading and that every string of the Spanish
+/// table fits the place it is drawn in (the numbers are the layout of `menu_draw` in `runtime/play.c`).
+const PLAY_I18N_TEST: &str = r##"
+#include "play_ui.h"
+#include "play_i18n.h"
+#define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+#define W 64
+#define H 40
+#define GUARD 256
+
+static int guards_ok(const uint8_t *buf, size_t n) {
+    size_t i;
+    for (i = 0; i < GUARD; i++) if (buf[i] != 0xA5 || buf[GUARD + n + i] != 0xA5) return 0;
+    return 1;
+}
+
+/* every character of `s` is a real one (a '?' is only accepted where the text has one) */
+static int valid_utf8(const char *s) {
+    while (*s) { const char *p = s; if (utf8_next(&p) == '?' && *s != '?') return 0; s = p; }
+    return 1;
+}
+
+typedef struct { const char *what; int max; const char *items[24]; } Group;
+
+int main(void) {
+    static uint8_t mem[GUARD + W * H * 3 + GUARD];
+    Canvas c; int i, j, lo, hi, x, y;
+    static const char *const spanish = "áéíóúüñÁÉÍÓÚÜÑ¿¡";
+    char out[64]; const char *p;
+    memset(mem, 0xA5, sizeof mem);
+    memset(mem + GUARD, 0, W * H * 3);
+    c.px = mem + GUARD; c.w = W; c.h = H;
+
+    /* reading UTF-8: a two-byte letter is one character, a bad byte is one '?' */
+    p = "ñ"; CHECK(utf8_next(&p) == 0xF1 && *p == 0);
+    p = "A"; CHECK(utf8_next(&p) == 'A');
+    p = "\x80x"; CHECK(utf8_next(&p) == '?' && *p == 'x');
+    p = "\xC3"; CHECK(utf8_next(&p) == '?' && *p == 0);
+    p = "\xC3x"; CHECK(utf8_next(&p) == '?' && *p == 'x');
+    CHECK(text_w("\x80") == text_w("?") && text_w("a\xC3") == text_w("a?"));
+
+    /* every Spanish letter has ink and moves the pen; the accent adds no width */
+    for (p = spanish; *p; ) {
+        int cp = utf8_next(&p);
+        glyph_ink(cp, &lo, &hi);
+        CHECK(hi >= lo && hi - lo + 1 <= 6 && glyph_adv(cp) >= 2);
+    }
+    /* the arrows and the middle dot of the controls tab have ink and fit the box */
+    for (p = "\xE2\x86\x90\xE2\x86\x91\xE2\x86\x92\xE2\x86\x93\xC2\xB7"; *p; ) {
+        int cp = utf8_next(&p);
+        glyph_ink(cp, &lo, &hi);
+        CHECK(hi >= lo && hi - lo + 1 <= 6 && glyph_adv(cp) >= 2);
+        CHECK(cp != '?');
+    }
+    CHECK(text_w("Año") == glyph_adv('A') + glyph_adv(0xF1) + glyph_adv('o'));
+    CHECK(text_w("ó") == text_w("o") && text_w("Ñ") == text_w("N"));
+
+    /* a lowercase accent stays inside the row; a capital's goes two rows above it */
+    memset(c.px, 0, W * H * 3);
+    text_draw(&c, 4, 10, "áéíóúüñ", UI_TEXT, 1);
+    for (y = 0; y < 10; y++) for (x = 0; x < W; x++) CHECK(!c.px[(y * W + x) * 3]);
+    memset(c.px, 0, W * H * 3);
+    text_draw(&c, 4, 10, "ÁÉÍÓÚÜÑ", UI_TEXT, 0);
+    for (y = 0; y < 8; y++) for (x = 0; x < W; x++) CHECK(!c.px[(y * W + x) * 3]);
+    { int any = 0; for (x = 0; x < W; x++) any |= c.px[(8 * W + x) * 3] != 0; CHECK(any); }
+    /* nothing leaves the canvas */
+    for (i = -40; i < 80; i += 7) {
+        text_draw(&c, i, i / 2, "¿Qué? ¡Sí! Ñandú", UI_TEXT, 1);
+        text_draw2x(&c, i, 3 - i, "Español", UI_GOLD, UI_SHADOW);
+    }
+    CHECK(guards_ok(mem, W * H * 3));
+
+    /* the cut of the fit never falls inside a letter */
+    for (i = 8; i < 60; i += 3) {
+        text_fit(out, sizeof out, "Dispositivo de salida: Altavoces áéíóú ñandú", i);
+        CHECK(valid_utf8(out) && (i < 14 || text_w(out) <= i));
+    }
+    text_fit(out, 9, "ñññññññññññ", 1000); CHECK(valid_utf8(out) && strlen(out) < 9);
+
+    /* the table: translated, and every string fits its place */
+    ui_es = 0; CHECK(!strcmp(tr("Quit"), "Quit"));
+    ui_es = 1; CHECK(!strcmp(tr("Quit"), "Salir") && !strcmp(tr("not in the table"), "not in the table"));
+    {
+        enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
+        static const Group groups[] = {
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Output device", "Controls of", "Fast forward", "Language"}},
+            {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit"}},
+            {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "off", "crt", "max", "Player %d"}},
+            {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
+            {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
+            {"title", 120, {"OPTIONS"}},
+            {"button of the Controls tab", 66, {"Up", "Down", "Left", "Right"}},
+            {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
+            {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "an interrupt is running", "the game is switching execution contexts", "another execution context is running", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},
+        };
+        static const char *const tabs[] = {"Image", "Audio", "Controls", "Game"};
+        char line[128];
+        int used = 0, checked = 0, g, bad = 0;
+        for (g = 0; g < (int)(sizeof groups / sizeof groups[0]); g++)
+            for (j = 0; groups[g].items[j]; j++) {
+                const char *es = tr(groups[g].items[j]);
+                int w;
+                CHECK(valid_utf8(es));
+                /* the notice about a key in use is measured with a player and a button filled in */
+                if (strstr(es, "%d") && strstr(es, "%s")) { snprintf(line, sizeof line, es, 2, "SELECT"); es = line; }
+                else if (strstr(es, "%d")) { snprintf(line, sizeof line, es, 2); es = line; }
+                w = g == 5 ? text_w2x(es) : text_w(es);
+                if (w > groups[g].max) { printf("too wide (%s, %d > %d): %s\n", groups[g].what, w, groups[g].max, es); return 1; }
+                checked++;
+            }
+        /* the four tabs share the width of the row */
+        for (i = 0; i < 4; i++) { used += text_w(tr(tabs[i])) + 12 + 3; checked++; }
+        if (used - 3 > ROW_W - 8) { printf("tabs too wide: %d\n", used - 3); return 1; }
+        /* every string of the table was checked in one of the groups (the tabs are checked above) */
+        CHECK(checked == I18N_COUNT);
+        if (bad) return 1;
+    }
+
+    /* the names of the keys and buttons of the Controls tab fit their column, in both languages, and are real UTF-8;
+     * the columns are those of ctl_cols() in runtime/play.c */
+    {
+        static const char *const btn[] = {"B", "Y", "Select", "Start", "Up", "Down", "Left", "Right", "A", "X", "L", "R"};
+        enum { LAB = 38, PAD = 170, PADW = 64 };
+        int lang, k, b;
+        char buf[64];
+        for (lang = 0; lang < 2; lang++) {
+            int labw = 0, keyw;
+            ui_es = lang;
+            for (b = 0; b < 12; b++) if (text_w(tr(btn[b])) > labw) labw = text_w(tr(btn[b]));
+            keyw = PAD - 4 - (LAB + labw + 6);
+            for (k = 0; k < BIND_NAME_COUNT; k++) {
+                const char *shown = bind_label(bind_names[k].sdl, buf, sizeof buf);
+                int is_pad = bind_names[k].sdl[0] >= 'a' && bind_names[k].sdl[0] <= 'z', max = is_pad ? PADW : keyw;
+                CHECK(valid_utf8(shown));
+                if (text_w(shown) > max) { printf("too wide (%s, lang %d, %d > %d): %s\n", is_pad ? "button" : "key", lang, text_w(shown), max, shown); return 1; }
+            }
+            CHECK(text_w("Num 5") <= keyw);
+        }
+        /* what SDL calls a key is what config.ini keeps: the label only changes the sight */
+        ui_es = 1; CHECK(!strcmp(bind_label("Return", buf, sizeof buf), "Intro") && !strcmp(bind_label("Keypad 5", buf, sizeof buf), "Num 5"));
+        CHECK(!strcmp(bind_label("W", buf, sizeof buf), "W") && !strcmp(bind_label("F11", buf, sizeof buf), "F11"));
+        ui_es = 0; CHECK(!strcmp(bind_label("Return", buf, sizeof buf), "Enter") && !strcmp(bind_label("dpleft", buf, sizeof buf), "D-pad ←"));
+    }
+    printf("ok\n");
+    return 0;
+}
+"##;
+
+#[test]
+fn the_spanish_letters_the_utf8_reading_and_the_spanish_strings_fit() {
+    let cc = crate::need_compiler!();
+    match cc.compile_run("play-i18n", &[("play_ui.h", PLAY_UI), ("play_i18n.h", PLAY_I18N), ("t.c", PLAY_I18N_TEST)], &[]) {
+        Ok(out) => assert!(out.trim_end().ends_with("ok"), "{out}"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
+#[test]
+fn the_menu_follows_the_language_option_of_the_game_and_the_config_file_stays_in_english() {
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "3"];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let open = "F1,W,W,W,Down";
+    let Some(en) = shot("lang-en", b"game.language = en\n", open) else { return };
+    let Some(es) = shot("lang-es", b"game.language = es\n", open) else { return };
+    assert!(hash(&en.out).is_some() && hash(&es.out).is_some() && hash(&en.out) != hash(&es.out), "{}\n{}", en.out, es.out);
+    // changing the language in the Game tab redraws the menu in the other one at once: the picture of opening it in es
+    // (the cursor is on the same row in both, so the pictures can be equal)
+    let Some(live) = shot("lang-live", b"game.language = en\n", "F1,W,W,W,Down,Right") else { return };
+    assert_eq!(hash(&live.out), hash(&es.out), "{}\n{}", live.out, es.out);
+    // a value chosen with the menu in Spanish is written in English (the file only has the English words)
+    let Some(r) = shot("lang-file", b"game.language = es\nfilter = nearest\n", "F1,Down,Down,Down,Down,Right,Escape") else { return };
+    let l = config_lines(&r);
+    assert!(l.contains(&"filter = sharp") || l.contains(&"filter = bilinear"), "{}", r.out);
+    assert!(!l.iter().any(|x| x.contains("cercano") || x.contains("nítido") || x.contains("bilineal")), "{}", r.out);
+    // the same file prints the same with both languages
+    let cfg = |r: &Run| r.out.lines().filter(|l| !l.starts_with("menu-shot")).map(str::to_string).collect::<Vec<_>>();
+    let Some(a) = shot("lang-cfg-en", b"filter = bilinear\ngame.language = en\n", "F1,Escape") else { return };
+    let Some(b) = shot("lang-cfg-es", b"filter = bilinear\ngame.language = es\n", "F1,Escape") else { return };
+    let strip = |v: Vec<String>| v.into_iter().filter(|l| !l.contains("language") && !l.contains("$2105") && !l.contains("game_opt")).collect::<Vec<_>>();
+    assert_eq!(strip(cfg(&a)), strip(cfg(&b)), "{}\n{}", a.out, b.out);
+}
+
+#[test]
+fn the_controls_tab_is_drawn_in_both_languages_for_each_player_and_while_it_waits_for_a_key() {
+    let hash = |out: &str| out.lines().find(|l| l.starts_with("menu-shot: ")).map(str::to_string);
+    let shot = |name: &str, ini: &[u8], keys: &str| {
+        let args = ["rom.sfc", "--no-window", "--frames", "40", "--frame-blocks", "50", "--print-config", "--menu-keys", keys, "--menu-shot", "m.png", "--menu-page", "2"];
+        run_hooked_with(name, true, &HOOKED_ROM, &[0x8000, 0x8100], OPT_CFG, OPT_C, &args, &[("config.ini", ini)])
+    };
+    let open = "F1,W,W";
+    let Some(en) = shot("ctl-en", b"game.language = en\n", open) else { return };
+    let Some(es) = shot("ctl-es", b"game.language = es\n", open) else { return };
+    let Some(p2) = shot("ctl-p2", b"game.language = es\n", "F1,W,W,Right") else { return };
+    let Some(wait) = shot("ctl-wait", b"game.language = es\n", "F1,W,W,Down,Return") else { return };
+    let hs: Vec<_> = [&en, &es, &p2, &wait].iter().map(|r| hash(&r.out)).collect();
+    assert!(hs.iter().all(|h| h.is_some()), "{}", en.out);
+    // the language, the player and the waiting for a key each change the picture
+    for i in 0..hs.len() {
+        for j in i + 1..hs.len() {
+            assert_ne!(hs[i], hs[j], "{i} and {j} draw the same\n{}\n{}", en.out, es.out);
+        }
+    }
+    // looking at the tab, and drawing it in another language, does not touch the file: the names stay SDL's
+    let cfg = |r: &Run| r.out.lines().filter(|l| !l.starts_with("menu-shot")).map(str::to_string).collect::<Vec<_>>();
+    let strip = |v: Vec<String>| v.into_iter().filter(|l| !l.contains("language") && !l.contains("$2105") && !l.contains("game_opt")).collect::<Vec<_>>();
+    assert_eq!(strip(cfg(&en)), strip(cfg(&es)), "{}\n{}", en.out, es.out);
 }

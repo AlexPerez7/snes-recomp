@@ -7,12 +7,17 @@
  *     headless <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE.png] [--wav FILE.wav]
  *              [--trace-frames A-B] [--trace-reads] [--watch ADDR]... [--press BUTTONS@A-B]...
  *              [--poke ADDR=BYTES@N]... [--wide N]
+ *              [--state-save FILE@N] [--state-load FILE@N]
  *
  * --press holds buttons of joypad 1 down during frames A to B (BUTTONS: B Y SELECT START UP DOWN LEFT RIGHT A X L R
  * joined by '+'). The pad answers the automatic read ($4218-$4219, at the start of vblank, with $4200 bit 0) and the
  * serial read ($4016). With no --press nothing is held.
  *
+ * --state-save FILE@N saves a state to FILE at the first pass through the resume point of the profile ([resume]) from frame N on;
+ * --state-load FILE@N loads it there. They need a game whose profile has [resume].
+ *
  * --game-opt KEY=NUMBER sets an option of the C code of the game (game_opt in snes_rt.h).
+ * --game-dir DIR sets the folder of the profile of the game (game_dir in snes_rt.h; by default, the folder of the ROM).
  * --wide N draws N extra columns on each side of the picture (a multiple of 8, 0 to 96; 0 is the 256x224 picture of the
  * console): the screenshot is then 256+2N pixels wide and shows what the PPU draws there (backgrounds go on through their
  * map, sprites land where they fall).
@@ -61,6 +66,8 @@ static void time_frame(void) {
     frame_last = t;
 }
 
+void snes_set_window_icon(const unsigned *argb, int w, int h) { (void)argb; (void)w; (void)h; } /* no window */
+
 /* ---- Entry point ---- */
 
 #ifdef SNES_RT_LIBRARY
@@ -99,6 +106,10 @@ int main(int argc, char **argv) {
             watch_any = 1;
         } else if (!strcmp(argv[i], "--poke") && i + 1 < argc) {
             if (!parse_poke(argv[++i])) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--state-save") && i + 1 < argc) {
+            if (!parse_state_script(argv[++i], 1)) { path = NULL; break; }
+        } else if (!strcmp(argv[i], "--state-load") && i + 1 < argc) {
+            if (!parse_state_script(argv[++i], 0)) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--game-opt") && i + 1 < argc) {
             if (!parse_game_opt(argv[++i])) { path = NULL; break; }
         } else if (!strcmp(argv[i], "--wide") && i + 1 < argc) {
@@ -114,6 +125,8 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "error: cannot write %s\n", argv[i]);
                 return 2;
             }
+        } else if (!strcmp(argv[i], "--game-dir") && i + 1 < argc) {
+            set_game_dir(argv[++i]);
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -126,7 +139,8 @@ int main(int argc, char **argv) {
     if (!path || max_frames == 0 || frame_len == 0) {
         fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE] [--wav FILE] [--wide N]\n"
                         "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
-                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]... [--frame-times FILE]\n", argv[0]);
+                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]... [--game-dir DIR]\n"
+                        "       [--frame-times FILE]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;

@@ -73,6 +73,7 @@ static int irq_flag;    /* $4211 bit 7: the IRQ line is asserted until $4211 is 
 static int irq_fired;   /* the IRQ of this frame has been raised */
 static uint32_t irqs;
 static unsigned ctx_switches;
+static uint32_t ctx_last_switch; /* frame of the last switch between execution contexts */
 
 /* ---- Joypad 1 ---- */
 
@@ -105,16 +106,101 @@ static uint16_t joy_now(void) {
 /* For the C code of a game (snes_rt.h). */
 uint16_t joy1_state(void) { return joy_now(); }
 
+/* Set by a frontend that has keys and controllers; without it (headless) nothing is bound. */
+static int (*input_label_hook)(uint16_t mask, char *out, size_t n);
+
+int input_label(uint16_t mask, char *out, size_t n) {
+    if (n) out[0] = 0;
+    return input_label_hook && n ? input_label_hook(mask, out, n) : 0;
+}
+
+uint16_t ppu_vram_read16(uint16_t word) { return (uint16_t)(vram[(word * 2u) & 0xFFFF] | vram[(word * 2u + 1u) & 0xFFFF] << 8); }
+
+void ppu_vram_write16(uint16_t word, uint16_t value) {
+    vram[(word * 2u) & 0xFFFF] = (uint8_t)value;
+    vram[(word * 2u + 1u) & 0xFFFF] = (uint8_t)(value >> 8);
+}
+
 #define MAX_GAME_OPT 16
 static struct { char key[32]; long val; } game_opts[MAX_GAME_OPT];
 static int ngame_opts;
+
+/* In library mode the table of the options comes from the module of the game (its snes_rt_module_init calls
+ * snes_rt_register_options); until then, and without a module, the game has none. Linked in one piece, the table of
+ * snes_entry.c is used directly. */
+#ifdef SNES_RT_LIBRARY
+static const GameOptDef lib_no_opts[1];
+static const GameOptDef *lib_game_opts = lib_no_opts;
+static int lib_game_opt_count;
+#define snes_game_opts lib_game_opts
+#define snes_game_opt_count lib_game_opt_count
+void snes_rt_register_options(const GameOptDef *opts, int count) { lib_game_opts = opts; lib_game_opt_count = count; }
+#else
+void snes_rt_register_options(const GameOptDef *opts, int count) { (void)opts; (void)count; }
+#endif
+
+/* The options the profile declares (snes_game_opts): `gopt_file` is what config.ini holds, `gopt_eff` what this run uses (the
+ * command line sets it for this run only; the menu sets both). */
+static int gopt_file[MAX_GAME_OPT], gopt_eff[MAX_GAME_OPT];
+static unsigned gopt_cli;
+static int gopt_ready;
+
+static void gopt_init(void) {
+    int i;
+    if (gopt_ready) return;
+    gopt_ready = 1;
+    for (i = 0; i < snes_game_opt_count && i < MAX_GAME_OPT; i++) gopt_file[i] = gopt_eff[i] = snes_game_opts[i].def;
+}
+
+static int gopt_find(const char *key, size_t n) {
+    int i;
+    for (i = 0; i < snes_game_opt_count && i < MAX_GAME_OPT; i++)
+        if (strlen(snes_game_opts[i].key) == n && !strncmp(snes_game_opts[i].key, key, n)) return i;
+    return -1;
+}
+
+/* The name or the number (an index of the list) `text` of the option `i`; returns 0 when it is neither. */
+static int gopt_parse(int i, const char *text, int *out) {
+    const GameOptDef *d = &snes_game_opts[i];
+    char *end;
+    long v;
+    int k;
+    for (k = 0; k < d->n; k++) if (!strcmp(d->names[k], text)) { *out = k; return 1; }
+    v = strtol(text, &end, 10);
+    if (!*text || *end || v < 0 || v >= d->n) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+/* The command line: this run only. */
+static void gopt_set_cli(int i, int v) {
+    gopt_init();
+    gopt_eff[i] = v;
+    gopt_cli |= 1u << i;
+}
+
+/* The player (menu): applies now and is saved. */
+static void gopt_set_user(int i, int v) {
+    gopt_init();
+    gopt_eff[i] = gopt_file[i] = v;
+    gopt_cli &= ~(1u << i);
+}
 
 /* Parses KEY=NUMBER of --game-opt; returns 0 when it is malformed or there are too many. */
 static int parse_game_opt(const char *arg) {
     const char *eq = strchr(arg, '=');
     char *end;
     long v;
-    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof game_opts[0].key || ngame_opts == MAX_GAME_OPT || !eq[1]) return 0;
+    int d;
+    if (!eq || eq == arg || (size_t)(eq - arg) >= sizeof game_opts[0].key || !eq[1]) return 0;
+    d = gopt_find(arg, (size_t)(eq - arg)); /* an option the profile declares: a name or an index of its list */
+    if (d >= 0) {
+        int k;
+        if (!gopt_parse(d, eq + 1, &k)) return 0;
+        gopt_set_cli(d, k);
+        return 1;
+    }
+    if (ngame_opts == MAX_GAME_OPT) return 0;
     v = strtol(eq + 1, &end, 0);
     if (*end) return 0;
     memcpy(game_opts[ngame_opts].key, arg, (size_t)(eq - arg));
@@ -127,6 +213,8 @@ static int parse_game_opt(const char *arg) {
 int game_opt(const char *key, int def) {
     int i;
     for (i = ngame_opts - 1; i >= 0; i--) if (!strcmp(game_opts[i].key, key)) return (int)game_opts[i].val;
+    i = gopt_find(key, strlen(key));
+    if (i >= 0) { gopt_init(); return gopt_eff[i]; }
     return def;
 }
 
@@ -193,6 +281,37 @@ static void write_m7(uint32_t off, uint8_t v);
 static uint8_t rom_byte(uint32_t a) {
     uint32_t bank = (a >> 16) & 0x7F;
     return rom[(((bank << 15) | (a & 0x7FFF))) % rom_size];
+}
+
+/* Folders for the C of the game: the one of the ROM and the one of the profile (`--game-dir`), both ending in a separator. */
+static char rom_dir_buf[1024] = "./", game_dir_buf[1024];
+
+static void dir_with_separator(char *out, size_t n, const char *s, size_t len) {
+    if (len + 2 > n) len = n - 2;
+    memcpy(out, s, len);
+    if (len && out[len - 1] != '/' && out[len - 1] != 92) out[len++] = '/';
+    out[len] = 0;
+}
+
+static void set_rom_dir(const char *rom_path) {
+    const char *sep = strrchr(rom_path, '/'), *bsep = strrchr(rom_path, 92);
+    if (bsep && (!sep || bsep > sep)) sep = bsep;
+    if (sep) dir_with_separator(rom_dir_buf, sizeof rom_dir_buf, rom_path, (size_t)(sep - rom_path + 1));
+    else strcpy(rom_dir_buf, "./");
+}
+
+static void set_game_dir(const char *dir) {
+    dir_with_separator(game_dir_buf, sizeof game_dir_buf, dir, strlen(dir));
+}
+
+const char *rom_dir(void) { return rom_dir_buf; }
+const char *game_dir(void) { return game_dir_buf[0] ? game_dir_buf : rom_dir_buf; }
+
+int rom_overlay(uint32_t addr, const uint8_t *data, size_t n) {
+    size_t off = (size_t)((addr >> 16) & 0x7F) << 15 | (addr & 0x7FFF);
+    if (!rom || (n && !data) || off > rom_size || n > rom_size - off) return 1;
+    if (n) memcpy(rom + off, data, n);
+    return 0;
 }
 
 static uint16_t vram_word(void) {
@@ -750,6 +869,7 @@ static void switch_to(Cpu *c, int to) {
     ctx_cpu = c;
     cur_ctx = to;
     ctx_switches++;
+    ctx_last_switch = frames;
     recompute_in_nmi();
     ctx_jump(&ctxs[from], &ctxs[to]);
 }
@@ -785,7 +905,9 @@ const SnesRtSymbol *snes_rt_symbols(void);
 static const SnesRtSymbol rt_symbols[] = {
     RT_SYM(bus_read8), RT_SYM(bus_write8), RT_SYM(joy1_state),
     RT_SYM(ppu_sprite_xoff), RT_SYM(ppu_sprite_xoff_clear), RT_SYM(ppu_wide), RT_SYM(ppu_wide_blank),
-    RT_SYM(ppu_wide_blank_clear), RT_SYM(game_opt), RT_SYM(snes_rt_register_entry),
+    RT_SYM(ppu_wide_blank_clear), RT_SYM(ppu_vram_read16), RT_SYM(ppu_vram_write16), RT_SYM(game_opt),
+    RT_SYM(input_label), RT_SYM(rom_overlay), RT_SYM(rom_dir), RT_SYM(game_dir), RT_SYM(snes_set_window_icon),
+    RT_SYM(rt_resume), RT_SYM(snes_rt_register_entry), RT_SYM(snes_rt_register_options),
     RT_SYM(rt_unresolved), RT_SYM(rt_flag_mismatch), RT_SYM(rt_unsupported), RT_SYM(rt_wai), RT_SYM(rt_rti),
     RT_SYM(rt_lost_return), RT_SYM(rt_stp), RT_SYM(rt_brk), RT_SYM(rt_cop), RT_SYM(rt_wdm),
 #ifdef SNES_RT_TICK
@@ -901,6 +1023,8 @@ static int irq_due(void) {
     return irq_flag;
 }
 
+static void state_script_poll(void);
+
 void rt_poll(Cpu *c) {
     blocks++;
     spc_advance(1);
@@ -914,6 +1038,7 @@ void rt_poll(Cpu *c) {
         joy_read_done = 0;
         frames++;
         apply_pokes();
+        state_script_poll();
         if (frame_hook) frame_hook();
         nmi_flag = 1;
         irq_fired = 0;
@@ -923,6 +1048,89 @@ void rt_poll(Cpu *c) {
     if (irq_due() && !c->irq) deliver_interrupt(c, vector(c->e ? 0xFFFE : 0xFFEE), 0);
     /* The last NMI runs to its RTI before the run ends. */
     if (frames >= max_frames && !in_nmi) stop(0, "frames reached");
+}
+
+#include "snes_state.inc"
+
+/* Scripted requests for the frontends without a keyboard (--state-save FILE@N, --state-load FILE@N): at the first pass
+ * through the resume point from frame N on. */
+static const char *st_save_path, *st_load_path;
+static uint32_t st_save_frame, st_load_frame;
+static int st_script; /* 1 save in flight, 2 load in flight */
+
+static int parse_state_script(const char *arg, int save) {
+    const char *at = strrchr(arg, '@');
+    char *end;
+    unsigned long f;
+    if (!at || at == arg) return 0;
+    f = strtoul(at + 1, &end, 10);
+    if (*end || end == at + 1) return 0;
+    {
+        char *copy = (char *)malloc((size_t)(at - arg) + 1);
+        if (!copy) return 0;
+        memcpy(copy, arg, (size_t)(at - arg));
+        copy[at - arg] = 0;
+        if (save) { st_save_path = copy; st_save_frame = (uint32_t)f; }
+        else { st_load_path = copy; st_load_frame = (uint32_t)f; }
+    }
+    return 1;
+}
+
+static void state_script_finish(void) {
+    if (st_script == 1 && state_result == 1) {
+        FILE *f = fopen(st_save_path, "wb");
+        if (f && fwrite(state_data, 1, state_len, f) == state_len) printf("state saved to %s at frame %u (%u bytes)\n", st_save_path, (unsigned)frames, (unsigned)state_len);
+        else printf("cannot write %s\n", st_save_path);
+        if (f) fclose(f);
+    } else if (st_script == 2 && state_result == 1) {
+        printf("state loaded from %s at frame %u\n", st_load_path, (unsigned)frames);
+    } else {
+        printf("state %s failed at frame %u: %s\n", st_script == 1 ? "save" : "load", (unsigned)frames, state_msg);
+    }
+    st_script = 0;
+}
+
+#define STATE_WAIT_FRAMES 600
+static uint32_t st_script_since;
+
+static void state_script_poll(void) {
+    if (st_script) { /* a request that has waited too long for a safe point is dropped */
+        if (state_req && frames - st_script_since > STATE_WAIT_FRAMES) {
+            state_req = 0;
+            state_result = -1;
+            state_script_finish();
+        }
+        return;
+    }
+    st_script_since = frames;
+    if (st_save_path && frames >= st_save_frame) {
+        st_save_frame = ~0u;
+        st_script = 1;
+        state_req = 1;
+    } else if (st_load_path && frames >= st_load_frame) {
+        FILE *f = fopen(st_load_path, "rb");
+        long n = 0;
+        st_load_frame = ~0u;
+        state_release();
+        if (f) {
+            fseek(f, 0, SEEK_END);
+            n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            state_data = (uint8_t *)malloc(n > 0 ? (size_t)n : 1);
+            if (state_data && fread(state_data, 1, (size_t)n, f) == (size_t)n) state_len = (size_t)n;
+            else state_release();
+            fclose(f);
+        }
+        st_script = 2;
+        state_req = 2;
+    }
+}
+
+void rt_resume(Cpu *c) {
+    state_seen = 1;
+    if (!state_req) return;
+    state_service(c);
+    if (st_script && !state_req) state_script_finish();
 }
 
 void rt_wai(Cpu *c) {
@@ -985,6 +1193,7 @@ static int load_rom(const char *path) {
     long n;
     size_t skip = 0;
     uint8_t *buf;
+    set_rom_dir(path);
     if (!f) { fprintf(stderr, "error: cannot read %s\n", path); return 0; }
     fseek(f, 0, SEEK_END);
     n = ftell(f);

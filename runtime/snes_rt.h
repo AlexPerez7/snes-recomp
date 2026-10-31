@@ -10,6 +10,7 @@
 #ifndef SNES_RT_H
 #define SNES_RT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct Cpu {
@@ -37,6 +38,12 @@ void bus_write8(uint32_t addr, uint8_t value);
 static inline uint8_t wram_read8(uint32_t off) { return bus_read8(0x7E0000u + (off & 0x1FFFFu)); }
 static inline void wram_write8(uint32_t off, uint8_t v) { bus_write8(0x7E0000u + (off & 0x1FFFFu), v); }
 uint16_t joy1_state(void);
+/* What player 1 presses for the button `mask` (one bit of joy1_state, such as 0x0080 for A), as the device in use says: the controller
+ * when it was the last thing pressed, the keyboard otherwise. Writes it in capitals into `out` (at most `n` bytes, always ended) and
+ * returns its kind: 0 nothing is bound (or there is no window), `out` is empty; 1 a key or a button that is not a face button
+ * ("RIGHT SHIFT", "START", "L"); 2 a face button (A, B, X or Y) of any controller but a PlayStation one; 3 a face button of a
+ * PlayStation controller, whose symbol is the cross (A), circle (B), square (X) or triangle (Y). */
+int input_label(uint16_t mask, char *out, size_t n);
 /* Sprite `i` (0-127) is drawn `dx` pixels to the right (negative: left) of the X its OAM entry says, until it is changed. It is
  * how a game puts a sprite in the extra columns on the right of a wider field, since the X of the OAM cannot say 256 to 511
  * (it reads as negative, as on the console). `ppu_sprite_xoff_clear` sets all 128 back to 0. */
@@ -45,16 +52,43 @@ void ppu_sprite_xoff_clear(void);
 /* E, the extra pixels the picture is drawn with on each side (0 to 96, a multiple of 8; 0 is the 256x224 picture of the console).
  * It follows the value in force, so it changes when a new E takes effect, not when it is asked for. */
 int ppu_wide(void);
+/* The icon of the window of the player (taskbar, title bar), as `w` x `h` pixels of 0xAARRGGBB, rows from the top. The runtime copies it,
+ * so the game can pass a static table; calling it again replaces the icon. Headless runs ignore it. */
+void snes_set_window_icon(const unsigned *argb, int w, int h);
 /* The outermost `left` pixels of the left extra columns and the outermost `right` pixels of the right ones (of a wider field, counted
  * from its edge inwards, so what lies beyond the end of a map is hidden and what lies next to the picture is kept) are drawn black instead of what the PPU would draw; each is cut to E and the 256 pixels of the console are never touched.
  * It is how a game hides what it has not loaded there. `ppu_wide_blank_clear` is `ppu_wide_blank(0, 0)`. */
 void ppu_wide_blank(int left, int right);
 void ppu_wide_blank_clear(void);
-/* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. */
+/* A word of the VRAM by its word address (0-0x7FFF), as the PPU reads it: what the picture draws from the next line on. It is how a game
+ * changes a tile or a map entry that comes from compressed data, which `rom_overlay` cannot reach. */
+uint16_t ppu_vram_read16(uint16_t word);
+void ppu_vram_write16(uint16_t word, uint16_t value);
+/* Option `--game-opt KEY=VALUE` of the program, as a number; `def` when it was not given. For an option the profile declares
+ * (`[[option]]`) it is the index of the chosen name in `names`, from `--game-opt`, then `config.ini` (`game.<key>`) and the menu, then
+ * the default of the profile; `def` is only for the keys the profile does not declare. */
 int game_opt(const char *key, int def);
+/* Puts `n` bytes of `data` over the ROM image in memory, from the LoROM address `addr` (BBAAAA) on: what the recompiled code reads there
+ * afterwards is `data`. The image is the file as it is read, so the bytes are contiguous in the file from the one `addr` maps to; the
+ * file on disk, its CRC32 and the generated C do not change, and the bytes are the game's own (a font, a table of widths), not the ROM's.
+ * The recompiler analysed the original, so it is for data, not for code. Returns 0, or non-zero with nothing written when any byte would
+ * fall outside the image. A later call over the same bytes wins. */
+int rom_overlay(uint32_t addr, const uint8_t *data, size_t n);
+/* The folder of the ROM the program was started with, ending in a path separator (`./` when the path has none): where the game puts files
+ * of the user's own, such as a dump of the text of the ROM. */
+const char *rom_dir(void);
+/* The folder the profile of the game brings next to its .toml (its C code and its data files, such as `lang/es.txt`), ending in a path
+ * separator. `snes-port` passes it with `--game-dir`; without it this is `rom_dir()`. */
+const char *game_dir(void);
+/* An option the profile declares, as snes_entry.c carries it (`snes_game_opts[snes_game_opt_count]`). */
+typedef struct { const char *key; const char *label; int n; const char *const *names; int def; } GameOptDef;
+extern const GameOptDef snes_game_opts[];
+extern const int snes_game_opt_count;
+/* The module of the game hands its table to a runtime built as a library of its own (see snes_rt_module_init). */
+void snes_rt_register_options(const GameOptDef *opts, int count);
 
-/* The module of the game registers its dispatch by address (snes_call_entry) with the runtime. snes_entry.c defines
- * snes_rt_module_init, which does it; a runtime built as a library of its own (SNES_RT_LIBRARY) needs it called
+/* The module of the game registers its dispatch by address (snes_call_entry) and its options with the runtime.
+ * snes_entry.c defines snes_rt_module_init, which does it; a runtime built as a library of its own (SNES_RT_LIBRARY) needs it called
  * before the game starts, and stops with code 15 otherwise. */
 void snes_rt_register_entry(int (*fn)(Cpu *c, uint32_t addr));
 void snes_rt_module_init(void);
@@ -74,6 +108,10 @@ void rt_stp(Cpu *c);
 void rt_brk(Cpu *c);
 void rt_cop(Cpu *c);
 void rt_wdm(Cpu *c);
+
+/* The block the profile names in [resume] starts with a call to this, right after rt_tick: the main loop of the game, with
+ * the 65816 stack at its base and no interrupt running. It is the one place where the runtime saves and loads states. */
+void rt_resume(Cpu *c);
 
 /* Every block starts with rt_tick: a hook where the runtime can account for time and deliver
  * interrupts. Without SNES_RT_TICK it costs nothing; with it, the runtime provides rt_poll. */

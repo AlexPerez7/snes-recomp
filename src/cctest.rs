@@ -169,6 +169,7 @@ static uint8_t mem[0x1000000];
 uint8_t bus_read8(uint32_t a) { return mem[a & 0xFFFFFF]; }
 void bus_write8(uint32_t a, uint8_t v) { mem[a & 0xFFFFFF] = v; }
 void snes_rt_register_entry(int (*fn)(Cpu *c, uint32_t addr)) { (void)fn; }
+void snes_rt_register_options(const GameOptDef *opts, int count) { (void)opts; (void)count; }
 void rt_unresolved(Cpu *c, uint32_t site, uint32_t target) {
     (void)c;
     printf("UNRESOLVED site=%06X target=%06X\n", (unsigned)site, (unsigned)target);

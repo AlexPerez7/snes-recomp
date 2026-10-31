@@ -1,0 +1,23 @@
+# Integración continua del motor. No hay ROM en CI (nunca se sube): `cargo test` omite solo las pruebas que necesitan el juego real.
+# Las pruebas con la ROM (scripts de alttp-recomp) y `scan` antes de publicar se ejecutan en local.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  probar:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Compilar
+        run: cargo build --release --locked
+      - name: Pruebas
+        run: cargo test --locked
