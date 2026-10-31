@@ -6,3 +6,11 @@
 /roms/
 /out/
 *.log
+# Proyecto Android de la prueba (spikes/android): lo construido y lo local
+*.apk
+spikes/android/.gradle/
+spikes/android/.idea/
+spikes/android/local.properties
+spikes/android/build/
+spikes/android/app/build/
+spikes/android/app/.cxx/

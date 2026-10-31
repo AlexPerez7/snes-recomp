@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2021"
 description = "Static recompiler for SNES (65816) ROMs"
 publish = false
+# `cargo run -- <orden>` es snes-recomp (los comandos del README y de CLAUDE.md); snes-port va con --bin snes-port.
+default-run = "snes-recomp"
+
+# The library: the generator in memory and its C interface (`generate::ffi`), also as a shared library (cdylib) for a
+# build on Android (`cargo build --lib --target aarch64-linux-android`).
+[lib]
+name = "snes_recomp"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "snes-recomp"

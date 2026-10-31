@@ -16,6 +16,9 @@ Queremos llevar *A Link to the Past* a Android como un APK que se pueda publicar
   - ejecuta fotogramas sin presentar imagen y registra las medidas.
 
   También prueba si Android deja cargar con `dlopen` un `.so` desde el directorio de datos de la app, que es lo que necesita el plan B.
+- **Contextos de ejecución sobre hilos**: Android (bionic) no tiene `makecontext` ni `swapcontext`. En ese sistema, o con `SNES_RT_THREAD_CONTEXTS`, cada contexto corre en un hilo propio y solo uno a la vez, con el mismo resultado.
+- **Tabla de símbolos del runtime**: en modo biblioteca, el runtime da el nombre y la dirección de cada función de `snes_rt.h`, para que libtcc enlace el C del juego sin buscar en las bibliotecas cargadas. En Android cada biblioteca vive en su propio espacio de nombres.
+- **`--frame-times FICHERO`** en el runtime sin vídeo: una línea por fotograma con su tiempo en microsegundos, para medir igual en el PC y en el teléfono.
 - **Medición previa en el PC**: tiempo por fotograma del runtime sin vídeo con el C generado compilado por TinyCC frente a gcc/clang -O2, y tiempo y memoria que necesita libtcc para compilar todo el C del juego.
 - **Informe de decisión**: los resultados se registran en `design.md` junto con la decisión (camino on-device, plan B o ninguno), según criterios fijados de antemano que dejan margen para teléfonos de gama media.
 
@@ -28,13 +31,16 @@ Fuera de alcance: controles táctiles, frontal SDL en Android, ciclo de vida, fi
 - `in-memory-generation`: el generador está disponible como biblioteca que produce las fuentes C de un juego a partir de los bytes de la ROM y un perfil, sin tocar el disco, y compila para Android arm64.
 
 ### Modified Capabilities
-<!-- Ninguna: `port-builder` y `c-code-generation` mantienen su comportamiento observable; solo cambian por dentro. -->
+- `headless-runtime`: nueva opción `--frame-times` con el tiempo de cada fotograma.
+- `execution-contexts`: los contextos también pueden ir sobre hilos (Android, `SNES_RT_THREAD_CONTEXTS`), con el mismo resultado.
+
+`port-builder` y `c-code-generation` mantienen su comportamiento observable; solo cambian por dentro.
 
 ## Impact
 
-- `runtime/snes_core.inc` y `runtime/snes_rt.h`: el despacho por dirección pasa por un puntero registrado; macro de compilación para el modo biblioteca.
+- `runtime/snes_core.inc` y `runtime/snes_rt.h`: el despacho por dirección pasa por un puntero registrado, una macro de compilación activa el modo biblioteca (con su tabla de símbolos), y los contextos pueden ir sobre hilos. `runtime/headless.c`: `--frame-times`. `snes_entry.c`, el que se genera, define `snes_rt_module_init`.
 - `src/port.rs` y `src/main.rs` (`generate`, `write_sources`): pasan a usar la API en memoria.
 - `Cargo.toml`: se añade un objetivo `[lib]` (rlib y cdylib).
-- Nuevo directorio `spikes/android/` con el proyecto Android de la prueba (Gradle, NDK y SDL2 no hacen falta todavía). No contiene nada de la ROM y, por precaución, se pasa `scan` antes de subirlo.
+- Nuevo directorio `spikes/` con `bench_pc.sh` y `tcc_host.c` (medición en el PC), `tcc_include/stdint.h` (cabecera mínima para TinyCC en el dispositivo) y `android/`, el proyecto Android de la prueba (Gradle y NDK; SDL2 no hace falta todavía). No contiene nada de la ROM y, por precaución, se pasa `scan` antes de subirlo.
 - Dependencias de la prueba, solo en la máquina del usuario: Android SDK y NDK, target de Rust `aarch64-linux-android` y fuentes de TinyCC (LGPL 2.1, como `.so` aparte).
 - Sin cambios en el repositorio `alttp-recomp` en este cambio.

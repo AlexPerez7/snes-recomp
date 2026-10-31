@@ -8,7 +8,7 @@
 use crate::crc32::crc32;
 use crate::rom::Rom;
 use crate::toolchain::{self, Compiler};
-use crate::{codegen, config::Config, discover, download, games, graph};
+use crate::{codegen, download, games, generate};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -103,6 +103,7 @@ pub fn current_version(fast: bool, profile: Option<&games::GameProfile>) -> Stri
         include_str!("disasm.rs"),
         include_str!("opcodes.rs"),
         include_str!("config.rs"),
+        include_str!("generate.rs"),
     ];
     parts.extend(game);
     version_tag(&parts)
@@ -179,33 +180,8 @@ pub fn clean(cache: &Path, crc: Option<u32>) -> Result<Vec<PathBuf>, String> {
 
 /// Generates the C of the game into `dir`.
 fn generate(rom: &Rom, profile: &games::GameProfile, dir: &Path) -> Result<(), String> {
-    let cfg = Config::parse(&profile.config).map_err(|e| format!("{}: {e}", profile.origin))?;
-    let roots = crate::default_roots(rom, &cfg);
-    let d = discover::discover(rom, &cfg, &roots);
-    let root_addrs: Vec<u32> = roots.iter().map(|r| r.0).collect();
-    let g = graph::Graph::build(&d, &root_addrs);
-    let out = codegen::Emitter::new(&d, &g).with_hooks(&cfg.hooks).map_err(|e| format!("{}: {e}", profile.origin))?.generate_all();
-    crate::write_sources(&out, dir).map(|_| ())?;
-    write_game_sources(profile, &cfg, dir)
-}
-
-/// Copies the C code of the game into `dir/game` and checks that every hook has its function there.
-fn write_game_sources(profile: &games::GameProfile, cfg: &Config, dir: &Path) -> Result<(), String> {
-    for h in &cfg.hooks {
-        let defined = profile.sources.iter().any(|s| s.name.ends_with(".c") && s.text.contains(&format!("void {}(", h.call)));
-        if !defined {
-            return Err(format!("{}: the hook at {:06X} calls `{}`, which no .c file of the game defines (void {}(Cpu *c))", profile.origin, h.addr, h.call, h.call));
-        }
-    }
-    if profile.sources.is_empty() {
-        return Ok(());
-    }
-    let game = dir.join("game");
-    std::fs::create_dir_all(&game).map_err(|e| format!("{}: {e}", game.display()))?;
-    for s in &profile.sources {
-        std::fs::write(game.join(&s.name), &s.text).map_err(|e| format!("{}: {e}", s.name))?;
-    }
-    Ok(())
+    let generated = generate::generate_sources(rom.bytes(), profile)?;
+    generate::write_sources(&generated, dir).map(|_| ())
 }
 
 pub fn exe_name() -> &'static str {
@@ -865,7 +841,7 @@ mod tests {
     #[test]
     fn rom_bytes_are_found_raw_or_as_hex_and_padding_is_not_taken_for_them() {
         let rom = fake_rom();
-        let dir = temp("scan");
+        let dir = temp("scan-hex");
         std::fs::write(dir.join("clean.bin"), vec![0u8; 5000]).unwrap();
         std::fs::write(dir.join("padding.bin"), vec![0xFFu8; 5000]).unwrap();
         std::fs::write(dir.join("a.c"), "int x = 0x12; /* 0xAB */ int y[] = {0x01, 0x02};").unwrap();
@@ -1013,25 +989,32 @@ addr=\"00:8000\"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A ROM whose reset vector points at a `STP`, and the `[game]` section of a profile for it.
+    fn small_game() -> (Rom, String) {
+        let rom = crate::rom::test_rom(&[(0x8000, &[0xDB]), (0xFFFC, &[0x00, 0x80])]);
+        let toml = format!("[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"{:08X}\"\n", rom.crc32());
+        (rom, toml)
+    }
+
     #[test]
     fn the_c_code_of_the_game_is_copied_next_to_the_generated_files_and_a_hook_needs_its_function() {
         let dir = temp("game-c");
-        let toml = "[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n[[hook]]\naddr=\"00:8000\"\nkind=\"before\"\ncall=\"my_hook\"\n";
+        let (rom, game) = small_game();
+        let toml = format!("{game}[[hook]]\naddr=\"00:8000\"\nkind=\"before\"\ncall=\"my_hook\"\n");
         let src = |t: &str| vec![games::Source { name: "hooks.c".into(), text: t.into() }, games::Source { name: "hooks.h".into(), text: "/* h */".into() }];
-        let cfg = Config::parse(toml).unwrap();
-        // the function is missing: the error names the hook and the function
-        let bad = games::GameProfile::from_text(toml, src("void other(Cpu *c) {}"), "g.toml").unwrap();
-        let e = write_game_sources(&bad, &cfg, &dir).unwrap_err();
+        // the function is missing: the error names the hook and the function, and nothing is written
+        let bad = games::GameProfile::from_text(&toml, src("void other(Cpu *c) {}"), "g.toml").unwrap();
+        let e = generate(&rom, &bad, &dir).unwrap_err();
         assert!(e.contains("my_hook") && e.contains("008000"), "{e}");
-        assert!(!dir.join("game").exists(), "nothing is written when a hook has no function");
-        let good = games::GameProfile::from_text(toml, src("void my_hook(Cpu *c) { (void)c; }"), "g.toml").unwrap();
-        write_game_sources(&good, &cfg, &dir).unwrap();
+        assert!(!dir.join("game").exists() && !dir.join("rom_00.c").exists(), "nothing is written when a hook has no function");
+        let good = games::GameProfile::from_text(&toml, src("void my_hook(Cpu *c) { (void)c; }"), "g.toml").unwrap();
+        generate(&rom, &good, &dir).unwrap();
         assert_eq!(game_c_files(&dir), ["hooks.c"]);
-        assert!(dir.join("game").join("hooks.h").exists());
+        assert!(dir.join("game").join("hooks.h").exists() && dir.join("rom_00.c").exists());
         // a profile without C code leaves no folder
-        let none = games::GameProfile::from_text("[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n", vec![], "g.toml").unwrap();
+        let none = games::GameProfile::from_text(&game, vec![], "g.toml").unwrap();
         let dir2 = temp("game-c-none");
-        write_game_sources(&none, &Config::default(), &dir2).unwrap();
+        generate(&rom, &none, &dir2).unwrap();
         assert!(!dir2.join("game").exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
@@ -1040,13 +1023,13 @@ addr=\"00:8000\"
     #[test]
     fn bytes_of_the_rom_in_the_c_code_of_a_game_are_found_by_the_check_on_the_build() {
         let dir = temp("game-c-rom");
-        let rom = fake_rom();
-        let literal: Vec<String> = rom[0x100..0x120].iter().map(|b| format!("0x{b:02X}")).collect();
+        let (rom, toml) = small_game();
+        let fake = fake_rom();
+        let literal: Vec<String> = fake[0x100..0x120].iter().map(|b| format!("0x{b:02X}")).collect();
         let text = format!("static const unsigned char x[] = {{{}}};", literal.join(", "));
-        let toml = "[game]\nid=\"g\"\nname=\"G\"\ncrc32=\"0000ABCD\"\n";
-        let p = games::GameProfile::from_text(toml, vec![games::Source { name: "hooks.c".into(), text }], "g.toml").unwrap();
-        write_game_sources(&p, &Config::default(), &dir).unwrap();
-        let (file, _, at) = find_rom_bytes_at(&rom, &dir).expect("the copy of the ROM is detected inside game/");
+        let p = games::GameProfile::from_text(&toml, vec![games::Source { name: "hooks.c".into(), text }], "g.toml").unwrap();
+        generate(&rom, &p, &dir).unwrap();
+        let (file, _, at) = find_rom_bytes_at(&fake, &dir).expect("the copy of the ROM is detected inside game/");
         assert!(file.ends_with("hooks.c") && at == 0x100, "{file:?} {at}");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -16,6 +16,9 @@
  * --wide N draws N extra columns on each side of the picture (a multiple of 8, 0 to 96; 0 is the 256x224 picture of the
  * console): the screenshot is then 256+2N pixels wide and shows what the PPU draws there (backgrounds go on through their
  * map, sprites land where they fall).
+ * --frame-times FILE writes, one line per frame, the microseconds the frame took (CPU, PPU and sound together, as
+ * measured by the clock of C11, timespec_get), to compare builds and devices; the time from the start to the first frame goes
+ * on the first line.
  * --poke ADDR=BYTES@N writes BYTES (hex pairs) to consecutive WRAM bytes from ADDR (same forms as --watch) when
  * frame N starts, for debugging (e.g. moving Link: --poke 20=A008C007@3000).
  *
@@ -32,11 +35,38 @@
  *
  * Exit codes: 0 frames reached, 2 bad usage or ROM, 5 unresolved jump, 6 width mismatch,
  * 7 STP/BRK/COP, 9 unsupported function, 10 interrupt vector is not a function, 11 reset returned, 12 an execution context returned,
- * 13 too many contexts or nested interrupts, 14 a return to an address no call expects.
+ * 13 too many contexts or nested interrupts, 14 a return to an address no call expects, 15 no game module registered
+ * (library mode only).
+ *
+ * Library mode: compiled with SNES_RT_LIBRARY (see snes_core.inc), main is called snes_headless_main and the host
+ * calls the snes_rt_module_init of the game's module before it.
  */
 #include "snes_core.inc"
+#include <time.h>
+
+/* ---- Time per frame (--frame-times) ---- */
+
+static FILE *frame_times;
+static double frame_last;
+
+static double now_us(void) {
+    struct timespec t;
+    timespec_get(&t, TIME_UTC);
+    return (double)t.tv_sec * 1e6 + (double)t.tv_nsec / 1e3;
+}
+
+static void time_frame(void) {
+    double t = now_us();
+    fprintf(frame_times, "%.0f\n", t - frame_last);
+    frame_last = t;
+}
 
 /* ---- Entry point ---- */
+
+#ifdef SNES_RT_LIBRARY
+int snes_headless_main(int argc, char **argv);
+#define main snes_headless_main
+#endif
 
 int main(int argc, char **argv) {
     const char *path = NULL;
@@ -79,6 +109,11 @@ int main(int argc, char **argv) {
                 return 2;
             }
             ppu_set_wide((int)e);
+        } else if (!strcmp(argv[i], "--frame-times") && i + 1 < argc) {
+            if (!(frame_times = fopen(argv[++i], "w"))) {
+                fprintf(stderr, "error: cannot write %s\n", argv[i]);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--dump") && i + 1 < argc) {
             dump_dir = argv[++i];
         } else if (argv[i][0] != '-' && !path) {
@@ -91,10 +126,14 @@ int main(int argc, char **argv) {
     if (!path || max_frames == 0 || frame_len == 0) {
         fprintf(stderr, "usage: %s <rom> [--frames N] [--frame-blocks N] [--dump DIR] [--screenshot FILE] [--wav FILE] [--wide N]\n"
                         "       [--trace-frames A-B] [--trace-reads] [--watch ADDR]...\n"
-                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]...\n", argv[0]);
+                        "       [--press BUTTONS@A-B]... [--poke ADDR=BYTES@N]... [--game-opt KEY=NUMBER]... [--frame-times FILE]\n", argv[0]);
         return 2;
     }
     if (!load_rom(path)) return 2;
     if (wav_path && !wav_open(wav_path)) return 2;
+    if (frame_times) {
+        frame_hook = time_frame;
+        frame_last = now_us();
+    }
     return run_rom();
 }

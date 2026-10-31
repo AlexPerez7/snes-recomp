@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Prueba de factibilidad (android-feasibility-spike), uso personal. Sin permiso de Internet: nada sale del teléfono. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:label="SNES spike" android:allowBackup="false">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- La medición corre en un proceso aparte: el runtime termina con exit() y solo se lleva ese proceso. -->
+        <activity android:name=".BenchActivity" android:process=":bench" android:exported="false" />
+    </application>
+</manifest>

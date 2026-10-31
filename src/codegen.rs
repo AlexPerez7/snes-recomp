@@ -794,6 +794,8 @@ impl<'a> Emitter<'a> {
             entry.push_str(&format!("    case 0x{f:06X}: {}(c); return 1;\n", func_name(f)));
         }
         entry.push_str("    default: return 0;\n    }\n}\n");
+        entry.push_str("\n/* Registers snes_call_entry with the runtime (needed when the runtime is a library of its own). */\n");
+        entry.push_str("void snes_rt_module_init(void) { snes_rt_register_entry(snes_call_entry); }\n");
         FullOutput { header, entry, banks, functions: self.g.functions.len(), unsupported }
     }
 }
@@ -1197,6 +1199,7 @@ sep xf=1 x=0034 p=10
                 || l.starts_with("/*")
                 || l.starts_with("#include")
                 || l.starts_with("int snes_call_entry")
+                || l == "void snes_rt_module_init(void) { snes_rt_register_entry(snes_call_entry); }"
                 || l.trim_start().starts_with("case 0x00")
                 || ["    switch (addr & 0xFFFFFF) {", "    default: return 0;", "    }", "}"].contains(&l);
             assert!(known, "unexpected line: {l}");
