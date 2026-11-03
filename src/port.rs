@@ -211,7 +211,7 @@ fn generate(rom: &Rom, profile: &games::GameProfile, dir: &Path) -> Result<(), S
 }
 
 pub fn exe_name() -> &'static str {
-    if cfg!(windows) { "game.exe" } else { "game" }
+    if cfg!(windows) { "game.exe" } else { "game.bin" } // en Linux "game" chocaria con la carpeta game/
 }
 
 /// The SDL2 development files (the folder with `include` and `lib`): `SDL2_DIR`, the `sdl2` folder next to the
@@ -229,7 +229,14 @@ pub fn find_sdl2() -> Option<PathBuf> {
         }
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("out").join("sdl2");
-    std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| ok(p))
+    if let Some(p) = std::fs::read_dir(root).ok().and_then(|r| r.flatten().map(|e| e.path()).find(|p| ok(p))) {
+        return Some(p);
+    }
+    // Linux/macOS: gcc/clang usan el SDL2 del sistema (sdl2-config); la ruta solo indica que existe
+    if !cfg!(windows) && Command::new("sdl2-config").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return Some(PathBuf::from("/usr"));
+    }
+    None
 }
 
 fn tail(text: &str) -> String {
