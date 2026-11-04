@@ -106,7 +106,7 @@ static void offset_per_tile(int mode, int bg, int x, uint16_t *hofs, uint16_t *v
 
 /* CGRAM index of the pixel (x, y) of background `bg` (0-3) in `mode` when its entry has priority `pri`, or -1. In the
  * modes 5 and 6 `x` counts the 512 pixels of a line and a map entry is 16 pixels wide: character N on the left, N+1 on the right. */
-static int bg_pixel(int mode, int bg, int x, int y, int pri) {
+static int bg_pixel_p(int mode, int bg, int x, int y) {
     int bpp = bg_bpp[mode][bg];
     int tsz = (hw[0x2105] >> (4 + bg) & 1) ? 16 : 8;
     int tw = (mode == 5 || mode == 6) ? 16 : tsz;
@@ -125,7 +125,6 @@ static int bg_pixel(int mode, int bg, int x, int y, int pri) {
     entry = map_entry(bg, tx, ty, tsz);
     tile = entry & 0x3FF;
     pal = (int)(entry >> 10 & 7);
-    if ((int)(entry >> 13 & 1) != pri) return -1;
     if (entry & 0x4000) ix = tw - 1 - ix;
     if (entry & 0x8000) iy = tsz - 1 - iy;
     if (tw == 16 || tsz == 16) {
@@ -136,9 +135,72 @@ static int bg_pixel(int mode, int bg, int x, int y, int pri) {
     chr = bg == 0 ? (hw[0x210B] & 0xFu) : bg == 1 ? (uint32_t)(hw[0x210B] >> 4) : bg == 2 ? (hw[0x210C] & 0xFu) : (uint32_t)(hw[0x210C] >> 4);
     c = tile_pixel((chr << 13) + tile * (uint32_t)bpp * 8, bpp, ix, iy);
     if (!c) return -1;
-    if (bpp == 8) return c;
-    if (bpp == 4) return pal * 16 + c;
-    return pal * 4 + c + (mode == 0 ? bg * 32 : 0);
+    c = bpp == 8 ? c : bpp == 4 ? pal * 16 + c : pal * 4 + c + (mode == 0 ? bg * 32 : 0);
+    return c | (int)(entry >> 13 & 1) << 16;
+}
+
+/* Same, but only when the entry has priority `pri` (the pixel is -1 otherwise). */
+static int bg_pixel(int mode, int bg, int x, int y, int pri) {
+    int r = bg_pixel_p(mode, bg, x, y);
+    return r >= 0 && (r >> 16) == pri ? r & 0xFFFF : -1;
+}
+
+/* Within a row each (background, column) is asked for several times (both priorities, main screen and subscreen), so
+ * the answer of bg_pixel_p is kept per row: `bgm_gen` says which row (render_row advances `bgm_cur`) each slot is from. */
+#define BGM_OFF 512
+#define BGM_N 1536
+static int32_t bgm_val[4][BGM_N];
+static uint32_t bgm_gen[4][BGM_N];
+static uint32_t bgm_cur = 1;
+
+/* Modes 0 and 1 (no offset per tile, 256 pixel lines): the whole row of a background in one go, looking up the map entry
+ * and the bit planes once per 8 pixels instead of once per pixel. Gives what bg_pixel_p gives for every column. */
+static void bg_fill_row(int mode, int bg, int y) {
+    int bpp = bg_bpp[mode][bg], tsz = (hw[0x2105] >> (4 + bg) & 1) ? 16 : 8, tw = tsz;
+    int size = hw[0x2107 + bg] & 3, width = (size & 1 ? 64 : 32) * tw, height = (size & 2 ? 64 : 32) * tsz;
+    int hofs = bg_hofs[bg] & 0x3FF, vofs = bg_vofs[bg] & 0x3FF;
+    uint32_t chr = bg == 0 ? (hw[0x210B] & 0xFu) : bg == 1 ? (uint32_t)(hw[0x210B] >> 4) : bg == 2 ? (hw[0x210C] & 0xFu) : (uint32_t)(hw[0x210C] >> 4);
+    int py = (y + vofs) & (height - 1), x, hflip = 0, pri = 0, pal = 0, plane;
+    uint8_t pb[4] = {0, 0, 0, 0};
+    for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
+        int px = (x + hofs) & (width - 1), c = 0, v;
+        if (x == -wide_x0 || (px & 7) == 0) {
+            int tx = px / tw, ty = py / tsz, ix = px % tw, iy = py % tsz;
+            uint32_t entry = map_entry(bg, tx, ty, tsz), tile = entry & 0x3FF, base;
+            pal = (int)(entry >> 10 & 7);
+            pri = (int)(entry >> 13 & 1);
+            hflip = (entry & 0x4000) != 0;
+            if (hflip) ix = tw - 1 - ix;
+            if (entry & 0x8000) iy = tsz - 1 - iy;
+            if (tw == 16 || tsz == 16) {
+                tile += (uint32_t)((tw == 16 && ix >= 8) + (tsz == 16 && iy >= 8) * 16);
+                iy &= 7;
+            }
+            base = (chr << 13) + tile * (uint32_t)bpp * 8;
+            for (plane = 0; plane < bpp; plane++) pb[plane] = vram[(base + (uint32_t)((plane >> 1) * 16 + iy * 2 + (plane & 1))) & 0xFFFF];
+        }
+        {
+            int bit = hflip ? (px & 7) : 7 - (px & 7);
+            for (plane = 0; plane < bpp; plane++) c |= (pb[plane] >> bit & 1) << plane;
+        }
+        v = !c ? -1 : (bpp == 4 ? pal * 16 + c : pal * 4 + c + (mode == 0 ? bg * 32 : 0)) | pri << 16;
+        bgm_val[bg][x + BGM_OFF] = v;
+        bgm_gen[bg][x + BGM_OFF] = bgm_cur;
+    }
+}
+
+static int bg_pixel_memo(int mode, int bg, int xc, int y, int pri) {
+    int r, i = xc + BGM_OFF;
+    if (i < 0 || i >= BGM_N) return bg_pixel(mode, bg, xc, y, pri);
+    if (bgm_gen[bg][i] != bgm_cur) {
+        if (mode <= 1 && bg_bpp[mode][bg] && xc >= -wide_x0 && xc < SCREEN_W + wide_x0) bg_fill_row(mode, bg, y);
+        else {
+            bgm_val[bg][i] = bg_pixel_p(mode, bg, xc, y);
+            bgm_gen[bg][i] = bgm_cur;
+        }
+    }
+    r = bgm_val[bg][i];
+    return r >= 0 && (r >> 16) == pri ? r & 0xFFFF : -1;
 }
 
 /* Sprite pixels by line; the column of screen x is x + WIDE_MAX, so that it does not depend on E. */
@@ -287,7 +349,7 @@ static int pixel_index(const Layer *order, int count, int x, int xc, int y, int 
                 int size = (hw[0x2106] >> 4) + 1, span = size * (mode == 5 || mode == 6 ? 2 : 1);
                 c = bg_pixel(mode, n, xc - ((xc % span) + span) % span, y < 1 ? y : (y - 1) / size * size + 1, order[i].kind == 1);
             } else {
-                c = bg_pixel(mode, n, xc, y, order[i].kind == 1);
+                c = bg_pixel_memo(mode, n, xc, y, order[i].kind == 1);
             }
             if (c >= 0) { *layer = n; return c; }
         }
@@ -488,6 +550,7 @@ static void render_row(int y, uint8_t *out) {
     default: order = mode2_5; count = 8; break;
     }
     draw_sprites_row(y);
+    bgm_cur++;
     for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
         if ((x < 0 && x + wide_x0 < wide_blank_l) || (x >= SCREEN_W && x - SCREEN_W >= wide_x0 - wide_blank_r)) {
             uint8_t *q = out + (size_t)(x + wide_x0) * 3;
