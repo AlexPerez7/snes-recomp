@@ -563,11 +563,18 @@ static void render_row(int y, uint8_t *out) {
         int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, count, x, xc, y, mode, hw[0x212C], hw[0x212E], &layer);
         uint8_t *p = out + (size_t)(x + wide_x0) * 3;
         int c = idx < 0 ? 0 : cgram_color(idx), k, left = -1;
-        int in_colour_window = win_area(5, x), black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
+        int black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
+        int in_colour_window = (black == 1 || black == 2 || math == 1 || math == 2) ? win_area(5, x) : 0;
         if (black == 3 || (black == 1 && !in_colour_window) || (black == 2 && in_colour_window)) c = 0;
         if (idx >= 0 && (hw[0x2131] & 0x3F) && (math == 0 || (math == 1 && in_colour_window) || (math == 2 && !in_colour_window))) {
-            int sub_idx = pixel_index(order, count, x, hires ? 2 * x : x, y, mode, hw[0x212D], hw[0x212F], &sub_layer);
-            c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
+            /* the subscreen only counts when colour_math will look at it: the layer takes part in the maths and $2130 bit 1 asks for it */
+            int chosen = layer == LAYER_OBJ ? (idx >= 192 && (hw[0x2131] & 0x10)) : (hw[0x2131] >> layer & 1);
+            if (chosen && (hw[0x2130] & 2)) {
+                int sub_idx = pixel_index(order, count, x, hires ? 2 * x : x, y, mode, hw[0x212D], hw[0x212F], &sub_layer);
+                c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
+            } else {
+                c = colour_math(c, layer, idx, 0, 0);
+            }
         }
         if (hires && idx >= 0) {
             /* The picture is 256 pixels wide: the two columns are blended, as a television does. */
