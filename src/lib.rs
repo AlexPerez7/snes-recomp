@@ -26,4 +26,5 @@ mod rtlib;
 #[cfg(test)]
 mod spctest;
 pub mod toolchain;
+pub mod update;
 pub mod ui;
