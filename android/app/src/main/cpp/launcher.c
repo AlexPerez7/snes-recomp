@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #include <ftw.h>
 #include <pthread.h>
+#include <sys/resource.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -101,6 +102,12 @@ static void *stdout_pump(void *arg) {
 }
 
 /* stdout no llega a ningun sitio en Android: una tuberia con un hilo que lo pasa a logcat. */
+/* Las ultimas lineas (el hash al salir) salen por la tuberia en otro hilo: se espera un poco antes de morir. */
+static void drain_stdout(void) {
+    fflush(stdout);
+    usleep(300000);
+}
+
 static void stats_to_logcat(void) {
     int fds[2];
     pthread_t th;
@@ -124,7 +131,7 @@ int main(int argc, char **argv) {
     double t0, t1, t2, t3;
     const SnesRtSymbol *sym;
     const char *const *ln;
-    char *args[9];
+    char *args[16];
     (void)argc; (void)argv;
     if (!files) { fail("no encuentro la carpeta de datos de la app"); return 1; }
     snprintf(rom_path, sizeof rom_path, "%s/rom.sfc", files);
@@ -157,6 +164,7 @@ int main(int argc, char **argv) {
         n_game++;
     }
 
+    SDL_AndroidShowToast("Preparando el juego...", 1, -1, 0, 0); /* generar y compilar tarda de medio segundo a unos segundos */
     t0 = now_ms();
     gen = snes_gen_generate((const uint8_t *)rom, rom_len, toml, gnames, gtexts, n_game);
     t1 = now_ms();
@@ -210,7 +218,11 @@ int main(int argc, char **argv) {
     *(void **)&init = tcc_get_symbol(s, "snes_rt_module_init");
     if (!init) { fail("el juego no tiene snes_rt_module_init"); return 1; }
     init();
-    LOG("preparado: generar %.0f ms, escribir %.0f ms, compilar y enlazar %.0f ms", t1 - t0, t2 - t1, t3 - t2);
+    {
+        struct rusage ru;
+        getrusage(RUSAGE_SELF, &ru);
+        LOG("preparado: generar %.0f ms, escribir %.0f ms, compilar y enlazar %.0f ms, memoria pico %.0f MiB", t1 - t0, t2 - t1, t3 - t2, ru.ru_maxrss / 1024.0);
+    }
 
     args[0] = "snes-port"; args[1] = rom_path;
     args[2] = "--saves-dir"; args[3] = saves;
@@ -219,12 +231,21 @@ int main(int argc, char **argv) {
     /* medicion: con un fichero files/stats el runtime imprime el tiempo de trabajo por fotograma, y stdout va a logcat */
     snprintf(path, sizeof path, "%s/stats", files);
     if (access(path, F_OK) == 0) {
-        char *txt = read_file(path, NULL); /* el contenido "unpaced" quita la espera entre fotogramas: mide el coste con los relojes al maximo */
+        char *txt = read_file(path, NULL); /* ajustes de medicion, ver tasks.md: unpaced, perf=..., hash=N */
+        char *hv, framesbuf[32];
+        int n = 6;
         if (txt && strstr(txt, "perf=")) setenv("SNES_PERF", strstr(txt, "perf=") + 5, 1); /* p. ej. perf=prio,hint=8 */
+        atexit(drain_stdout); /* antes que el atexit del runtime: se ejecuta despues */
         stats_to_logcat();
-        args[6] = "--stats";
-        args[7] = (txt && strstr(txt, "unpaced")) ? "--unpaced" : NULL;
-        return snes_play_main(args[7] ? 8 : 7, args);
+        args[n++] = "--stats";
+        if (txt && strstr(txt, "unpaced")) args[n++] = "--unpaced";
+        if (txt && (hv = strstr(txt, "hash=")) != NULL) { /* N fotogramas sin ventana y el hash de la WRAM: se compara con el del PC */
+            snprintf(framesbuf, sizeof framesbuf, "%ld", strtol(hv + 5, NULL, 10));
+            args[n++] = "--no-window"; args[n++] = "--frames"; args[n++] = framesbuf; args[n++] = "--hash-wram";
+            args[n++] = "--game-opt"; args[n++] = "language=0";
+        }
+        args[n] = NULL;
+        return snes_play_main(n, args);
     }
     return snes_play_main(6, args);
 }
