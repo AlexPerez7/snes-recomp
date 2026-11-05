@@ -1,6 +1,12 @@
 package io.github.alexperez7.snesport;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.View;
+import android.widget.CheckBox;
+import android.widget.ProgressBar;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,11 +29,17 @@ public class LauncherActivity extends Activity {
     private static final int PICK_ROM = 1;
     private TextView message;
 
+    private static final String ACTION_SETTINGS = "io.github.alexperez7.snesport.SETTINGS";
+    private boolean started;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (new File(getFilesDir(), "rom.sfc").isFile()) {
-            startGame();
+        boolean haveRom = new File(getFilesDir(), "rom.sfc").isFile();
+        if (haveRom && !ACTION_SETTINGS.equals(getIntent().getAction())) {
+            // Abrir la app va directo al juego; solo con el ajuste de actualizaciones activo se mira antes si hay versión nueva.
+            if (UpdateChecker.enabled(this)) checkThenStart();
+            else startGame();
             return;
         }
         LinearLayout col = new LinearLayout(this);
@@ -43,7 +55,7 @@ public class LauncherActivity extends Activity {
         message.setGravity(Gravity.CENTER);
         message.setPadding(0, 32, 0, 32);
         Button pick = new Button(this);
-        pick.setText("Elegir ROM");
+        pick.setText(haveRom ? "Cambiar ROM" : "Elegir ROM");
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -55,7 +67,25 @@ public class LauncherActivity extends Activity {
         licences.setOnClickListener(v -> showLicences());
         col.addView(title);
         col.addView(message);
+        if (haveRom) {
+            message.setText("Versión " + UpdateChecker.installedVersion(this));
+            Button play = new Button(this);
+            play.setText("Jugar");
+            play.setOnClickListener(v -> startGame());
+            col.addView(play);
+        }
         col.addView(pick);
+        if (UpdateChecker.available(this)) {
+            CheckBox auto = new CheckBox(this);
+            auto.setText("Buscar actualizaciones al abrir (usa Internet)");
+            auto.setChecked(UpdateChecker.enabled(this));
+            auto.setOnCheckedChangeListener((b, on) -> UpdateChecker.setEnabled(this, on));
+            Button now = new Button(this);
+            now.setText("Buscar actualizaciones ahora");
+            now.setOnClickListener(v -> checkNow(now));
+            col.addView(auto);
+            col.addView(now);
+        }
         col.addView(licences);
         setContentView(col);
     }
@@ -91,6 +121,71 @@ public class LauncherActivity extends Activity {
         }
     }
 
+    /** Con el ajuste activo: espera como mucho 3 s a la red (una consulta al día) y abre el juego pase lo que pase. */
+    private void checkThenStart() {
+        if (UpdateChecker.fresh(this)) {
+            decide(UpdateChecker.fromCache(this));
+            return;
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setGravity(Gravity.CENTER);
+        TextView t = new TextView(this);
+        t.setText("Buscando actualizaciones...");
+        t.setGravity(Gravity.CENTER);
+        t.setPadding(0, 32, 0, 0);
+        col.addView(new ProgressBar(this));
+        col.addView(t);
+        setContentView(col);
+        final boolean[] done = {false};
+        Handler ui = new Handler(Looper.getMainLooper());
+        ui.postDelayed(() -> { if (!done[0]) { done[0] = true; startGame(); } }, 3000);
+        new Thread(() -> {
+            UpdateChecker.Result r = UpdateChecker.query(this);
+            ui.post(() -> { if (!done[0]) { done[0] = true; decide(r); } });
+        }).start();
+    }
+
+    /** Si hay una versión nueva que no se ha omitido, pregunta; si no, abre el juego. */
+    private void decide(UpdateChecker.Result r) {
+        if (r.ok && r.newer && !UpdateChecker.skipped(this, r.tag)) showUpdateDialog(r, this::startGame);
+        else startGame();
+    }
+
+    /** «Descargar» abre la página de la release; «Ahora no» y «Omitir» siguen con `after`. */
+    private void showUpdateDialog(UpdateChecker.Result r, Runnable after) {
+        new AlertDialog.Builder(this)
+            .setTitle("Versión nueva")
+            .setMessage("Hay una versión nueva: " + r.tag + " (tienes " + UpdateChecker.installedVersion(this) + ").")
+            .setPositiveButton("Descargar", (d, w) -> {
+                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(r.url)));
+                finish();
+            })
+            .setNegativeButton("Ahora no", (d, w) -> after.run())
+            .setNeutralButton("Omitir esta versión", (d, w) -> { UpdateChecker.skip(this, r.tag); after.run(); })
+            .setOnCancelListener(d -> after.run())
+            .show();
+    }
+
+    /** El botón de los ajustes: consulta ahora y dice en pantalla qué ha pasado. */
+    private void checkNow(Button button) {
+        button.setEnabled(false);
+        message.setText("Buscando actualizaciones...");
+        Handler ui = new Handler(Looper.getMainLooper());
+        new Thread(() -> {
+            UpdateChecker.Result r = UpdateChecker.query(this);
+            ui.post(() -> {
+                button.setEnabled(true);
+                if (!r.ok) message.setText("No se pudo comprobar. Revisa la conexión e inténtalo de nuevo.");
+                else if (!r.newer) message.setText("Estás al día (versión " + UpdateChecker.installedVersion(this) + ").");
+                else {
+                    message.setText("Hay una versión nueva: " + r.tag + " (tienes " + UpdateChecker.installedVersion(this) + ").");
+                    showUpdateDialog(r, () -> {});
+                }
+            });
+        }).start();
+    }
+
     /** Los avisos de terceros (LGPL de libtcc y zlib de SDL2) con el texto de las licencias, tal como van en los assets. */
     private void showLicences() {
         StringBuilder sb = new StringBuilder();
@@ -121,6 +216,8 @@ public class LauncherActivity extends Activity {
     }
 
     private void startGame() {
+        if (started) return;
+        started = true;
         startActivity(new Intent(this, GameActivity.class));
         finish();
     }

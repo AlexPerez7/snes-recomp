@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Mantener pulsado el icono: la pantalla de ajustes (actualizaciones, cambiar ROM, licencias) aunque ya haya ROM. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="settings"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_settings">
+        <intent
+            android:action="io.github.alexperez7.snesport.SETTINGS"
+            android:targetPackage="@string/app_id"
+            android:targetClass="io.github.alexperez7.snesport.LauncherActivity" />
+    </shortcut>
+</shortcuts>
