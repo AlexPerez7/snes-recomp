@@ -1352,8 +1352,13 @@ static void srm_load(const char *rom_path) {
 
 /* Sound: the DSP makes 32 kHz stereo samples while the frame runs; at the end of each frame they are queued to the
  * audio device. The picture sets the pace, so the queue is kept short: if the device falls behind by more than about
- * 5 frames (83 ms) the new samples are dropped, and fast forward, pause and the menu empty it. The master volume
- * scales what goes to the device (not the WAV file). */
+ * 7 frames (117 ms) the new samples are dropped, and fast forward, pause and the menu empty it. The queue starts with
+ * AUD_PRIME frames of silence as a cushion; a frame that takes long (a slow CPU that drops its clock, another program)
+ * eats it, and since the pace does not make up for a stall the cushion would stay gone, so when the queue runs dry
+ * AUD_REFILL frames of silence are put back in front. The master volume scales what goes to the device (not the WAV file). */
+#define AUD_PRIME 4
+#define AUD_REFILL 2
+#define AUD_MAX_FRAMES 7
 static int16_t afr[4096 * 2];
 static int nafr;
 
@@ -1380,7 +1385,10 @@ static void flush_audio(void) {
     st_queued_sum += queued;
     if (queued == 0) st_underruns++;
     if (fast || paused || menu_open || st_rewound) SDL_ClearQueuedAudio(adev);
-    else if (queued < 5 * 533 * 4) SDL_QueueAudio(adev, afr, (Uint32)nafr * 4);
+    else if (queued < AUD_MAX_FRAMES * 533 * 4) {
+        if (queued == 0) audio_silence(AUD_REFILL);
+        SDL_QueueAudio(adev, afr, (Uint32)nafr * 4);
+    }
     else st_dropped++;
     nafr = 0;
 }
@@ -1407,7 +1415,7 @@ static void open_audio(void) {
         fprintf(stderr, "warning: no audio: %s\n", SDL_GetError());
         return;
     }
-    audio_silence(2);
+    audio_silence(AUD_PRIME);
     SDL_PauseAudioDevice(adev, 0);
 }
 
@@ -1460,7 +1468,7 @@ static void play_frame(void) {
             present(shown_frame());
             t_next = SDL_GetPerformanceCounter();
         }
-        if (adev) audio_silence(2);
+        if (adev) audio_silence(AUD_PRIME);
     }
     live_pad = read_keyboard(0) | read_pad(0) | held;
     live_pad2 = read_keyboard(1) | read_pad(1);
