@@ -2,3 +2,4 @@
 - [x] 1.2 Pantalla de inicio comprobada con captura: título, ROM recordada, «Jugar» y «Cambiar ROM...».
 - [ ] 1.3 Sin probar: «Elegir ROM...» con zenity haciendo clic (solo se ha probado con la ROM recordada y con `--play`), arrastrar el archivo, una ROM con CRC equivocado, una máquina sin SDL2 instalado, glibc 2.38 en otra distribución, y jugar de verdad (controles, partidas, F5/F7).
 - [ ] 1.4 Icono de la ventana y de escritorio (.desktop).
+- [x] 1.5 Diseño acorde al juego (2026-11-05): fondo de piedra verde con damero, marco dorado biselado con rombos, Trifuerza, título dorado y los botones del móvil (`spr_text` de `play_touch.h`: placa dorada, letras de su fuente, que gana G y J); se ilumina con el puntero. Comprobado con capturas de las dos pantallas (sin ROM y con ROM recordada).
