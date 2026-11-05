@@ -10,8 +10,8 @@ Proyecto en `android/` (2026-11-05): compila con `gradle assembleDebug` (Gradle 
 
 ## 2. Arranque de usuario
 
-- [ ] 2.1 Selector de ROM con SAF, copia a `filesDir`, comprobación del CRC32 y mensaje para una ROM desconocida con los dos CRC32. Verificar: una ROM correcta arranca el juego, una ajena se rechaza.
-- [ ] 2.2 ROM recordada con permiso persistente: la segunda vez se juega sin pedirla. Verificar: cerrar y abrir la app arranca directamente.
+- [x] 2.1 Selector de ROM con SAF, copia a `filesDir`, comprobación del CRC32 y mensaje para una ROM desconocida con los dos CRC32. Probado a mano en el S25 Ultra (2026-11-05, datos de la app borrados antes): una ROM aleatoria de 1 MiB se rechaza con «CRC32 29F0D5ED, se esperaba 777AAC2F»; la ROM buena arranca y llega a la pantalla de título.
+- [x] 2.2 ROM recordada: la copia queda en `filesDir/rom.sfc` (no hace falta permiso persistente del SAF). Probado en el S25 Ultra: `force-stop` y abrir de nuevo arranca el juego sin pedir la ROM.
 - [ ] 2.3 Generar y compilar en el arranque, con una pantalla de progreso. Verificar: registro con tiempos y memoria; hashes iguales a los del PC tras 3000 fotogramas.
 
 ## 3. Frontal
