@@ -21,6 +21,7 @@
         <activity
             android:name=".GameActivity"
             android:exported="false"
+            android:launchMode="singleTask"
             android:configChanges="keyboardHidden|keyboard|orientation|screenSize|screenLayout|uiMode|smallestScreenSize|density"
             android:screenOrientation="fullSensor"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
