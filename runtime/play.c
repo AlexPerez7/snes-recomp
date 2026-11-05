@@ -445,6 +445,7 @@ static void present(const uint8_t *fb) {
     SDL_GetRendererOutputSize(ren, &w, &h);
     r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, pw);
     touch_place(&r, w, h);
+    { static int lw, lh; if (w != lw || h != lh) { lw = w; lh = h; SDL_Log("view: output %dx%d, picture %d,%d %dx%d (%d lines of %d)", w, h, r.x, r.y, r.w, r.h, lines, pw); } }
     dst.x = r.x; dst.y = r.y; dst.w = r.w; dst.h = r.h;
     src.x = 0; src.y = cfg.eff.v[O_OVERSCAN]; src.w = pw; src.h = lines;
     SDL_UpdateTexture(tex, NULL, fb, pw * 3);
@@ -1953,6 +1954,9 @@ int main(int argc, char **argv) {
     int i, bad = 0;
     max_frames = 0xFFFFFFFFu;
     opt_scale = 3;
+#ifdef __ANDROID__
+    cli_fullscreen = 1; /* a phone game covers the whole screen: with the system bars the picture was cut under them */
+#endif
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = (uint32_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--frame-blocks") && i + 1 < argc) frame_len = (uint32_t)strtoul(argv[++i], NULL, 10);
