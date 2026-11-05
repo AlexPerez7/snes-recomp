@@ -794,6 +794,9 @@ static void ctx_jump(Ctx *from, Ctx *to) { (void)from; SwitchToFiber(to->handle)
  * jump lets `from` go on again. For systems without fibres or ucontext (Android); slower to switch, and a game switches
  * a few times per frame at most. */
 typedef struct { void (*fn)(void *); int run; } ThreadCtx;
+/* The frontend may keep something that belongs to one thread (the OpenGL context of its window): the thread that is
+ * about to hand over calls this first, so that the next one can take it. */
+void (*snes_rt_ctx_release)(void);
 static pthread_mutex_t ctx_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t ctx_cv = PTHREAD_COND_INITIALIZER;
 static void *ctx_thread(void *p) {
@@ -826,6 +829,7 @@ static void *ctx_make(void (*fn)(void *)) {
 }
 static void ctx_jump(Ctx *from, Ctx *to) {
     ThreadCtx *f = (ThreadCtx *)from->handle, *t = (ThreadCtx *)to->handle;
+    if (snes_rt_ctx_release) snes_rt_ctx_release();
     pthread_mutex_lock(&ctx_mu);
     f->run = 0;
     t->run = 1;

@@ -36,6 +36,9 @@ pub const PLAY_ICON: &str = include_str!("../runtime/play_icon.h");
 /// Save states in the interactive frontend (slots, rewind, notices): `play/play_state.h` written by `codegen --all`.
 pub const PLAY_STATE: &str = include_str!("../runtime/play_state.h");
 
+/// The on-screen touch controls (layout, hit tests, pixel art): `play/play_touch.h` written by `codegen --all`.
+pub const PLAY_TOUCH: &str = include_str!("../runtime/play_touch.h");
+
 /// Script that builds `snes_play.exe` from the files `codegen --all` wrote (Visual Studio and SDL2).
 pub const BUILD_PLAY_BAT: &str = include_str!("../runtime/build_play.bat");
 

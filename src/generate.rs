@@ -101,6 +101,7 @@ pub fn runtime_files() -> Vec<Source> {
         f("play/play_gl.h", codegen::PLAY_GL),
         f("play/play_icon.h", codegen::PLAY_ICON),
         f("play/play_state.h", codegen::PLAY_STATE),
+        f("play/play_touch.h", codegen::PLAY_TOUCH),
         f("build_play.bat", &codegen::BUILD_PLAY_BAT.replace('\r', "").replace('\n', "\r\n")), // cmd.exe wants CRLF
     ]
 }
