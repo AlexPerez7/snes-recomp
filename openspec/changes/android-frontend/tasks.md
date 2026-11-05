@@ -68,8 +68,8 @@ Las repeticiones coinciden entre sí (±0,1 ms), y la lectura anterior de 5,2 ms
 
 - [ ] 4.1 Medir el p99 por fotograma con la app completa, 3 repeticiones, en el S25 Ultra y en al menos un teléfono de gama media. Verificar: tabla en `design.md › Resultados` con los modelos.
 - [ ] 4.2 GLES 3 si 4.1 lo pide; si no, dejar `SDL_Renderer`.
-- [ ] 4.3 APK firmado, licencia y fuentes de libtcc dentro de la app, `scan` sin hallazgos. Verificar: el APK no contiene nada derivado de la ROM.
-- [ ] 4.4 Documentar en `CLAUDE.md` y en el README cómo compilar y firmar el APK.
+- [~] 4.3 APK firmado, licencia y fuentes de libtcc dentro de la app, `scan` sin hallazgos. Verificar: el APK no contiene nada derivado de la ROM. **Hecho (2026-11-05):** `gradle assembleRelease` da un APK de 1,6 MB, sin permiso de Internet, sin `debuggable`, con `libmain.so`, `libSDL2.so` y `libtcc.so` (aparte, LGPL) alineadas a 16 KB, y `assets/licenses/` con `NOTICE.txt`, la LGPL 2.1 de libtcc y la zlib de SDL2; el botón **Licencias** de la pantalla de elegir ROM los muestra; `snes-recomp scan` sobre el APK descomprimido termina sin hallazgos; instalado en el S25 Ultra arranca y genera y compila (409 ms y 145 ms, 216 MiB). La firma lee la clave de `~/.gradle/gradle.properties` (no se sube); **sin ella firma con la clave de depuración**, y así está firmado el APK probado. **Falta:** crear la clave de reparto de verdad y guardarla (decisión del autor) y volver a construir con ella.
+- [x] 4.4 Documentar en `CLAUDE.md` y en el README cómo compilar y firmar el APK. Hecho: `android/README.md` (requisitos, construir, firmar, licencias, medir) y una línea en `CLAUDE.md`.
 
 ## Workflow follow-up
 
