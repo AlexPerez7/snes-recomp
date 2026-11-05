@@ -8,6 +8,8 @@ def tinycc = rootProject.file(providers.gradleProperty('snesPort.tinyccDir').get
 def sdl = rootProject.file(providers.gradleProperty('snesPort.sdlDir').get()).canonicalPath
 def profile = rootProject.file(providers.gradleProperty('snesPort.gameProfile').get())
 def gameAssets = layout.buildDirectory.dir('generated/gameAssets')
+// Nombre e icono propios del juego: games/<juego>/android/res (si existe) tapa los del motor (variantes antes que main).
+def gameRes = new File(profile.parentFile, (profile.name - '.toml') + '/android/res')
 
 android {
     namespace 'io.github.alexperez7.snesport'
@@ -41,6 +43,10 @@ android {
             java.srcDirs += "${sdl}/android-project/app/src/main/java"
             assets.srcDirs += gameAssets.get().asFile
         }
+        if (gameRes.isDirectory()) {
+            debug.res.srcDirs += gameRes
+            release.res.srcDirs += gameRes
+        }
     }
 }
 
@@ -51,7 +57,7 @@ tasks.register('gameAssets', Sync) {
     from("${repo}/spikes/tcc_include") { into 'tcc_include' }
     from("${repo}/runtime") { include 'snes_rt.h'; into 'tcc_include' } // la interfaz del runtime: código propio
     from(profile) { into 'game'; rename { 'profile.toml' } }
-    from(new File(profile.parentFile, profile.name - '.toml')) { into 'game/c' } // *.c y lang/
+    from(new File(profile.parentFile, profile.name - '.toml')) { into 'game/c'; exclude 'android/**' } // *.c y lang/
     doLast {
         // Android no lista carpetas de assets con rutas de ficheros: un índice para copiarlos.
         def root = gameAssets.get().asFile
