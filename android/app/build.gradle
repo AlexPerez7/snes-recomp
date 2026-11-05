@@ -36,6 +36,33 @@ android {
             version '3.22.1'
         }
     }
+    // El análisis de lint de release baja sus herramientas de Internet; se desactiva para poder construir sin red.
+    lint { checkReleaseBuilds false }
+    // La firma de las versiones: la clave NO está en el repositorio. Va en ~/.gradle/gradle.properties:
+    //   snesPort.keystore=/ruta/a/snes-port.jks  snesPort.keystorePassword=...  snesPort.keyAlias=...  snesPort.keyPassword=...
+    // Sin ella, assembleRelease firma con la clave de depuración (solo para probar, no se reparte).
+    def haveKey = providers.gradleProperty('snesPort.keystore').isPresent()
+    signingConfigs {
+        if (haveKey) {
+            release {
+                storeFile file(providers.gradleProperty('snesPort.keystore').get())
+                storePassword providers.gradleProperty('snesPort.keystorePassword').get()
+                keyAlias providers.gradleProperty('snesPort.keyAlias').get()
+                keyPassword providers.gradleProperty('snesPort.keyPassword').get()
+            }
+        }
+    }
+    buildTypes {
+        release {
+            debuggable false
+            minifyEnabled false
+            if (haveKey) signingConfig signingConfigs.release
+            else {
+                signingConfig signingConfigs.debug
+                logger.warn('AVISO: sin snesPort.keystore, el APK de release va firmado con la clave de depuracion: no se reparte.')
+            }
+        }
+    }
     // Las bibliotecas quedan como ficheros: libmain.so se enlaza contra libSDL2.so desde nativeLibraryDir.
     packaging { jniLibs { useLegacyPackaging true } }
     sourceSets {
@@ -57,6 +84,10 @@ tasks.register('gameAssets', Sync) {
     from("${repo}/spikes/tcc_include") { into 'tcc_include' }
     from("${repo}/runtime") { include 'snes_rt.h'; into 'tcc_include' } // la interfaz del runtime: código propio
     from(profile) { into 'game'; rename { 'profile.toml' } }
+    // Licencias de lo que lleva la app (LGPL 2.1: libtcc va como libtcc.so aparte y aqui se dice donde estan las fuentes).
+    from("${rootProject.projectDir}/NOTICE.txt") { into 'licenses' }
+    from("${tinycc}/COPYING") { into 'licenses'; rename { 'libtcc-LGPL-2.1.txt' } }
+    from("${sdl}/LICENSE.txt") { into 'licenses'; rename { 'SDL2-zlib.txt' } }
     from(new File(profile.parentFile, profile.name - '.toml')) { into 'game/c'; exclude 'android/**' } // *.c y lang/
     doLast {
         // Android no lista carpetas de assets con rutas de ficheros: un índice para copiarlos.

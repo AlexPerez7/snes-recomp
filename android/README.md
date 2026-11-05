@@ -1,0 +1,60 @@
+# App Android de snes-port (`android-frontend`)
+
+La app que un usuario instala, abre, elige su ROM una vez y juega. El teléfono genera el C del juego desde la ROM (biblioteca del generador, Rust) y lo compila en memoria con libtcc al arrancar (unos 0,6 s en un Galaxy S25 Ultra); el frontal es el de `runtime/play.c` sobre SDL2. **La ROM no va en el APK**: se elige con el selector de documentos, se copia a la carpeta privada de la app y se comprueba su CRC32. Sin permiso de Internet.
+
+## Lo que hace falta en el PC
+
+- Android SDK con **NDK 27.2.12479018**, **CMake 3.22.1**, plataforma 35 y build-tools 35; **JDK 17 o más** y **Gradle 8.9** (no hay wrapper en el repositorio).
+- Rust con `rustup target add aarch64-linux-android`; la tarea `cargoGenerator` construye el generador como biblioteca estática y no necesita el enlazador del NDK.
+- Fuentes hermanas sin configurar: **TinyCC** rama `mob` (`e23dabe`) en `../tinycc` y **SDL2 2.32.x** en `../SDL2-2.32.10` (rutas en `gradle.properties`). Las rutas del perfil del juego (`snesPort.gameProfile`) apuntan a `alttp-recomp`.
+
+## Construir
+
+```
+export ANDROID_HOME=~/Android JAVA_HOME=~/Android/jdk
+cd android
+gradle assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
+gradle assembleRelease    # app/build/outputs/apk/release/app-release.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
+```
+
+Con `--offline` si no hay red. El análisis `lint` de release está desactivado porque descarga sus herramientas. `libmain.so`, `libSDL2.so` y `libtcc.so` salen alineadas a 16 KB.
+
+## Firmar una versión para repartir
+
+La clave **no está en el repositorio ni se sube nunca**; sin ella no hay actualizaciones sobre la versión instalada, así que hay que guardarla (y su contraseña) en más de un sitio.
+
+```
+keytool -genkeypair -v -keystore snes-port.jks -alias snes-port -keyalg RSA -keysize 4096 -validity 36500
+```
+
+En `~/.gradle/gradle.properties`:
+
+```
+snesPort.keystore=/ruta/a/snes-port.jks
+snesPort.keystorePassword=...
+snesPort.keyAlias=snes-port
+snesPort.keyPassword=...
+```
+
+Con eso `gradle assembleRelease` firma el APK; sin ello lo firma con la clave de depuración y avisa (solo sirve para probar). Comprobar: `apksigner verify --print-certs app-release.apk`.
+
+Antes de repartir un APK: `snes-recomp scan <rom> <carpeta>` sobre el APK descomprimido (fuera del repositorio) debe terminar sin hallazgos, y el APK debe llevar `NOTICE.txt`, la licencia de libtcc y la de SDL2 en `assets/licenses/`.
+
+## Licencias
+
+libtcc (TinyCC) es LGPL 2.1 y va como `libtcc.so` aparte, para poder sustituirla. Los avisos y el enlace a las fuentes están en `NOTICE.txt` y se ven en la app con el botón **Licencias** de la pantalla de elegir ROM.
+
+## Medir en el teléfono
+
+Un fichero `files/stats` en la carpeta de la app activa la medición (`adb shell run-as io.github.alexperez7.snesport sh -c 'echo ... > files/stats'`; solo en el APK de depuración). Su contenido, separado por comas o espacios:
+
+- `unpaced`: sin esperar entre fotogramas (coste a pleno reloj).
+- `hash=N`: N fotogramas sin ventana y el hash de la WRAM, para compararlo con `snes-port ... -- --no-window --frames N --hash-wram --game-opt language=0` en el PC.
+- `perf=none`, `perf=prio`, `perf=hint=MS`, `perf=spin`, `perf=cpus=0xMASK`: ajustes del hilo; por defecto va fijado a los núcleos más rápidos (`cpus=auto`).
+
+La salida (`work: p50, p99, max` cada 600 fotogramas, desglosado en `emu`, `tail` y `pres`) va a `adb logcat -s snesport`. Los resultados y su análisis están en `openspec/changes/android-frontend/tasks.md`.
+
+## Ciclo de vida
+
+Al pasar a segundo plano el juego se detiene, se guarda la SRAM y el audio se pausa; al volver sigue donde estaba. Cerrar la app de verdad mata el proceso (SDL no admite un segundo `SDL_main`).

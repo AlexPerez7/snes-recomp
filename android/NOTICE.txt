@@ -1,0 +1,15 @@
+ALttP Recomp (snes-port) - avisos de terceros
+
+Esta app no lleva la ROM del juego ni nada derivado de ella: la ROM la elige el usuario y se queda en su teléfono.
+
+libtcc (TinyCC)  -  GNU Lesser General Public License 2.1
+  Se incluye como biblioteca aparte (libtcc.so) para generar y compilar el juego en el teléfono.
+  Fuentes: https://github.com/TinyCC/tinycc (rama mob, confirmación e23dabe), compiladas con la configuración
+  de android/app/src/main/cpp/tcc_config/config.h del repositorio de la app. El texto de la licencia está en
+  licenses/libtcc-LGPL-2.1.txt. Se puede sustituir libtcc.so por una versión propia compilada con la misma interfaz.
+
+SDL2  -  licencia zlib
+  https://www.libsdl.org (versión 2.32.10). Texto en licenses/SDL2-zlib.txt.
+
+Código de la app y del motor: https://github.com/AlexPerez7/snes-recomp
+Código del perfil del juego y sus mejoras: https://github.com/AlexPerez7/alttp-recomp

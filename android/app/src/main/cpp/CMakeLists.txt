@@ -1,7 +1,8 @@
 # Bibliotecas nativas de la app Android de snes-port:
 #   libSDL2.so  SDL2 (fuentes hermanas, ver gradle.properties)
+#   libtcc.so   TinyCC como biblioteca (LGPL 2.1), aparte para poder sustituirla
 #   libmain.so  el frontal de runtime/play.c en modo biblioteca (SNES_RT_LIBRARY, clang -O2), el generador (Rust,
-#               estático), libtcc (TinyCC) y launcher.c, que genera y compila el juego al arrancar y llama al frontal
+#               estático) y launcher.c, que genera y compila el juego al arrancar y llama al frontal
 cmake_minimum_required(VERSION 3.22.1)
 project(snesport C)
 
@@ -31,7 +32,8 @@ set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 set(SDL_TEST OFF CACHE BOOL "" FORCE)
 add_subdirectory(${SDL2_DIR} SDL2-build)
 
-add_library(tcc STATIC ${TINYCC_DIR}/libtcc.c)
+# libtcc (LGPL 2.1) como biblioteca aparte (libtcc.so): quien quiera puede cambiarla por su propia versión sin reconstruir el resto.
+add_library(tcc SHARED ${TINYCC_DIR}/libtcc.c)
 target_include_directories(tcc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tcc_config ${TINYCC_DIR})
 target_compile_definitions(tcc PRIVATE ONE_SOURCE=1 TCC_TARGET_ARM64=1 TARGETOS_ANDROID=1 _GNU_SOURCE)
 target_compile_options(tcc PRIVATE -O2 -w -fPIC)

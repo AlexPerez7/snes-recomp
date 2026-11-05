@@ -50,9 +50,13 @@ public class LauncherActivity extends Activity {
             i.setType("*/*");
             startActivityForResult(i, PICK_ROM);
         });
+        Button licences = new Button(this);
+        licences.setText("Licencias");
+        licences.setOnClickListener(v -> showLicences());
         col.addView(title);
         col.addView(message);
         col.addView(pick);
+        col.addView(licences);
         setContentView(col);
     }
 
@@ -85,6 +89,26 @@ public class LauncherActivity extends Activity {
         } catch (IOException e) {
             message.setText("No he podido leer la ROM: " + e.getMessage());
         }
+    }
+
+    /** Los avisos de terceros (LGPL de libtcc y zlib de SDL2) con el texto de las licencias, tal como van en los assets. */
+    private void showLicences() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            for (String f : new String[] {"NOTICE.txt", "libtcc-LGPL-2.1.txt", "SDL2-zlib.txt"}) {
+                try (InputStream in = getAssets().open("licenses/" + f)) {
+                    sb.append(new String(in.readAllBytes(), StandardCharsets.UTF_8)).append("\n\n----\n\n");
+                }
+            }
+        } catch (IOException e) {
+            sb.append("No se encuentran los avisos de licencia: ").append(e.getMessage());
+        }
+        TextView text = new TextView(this);
+        text.setText(sb);
+        text.setPadding(32, 32, 32, 32);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(text);
+        new android.app.AlertDialog.Builder(this).setTitle("Licencias").setView(scroll).setPositiveButton("Cerrar", null).show();
     }
 
     private String expectedCrc() throws IOException {
