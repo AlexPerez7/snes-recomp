@@ -2,6 +2,8 @@
 
 La app que un usuario instala, abre, elige su ROM una vez y juega. El teléfono genera el C del juego desde la ROM (biblioteca del generador, Rust) y lo compila en memoria con libtcc al arrancar (unos 0,6 s en un Galaxy S25 Ultra); el frontal es el de `runtime/play.c` sobre SDL2. **La ROM no va en el APK**: se elige con el selector de documentos, se copia a la carpeta privada de la app y se comprueba su CRC32. Sin permiso de Internet.
 
+El identificador de la app (`snesPort.applicationId` en `gradle.properties`) es el del juego, `io.github.alexperez7.alttprecomp`; el paquete de Java (`io.github.alexperez7.snesport`) es interno y no se ve. El identificador no se puede cambiar una vez repartida una versión: Android lo contaría como otra app.
+
 ## Lo que hace falta en el PC
 
 - Android SDK con **NDK 27.2.12479018**, **CMake 3.22.1**, plataforma 35 y build-tools 35; **JDK 17 o más** y **Gradle 8.9** (no hay wrapper en el repositorio).
@@ -47,7 +49,7 @@ libtcc (TinyCC) es LGPL 2.1 y va como `libtcc.so` aparte, para poder sustituirla
 
 ## Medir en el teléfono
 
-Un fichero `files/stats` en la carpeta de la app activa la medición (`adb shell run-as io.github.alexperez7.snesport sh -c 'echo ... > files/stats'`; solo en el APK de depuración). Su contenido, separado por comas o espacios:
+Un fichero `files/stats` en la carpeta de la app activa la medición (`adb shell run-as io.github.alexperez7.alttprecomp sh -c 'echo ... > files/stats'`; solo en el APK de depuración). Su contenido, separado por comas o espacios:
 
 - `unpaced`: sin esperar entre fotogramas (coste a pleno reloj).
 - `hash=N`: N fotogramas sin ventana y el hash de la WRAM, para compararlo con `snes-port ... -- --no-window --frames N --hash-wram --game-opt language=0` en el PC.

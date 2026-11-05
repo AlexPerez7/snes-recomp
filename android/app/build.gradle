@@ -17,7 +17,9 @@ android {
     ndkVersion '27.2.12479018'
 
     defaultConfig {
-        applicationId 'io.github.alexperez7.snesport'
+        // La identidad de la app en Android (con la firma: lo que hace que una versión actualice a otra). Es del juego,
+        // no del motor, y NO se puede cambiar una vez repartida una versión: ver gradle.properties.
+        applicationId providers.gradleProperty('snesPort.applicationId').get()
         minSdk 29
         targetSdk 35
         versionCode 1
