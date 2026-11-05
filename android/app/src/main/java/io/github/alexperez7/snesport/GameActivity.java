@@ -29,6 +29,14 @@ public class GameActivity extends SDLActivity {
         super.onCreate(savedInstanceState);
     }
 
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        // SDL no admite un segundo SDL_main en el mismo proceso: al cerrar el juego de verdad, el proceso muere
+        // y el siguiente arranque parte de cero (con la actividad solo en segundo plano no pasa por aqui).
+        if (isFinishing()) android.os.Process.killProcess(android.os.Process.myPid());
+    }
+
     private static void extract(AssetManager am, String path, File dest) throws IOException {
         String[] list = am.list(path);
         if (list != null && list.length > 0) {
