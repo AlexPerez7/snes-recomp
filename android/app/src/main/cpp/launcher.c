@@ -220,6 +220,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/stats", files);
     if (access(path, F_OK) == 0) {
         char *txt = read_file(path, NULL); /* el contenido "unpaced" quita la espera entre fotogramas: mide el coste con los relojes al maximo */
+        if (txt && strstr(txt, "perf=")) setenv("SNES_PERF", strstr(txt, "perf=") + 5, 1); /* p. ej. perf=prio,hint=8 */
         stats_to_logcat();
         args[6] = "--stats";
         args[7] = (txt && strstr(txt, "unpaced")) ? "--unpaced" : NULL;

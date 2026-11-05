@@ -1586,10 +1586,77 @@ static void work_stats(uint64_t now) {
     }
 }
 
+/* Android: the system lowers the clocks of a thread that is only 60 % busy, and then the frame takes 3 times longer (see
+   android-frontend, tasks.md, 4). Two ways to ask for more, tried with SNES_PERF="prio" and SNES_PERF="hint=MS":
+   a higher scheduling priority, and a performance hint session (ADPF, API 33; found with dlsym), which tells the system
+   how long each frame of work takes and how long it should take. */
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#include <sys/resource.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sched.h>
+static int perf_spin; /* ms before the end of the frame at which the wait turns into a loop (999: all of it), so that the governor sees a busy thread */
+static int perf_prio, perf_hint_ns, perf_cpus; /* perf_cpus: bit mask of the cores to run on (0: any) */
+static void *perf_session;
+static int perf_tid;
+static void *(*p_get_manager)(void);
+static void *(*p_create)(void *, const int32_t *, size_t, int64_t);
+static int (*p_report)(void *, int64_t);
+static void (*p_close)(void *);
+
+static void perf_init(void) {
+    const char *e = getenv("SNES_PERF");
+    const char *h;
+    void *lib;
+    if (!e) return;
+    perf_prio = strstr(e, "prio") != NULL;
+    if ((h = strstr(e, "spin=")) != NULL) perf_spin = atoi(h + 5);
+    else if (strstr(e, "spin")) perf_spin = 999;
+    if ((h = strstr(e, "cpus=")) != NULL) perf_cpus = (int)strtol(h + 5, NULL, 0);
+    if ((h = strstr(e, "hint=")) != NULL) perf_hint_ns = (int)(atof(h + 5) * 1e6);
+    if (!perf_hint_ns || !(lib = dlopen("libandroid.so", RTLD_NOW))) return;
+    p_get_manager = (void *(*)(void))dlsym(lib, "APerformanceHint_getManager");
+    p_create = (void *(*)(void *, const int32_t *, size_t, int64_t))dlsym(lib, "APerformanceHint_createSession");
+    p_report = (int (*)(void *, int64_t))dlsym(lib, "APerformanceHint_reportActualWorkDuration");
+    p_close = (void (*)(void *))dlsym(lib, "APerformanceHint_closeSession");
+    if (!p_get_manager || !p_create || !p_report) perf_hint_ns = 0;
+    SDL_Log("perf: prio %d, cpus %#x, hint %d ns%s", perf_prio, perf_cpus, perf_hint_ns, perf_hint_ns ? "" : " (not available)");
+}
+
+/* Once per frame, on the thread that emulates (it changes with the contexts on threads): `work_ns` is the time it worked. */
+static void perf_frame(int64_t work_ns) {
+    int tid = (int)syscall(SYS_gettid);
+    if (tid != perf_tid) {
+        perf_tid = tid;
+        if (perf_prio) setpriority(PRIO_PROCESS, (id_t)tid, -20);
+        if (perf_cpus) {
+            cpu_set_t set;
+            int c;
+            CPU_ZERO(&set);
+            for (c = 0; c < 32; c++) if (perf_cpus & (1 << c)) CPU_SET(c, &set);
+            sched_setaffinity(tid, sizeof set, &set);
+        }
+        if (perf_hint_ns) {
+            int32_t t = tid;
+            void *m = p_get_manager();
+            if (perf_session && p_close) p_close(perf_session);
+            perf_session = m ? p_create(m, &t, 1, perf_hint_ns) : NULL;
+        }
+    }
+    if (perf_session && work_ns > 0) p_report(perf_session, work_ns);
+}
+#else
+#define perf_spin 0
+static void perf_init(void) {}
+static void perf_frame(int64_t work_ns) { (void)work_ns; }
+#endif
+
 static void pace(void) {
     uint64_t now = SDL_GetPerformanceCounter(), period = (uint64_t)((double)perf_freq / 60.0988), w0 = now;
     st_frames++;
     if (opt_stats) work_stats(now);
+    if (st_work_t0) perf_frame((int64_t)((double)(now - st_work_t0) * 1e9 / perf_freq));
     if (opt_unpaced) { t_next = now; st_work_t0 = SDL_GetPerformanceCounter(); return; }
     if (fast) {
         int k = ff_factor(cfg.eff.v[O_FFSPEED]);
@@ -1606,7 +1673,7 @@ static void pace(void) {
     }
     while ((now = SDL_GetPerformanceCounter()) < t_next) {
         uint64_t left_ms = (t_next - now) * 1000 / perf_freq;
-        if (left_ms > 2) SDL_Delay((Uint32)(left_ms - 1));
+        if (left_ms > (uint64_t)(perf_spin > 2 ? perf_spin : 2)) SDL_Delay((Uint32)(left_ms - (perf_spin > 2 ? perf_spin : 1)));
     }
     st_wait += SDL_GetPerformanceCounter() - w0;
     st_work_t0 = SDL_GetPerformanceCounter();
@@ -1843,6 +1910,7 @@ static int open_window(void) {
     snes_set_window_icon(play_icon, PLAY_ICON_SIZE, PLAY_ICON_SIZE);
 #ifdef SNES_RT_THREAD_CONTEXTS
     snes_rt_ctx_release = play_ctx_release;
+    perf_init();
 #endif
     perf_freq = SDL_GetPerformanceFrequency();
     t_next = st_start = SDL_GetPerformanceCounter();

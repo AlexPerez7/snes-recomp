@@ -34,6 +34,24 @@ Medición (2026-11-05): con un fichero `files/stats` en la carpeta de la app (`a
 - **El tiempo de la emulación depende de la frecuencia del procesador.** Con la espera a 60 Hz el sistema baja los relojes (los núcleos Performance a 2,4 a 2,7 GHz y los Prime parados a 1 GHz, `SDLThread` al 74 % de un núcleo) y cada fotograma tarda 3 veces más que a pleno reloj. Sin espera sale 2,8 a 3,5 ms de mediana, en línea con la prueba (media 2,6 ms, p99 5,67 ms; aquí p99 6,1 a 7,4 ms con otro recorrido y los táctiles).
 - **Consecuencia para 4.1:** el coste real se mide con `unpaced`; la fluidez real, con la espera. En el S25 Ultra la espera mantiene 60,1 fps, pero el p99 del trabajo (16,4 a 17,3 ms) roza el presupuesto de 16,64 ms, y con un móvil más lento y relojes bajados sería peor. Falta probar si fijar un mínimo de reloj o un hilo de más prioridad lo arregla antes de dar la cifra para gama media.
 
+Pruebas para bajar el coste con la espera a 60 Hz (S25 Ultra, mismos fotogramas, 2 repeticiones cada una; se activan con `perf=...` dentro de `files/stats`, ver `perf_init` en `runtime/play.c`; gobernador `walt`, los núcleos Prime 6 y 7 pasan el rato a 1,0 a 2,4 GHz de 4,47 GHz):
+
+| Prueba | emu p50 | emu p99 |
+|---|---|---|
+| Base (sin nada) | 10,1 ms | 14,8 a 15,6 ms |
+| Prioridad del hilo (`prio`, nice -20) | 10,3 ms | 15,2 a 15,6 ms (sin efecto) |
+| Sesión de ADPF (`hint=4`, `8`, `12`) | 10,1 a 10,3 ms | 14,1 a 14,6 ms (casi sin efecto) |
+| Hilo fijado a los núcleos Prime (`cpus=0xC0`) | 8,9 ms | 11,6 a 11,7 ms |
+| Prime + espera en bucle los últimos 4 ms | 6,7 ms | 8,8 ms |
+| Prime + espera en bucle los últimos 8 ms | 4,3 ms | 5,1 a 5,2 ms |
+| Prime + espera en bucle los últimos 12 ms | 3,0 a 3,4 ms | 3,2 a 3,7 ms |
+| Prime + espera en bucle todo el rato (`spin`) | 2,8 a 3,0 ms | 3,0 a 3,2 ms |
+
+- **Ni la prioridad ni ADPF suben los relojes**; ADPF se crea (el sistema lo registra) pero no cambia la frecuencia.
+- **Fijar el hilo a los núcleos más rápidos da lo más barato**: p99 de 15 a 11,7 ms, sin coste de batería conocido. Hay que calcular la máscara en cada teléfono (por `cpuinfo_max_freq`); `0xC0` es del S25 Ultra.
+- **Lo que de verdad sube los relojes es que el hilo parezca ocupado**: esperar en bucle da el coste a pleno reloj (p99 3 ms), pero gasta un núcleo Prime entero y calienta. Sin medir el consumo (pendiente) no es una opción por defecto; la mejor relación está entre los últimos 4 y 8 ms.
+- **Lo que falta:** medir batería y temperatura de cada opción y repetir en un móvil más lento antes de elegir. Por ahora todo sigue desactivado por defecto.
+
 - [ ] 4.1 Medir el p99 por fotograma con la app completa, 3 repeticiones, en el S25 Ultra y en al menos un teléfono de gama media. Verificar: tabla en `design.md › Resultados` con los modelos.
 - [ ] 4.2 GLES 3 si 4.1 lo pide; si no, dejar `SDL_Renderer`.
 - [ ] 4.3 APK firmado, licencia y fuentes de libtcc dentro de la app, `scan` sin hallazgos. Verificar: el APK no contiene nada derivado de la ROM.
