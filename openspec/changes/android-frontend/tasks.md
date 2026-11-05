@@ -49,6 +49,16 @@ Pruebas para bajar el coste con la espera a 60 Hz (S25 Ultra, mismos fotogramas,
 | Prime + espera en bucle los últimos 12 ms | 3,0 a 3,4 ms | 3,2 a 3,7 ms |
 | Prime + espera en bucle todo el rato (`spin`) | 2,8 a 3,0 ms | 3,0 a 3,2 ms |
 
+Repetición (2026-11-05, 3 ejecuciones por modo, mismos fotogramas, pantalla despierta):
+
+| Modo | emu p50 | emu p99 | total p99 |
+|---|---|---|---|
+| Base | 10,1 a 10,2 ms | 13,8 a 14,3 ms | 14,8 a 15,3 ms |
+| `cpus=auto` (núcleos `0xC0`) | 8,9 a 9,0 ms | 11,7 ms | 12,5 a 12,7 ms |
+| `cpus=auto,hint=8` | 8,7 a 8,8 ms | 11,7 ms | 12,6 a 12,7 ms |
+
+Las repeticiones coinciden entre sí (±0,1 ms), y la lectura anterior de 5,2 ms con `cpus=auto,hint=8` fue un valor aislado (la primera ejecución justo tras despertar el teléfono), no se repite. Conclusión: fijar el hilo a los núcleos rápidos baja 1,2 ms la mediana y 2 ms el p99; ADPF encima no añade nada medible.
+
 - **Ni la prioridad ni ADPF suben los relojes**; ADPF se crea (el sistema lo registra) pero no cambia la frecuencia.
 - **Fijar el hilo a los núcleos más rápidos da lo más barato**: p99 de 15 a 11,7 ms, sin coste de batería conocido. Hay que calcular la máscara en cada teléfono (por `cpuinfo_max_freq`); `0xC0` es del S25 Ultra.
 - **Lo que de verdad sube los relojes es que el hilo parezca ocupado**: esperar en bucle da el coste a pleno reloj (p99 3 ms), pero gasta un núcleo Prime entero y calienta. Sin medir el consumo (pendiente) no es una opción por defecto; la mejor relación está entre los últimos 4 y 8 ms.
