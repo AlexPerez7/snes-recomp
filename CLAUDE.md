@@ -28,7 +28,7 @@ cargo run --release -- codegen roms/alttp_usa.sfc --all -o out/rom        # C de
 #   spikes/bench_pc.sh roms/alttp_usa.sfc ..\alttp-recomp\games\alttp_usa.toml <prefijo de TinyCC>   # tiempo por fotograma: gcc -O2, todo TinyCC, y runtime gcc + C del juego con libtcc en memoria (spikes/tcc_host.c)
 #   cargo rustc --release --lib --target aarch64-linux-android --crate-type staticlib   # el generador para Android, sin el enlazador del NDK
 #   spikes/android: app de medición en el teléfono (Gradle + NDK); ver su README
-#   android/: la app definitiva (android-frontend): `gradle assembleRelease` en android/; ver android/README.md (construir, firmar, medir, avisos de versión nueva)
+#   android/: la app definitiva (android-frontend): `gradle assembleRelease` en android/; ver android/README.md (construir, firmar, medir, avisos de versión nueva). `linux/` es el lanzador autónomo de Linux (`linux/build.sh <perfil.toml> [nombre]` -> `out/linux/<nombre>/`, ver `openspec/changes/linux-launcher`)
 # Jugar con ventana, teclado/mando, sonido y partidas guardadas (necesita el paquete de desarrollo SDL2 para Visual C++, SDL2-devel-x.y.z-VC.zip, descomprimido en out\sdl2 o apuntado por SDL2_DIR):
 #   cd out\rom ; set SDL2_DIR=...\SDL2-2.30.9 ; build_play.bat   # compila snes_play.exe y copia SDL2.dll (codegen --all escribe build_play.bat y play\snes_play.c)
 #   snes_play.exe ..\..\roms\alttp_usa.sfc [--scale 3] [--fullscreen] [--mute] [--wav F.wav] [--stats]

@@ -1,0 +1,4 @@
+- [x] 1.1 `linux/launcher.c`, `linux/build.sh` y `linux/tcc_config/config.h`. Probado (2026-11-05) en Linux x86_64 con la ROM USA y `PATH` vacío (sin gcc): generar 1,4 s, compilar y enlazar 0,7 s, la intro se ve y suena (pulseaudio).
+- [x] 1.2 Pantalla de inicio comprobada con captura: título, ROM recordada, «Jugar» y «Cambiar ROM...».
+- [ ] 1.3 Sin probar: «Elegir ROM...» con zenity haciendo clic (solo se ha probado con la ROM recordada y con `--play`), arrastrar el archivo, una ROM con CRC equivocado, una máquina sin SDL2 instalado, glibc 2.38 en otra distribución, y jugar de verdad (controles, partidas, F5/F7).
+- [ ] 1.4 Icono de la ventana y de escritorio (.desktop).
