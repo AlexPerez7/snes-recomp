@@ -115,10 +115,45 @@ Tres repeticiones más, alternando las dos construcciones relevantes: gcc 7,74 /
 
 **Decisión del punto 3.4: se sigue al teléfono, no al plan B.** En el PC, TinyCC no le resta margen al C del juego, así que el plan B (C del juego compilado con clang en el PC) no ganaría rendimiento. Solo serviría si Android negara la memoria ejecutable. Lo que queda por saber en el teléfono es si el S25 Ultra cumple el p99 de 5,5 ms. Este PC hace unos 8 ms de media y 15 ms de p99; un núcleo del S25 debería ser entre 2 y 3 veces más rápido. Ese margen depende del runtime, y afecta igual a cualquier camino, incluido un APK armado en el PC.
 
-### En el S25 Ultra
+### En el S25 Ultra (2026-11-05)
 
-<!-- Pendiente: grupo 4 de tasks.md, con la app de spikes/android (ver su README). Anotar aquí lo que muestra «Ver resultados» para run_mem, run_mem_cpu0 y run_so, y el mensaje de «Generar el C». -->
+Galaxy S25 Ultra (SM-S938B, Snapdragon 8 Elite), Android 17, APK *debug* (código nativo con `-O2`), `targetSdk 35`, NDK 27.2.12479018, TinyCC `mob@e23dabe`. 3000 fotogramas sin entradas y sin presentar imagen (el audio se genera y se descarta), **una sola ejecución de cada modo** (la tarea 4.3 pedía repetir 3 veces: queda pendiente, para saber cuánto varía el p99). La ROM se eligió con el selector de documentos.
+
+| Medida | `run_mem` (todos los núcleos) | `run_mem_cpu0` (núcleo 0) | `run_so` (plan B, `dlopen`) | Criterio |
+|---|---|---|---|---|
+| Compilar con libtcc (27 ficheros) | 162 ms | 290 ms | 162 ms | ≤ 4 s |
+| Enlazar | 5 ms | 8 ms | 6 ms | n/a |
+| Memoria pico del proceso | 156 MiB | 155 MiB | 149 MiB | ≤ 400 MiB |
+| Fotograma, media | 2,62 ms | 4,24 ms | 2,60 ms | n/a |
+| Fotograma, **p99** | **5,67 ms** | **5,65 ms** | **5,66 ms** | ≤ 5,5 ms |
+| Fotograma, máximo | 13,5 ms | 8,1 ms | 8,3 ms | n/a |
+
+Generar el C con la biblioteca del generador en el teléfono: 28 ficheros, 432 743 líneas (12,6 MiB), **408 y 421 ms**, memoria pico **253 y 260 MiB** (criterio: ≤ 10 s). El ordenador de escritorio tardaba 0,96 s con 134 MiB.
+
+**Los cuatro hashes coinciden con los del PC en los tres modos** (`wram.bin 3a6f2313886e5104`, `vram.bin 1b065eac555a61f9`, `cgram.bin 22537cc0decddbf5`, `oam.bin 00984b3d23dfa740`): el juego, generado y compilado en el teléfono, da el mismo estado que gcc en el PC tras 3000 fotogramas.
+
+- **Android deja la memoria ejecutable** (`tcc_relocate` en memoria) **y deja `dlopen` de un `.so` escrito en `filesDir`** (targetSdk 35, Samsung One UI). Las dos rutas funcionan, así que el plan B existe como respaldo.
+- **Rendimiento:** la media (2,6 ms) está muy por debajo de los 16,64 ms de un fotograma. El p99 (5,65 a 5,67 ms) se pasa del criterio de 5,5 ms por un 3 %, y es casi igual en los tres modos, incluso en el núcleo 0, donde la media sube a 4,24 ms. Eso apunta a unos pocos fotogramas pesados del recorrido (intro y demostración) que dependen del contenido y no del núcleo. El máximo está en 8 a 13,5 ms, por debajo de los 16,64 ms.
+- **El núcleo 0 no es un núcleo de gama media.** El Snapdragon 8 Elite solo tiene núcleos Oryon (2 Prime y 6 Performance), sin núcleos pequeños. El pase fijado al núcleo 0 mide el clúster más lento del S25 (1,6 veces la media del pase libre), no un teléfono de gama media, que puede ser 2,5 a 3 veces más lento por núcleo.
+
+Problemas que salieron de la prueba (ninguno es del camino en sí, y los tres se resolvieron en la app):
+1. **TinyCC no encuentra la libc.** Con `-nostdinc -nostdlib`, el C del juego (`text.c`, `menutext.c`) necesita `stdio.h`, `stdlib.h`, `string.h` y `sys/stat.h`. Se añadieron cabeceras mínimas en `spikes/tcc_include/` (con la disposición de `struct stat` de arm64 y x86_64) y la app pasa las funciones de la libc a libtcc con `dlsym` (`tcc_add_symbol`), igual que la tabla `snes_rt_symbols`. Sin eso `tcc_relocate` falla con referencias sin resolver. Un APK real tendrá que hacer lo mismo, o dejar que el C del juego no dependa de la libc.
+2. **`targetSdk 35` dibuja bajo las barras del sistema:** la app de prueba tapaba sus botones. Se corrigió con un `OnApplyWindowInsetsListener`.
+3. **Aviso de compatibilidad con páginas de 16 KB** (`libsnesrt.so` y `libspike.so`, «el segmento LOAD no está alineado»). No impide funcionar. Para el APK definitivo hay que enlazar con `-Wl,-z,max-page-size=16384` (NDK 27) o pasar al NDK 28.
 
 ### Decisión final
 
-<!-- Pendiente de las medidas del teléfono (tarea 5.1). -->
+**Camino on-device (2026-11-05).** El APK no lleva nada derivado de la ROM. El usuario abre la app, elige su ROM una vez y juega: la app comprueba el CRC32, genera el C (~0,4 s) y lo compila con libtcc en memoria (0,2 a 0,3 s), así que la preparación cabe en un solo segundo en el S25 Ultra y no hace falta caché de compilación. El plan B (`.so` en `filesDir` con `dlopen`) funciona y queda como respaldo si una versión de Android o un fabricante negara la memoria ejecutable.
+
+Razones: se cumplen todos los criterios menos el p99 por fotograma (5,65 a 5,67 ms frente a 5,5 ms, un 3 % de diferencia, muy lejos del «más del doble» que según el punto 7 obligaría a cambiar de camino), el estado final es idéntico al del PC y la memoria ejecutable y `dlopen` están permitidos en `targetSdk 35` con One UI.
+
+Riesgos que quedan abiertos, a comprobar en el frontal y no aquí:
+- **Rendimiento en gama media.** No se midió ningún teléfono más lento que el S25 Ultra. El p99 depende de unos pocos fotogramas pesados del recorrido; con un teléfono 2,5 a 3 veces más lento seguiría por debajo de 16,64 ms solo si el margen del p99 se mantiene. Hay que medir al menos un teléfono de gama media antes de publicar, y repetir las medidas 3 veces.
+- **La libc para TinyCC** (cabeceras y símbolos pasados con `dlsym`, ver problema 1 de arriba) pasa a ser parte del APK.
+- **Páginas de 16 KB** (`-Wl,-z,max-page-size=16384` o NDK 28).
+- **Fin de la partida sin `exit()`:** el runtime termina el proceso con `exit()`; un frontal con ciclo de vida de Android necesita poder pararse y reanudarse.
+
+### Siguiente cambio (tarea 5.2)
+
+`android-frontend`, en **`snes-recomp`** (el motor): frontal SDL2 para Android sobre el runtime en modo biblioteca, con la generación y la compilación en el arranque, la ROM elegida con el selector de documentos y recordada con permiso persistente (el CRC32 se comprueba al elegirla y las veces siguientes se arranca directamente), controles táctiles en pantalla, mandos Bluetooth y USB, audio, ciclo de vida (pausa y reanudación), carpeta de partidas de la app (`.srm` portable) y empaquetado del APK firmado. Después, en **`alttp-recomp`**, el perfil, las pruebas y el workflow de GitHub Actions que sube el APK a las releases. Sin cuentas ni servicios de Google.
+

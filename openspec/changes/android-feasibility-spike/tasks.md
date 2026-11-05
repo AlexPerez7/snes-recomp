@@ -28,17 +28,17 @@
 
 ## 4. App de prueba en el S25 Ultra (`spikes/android/`, no se publica)
 
-- [ ] 4.1 Proyecto Android mínimo (Gradle, NDK, solo `arm64-v8a`, targetSdk 35, sin permiso de Internet) con el runtime en modo biblioteca compilado con clang -O2, libtcc compilado para arm64 y el generador. El proyecto ya está escrito (`spikes/android/`, ver su README). Su JNI (`spike_jni.c`) y `Native.java` se probaron en Linux: generar, medir en memoria y plan B, con los mismos hashes que el PC. Verificar: `gradlew assembleDebug` termina en el PC del usuario y la app se instala con `adb install`.
-- [ ] 4.2 Leer la ROM con el selector de documentos (SAF), comprobar el CRC32, generar las fuentes con la biblioteca y guardarlas en la caché de la app. Verificar: el registro (`adb logcat`) muestra el CRC32, el número de fuentes y el tiempo de generación.
-- [ ] 4.3 Compilar en memoria con libtcc, registrar el punto de entrada y ejecutar 3000 fotogramas sin presentar imagen, registrando el tiempo por fotograma (media y p99) y la memoria pico. Repetir 3 veces, y además fijando el hilo a un núcleo secundario con `sched_setaffinity`. Verificar: las medidas aparecen en `logcat` y se copian a Resultados.
-- [ ] 4.4 Probar el plan B: que tcc escriba un `.so` en `filesDir` y cargarlo con `dlopen`, y anotar si Android lo permite y el tiempo de arranque con el `.so` en caché. Verificar: el resultado (funciona o el error exacto) queda en Resultados.
-- [ ] 4.5 Comprobar que el estado tras los 3000 fotogramas en el teléfono coincide con el del PC (hash de WRAM y VRAM en `logcat`). Verificar: los hashes coinciden con los de 3.1.
+- [x] 4.1 Proyecto Android mínimo (Gradle, NDK, solo `arm64-v8a`, targetSdk 35, sin permiso de Internet) con el runtime en modo biblioteca compilado con clang -O2, libtcc compilado para arm64 y el generador. El proyecto ya está escrito (`spikes/android/`, ver su README). Su JNI (`spike_jni.c`) y `Native.java` se probaron en Linux: generar, medir en memoria y plan B, con los mismos hashes que el PC. Verificar: `gradlew assembleDebug` termina en el PC del usuario y la app se instala con `adb install`.
+- [x] 4.2 Leer la ROM con el selector de documentos (SAF), comprobar el CRC32, generar las fuentes con la biblioteca y guardarlas en la caché de la app. Verificar: el registro (`adb logcat`) muestra el CRC32, el número de fuentes y el tiempo de generación.
+- [x] 4.3 Compilar en memoria con libtcc, registrar el punto de entrada y ejecutar 3000 fotogramas sin presentar imagen, registrando el tiempo por fotograma (media y p99) y la memoria pico. Repetir 3 veces, y además fijando el hilo a un núcleo secundario con `sched_setaffinity`. Verificar: las medidas aparecen en `logcat` y se copian a Resultados.
+- [x] 4.4 Probar el plan B: que tcc escriba un `.so` en `filesDir` y cargarlo con `dlopen`, y anotar si Android lo permite y el tiempo de arranque con el `.so` en caché. Verificar: el resultado (funciona o el error exacto) queda en Resultados.
+- [x] 4.5 Comprobar que el estado tras los 3000 fotogramas en el teléfono coincide con el del PC (hash de WRAM y VRAM en `logcat`). Verificar: los hashes coinciden con los de 3.1.
 - [x] 4.6 Pasar `scan` con la ROM sobre `spikes/` (fuentes) antes de subir nada. Verificar: no hay fragmentos de la ROM y en el árbol no hay ningún `.sfc`, `.apk` ni C generado (`.gitignore` excluye además `*.apk` y lo construido por Gradle).
 
 ## 5. Decisión
 
-- [ ] 5.1 Completar `design.md` › Resultados con todas las tablas y aplicar los criterios del punto 7: camino on-device, plan B (paquete compilado en el PC más `dlopen`) o solo APK personal. Verificar: la decisión está escrita con las medidas que la justifican, y el usuario la revisó.
-- [ ] 5.2 Proponer en una nota en Resultados el siguiente cambio según la decisión (por ejemplo, el frontal Android del motor y el APK de `alttp-recomp`). Verificar: la nota nombra el cambio y su repositorio.
+- [x] 5.1 Completar `design.md` › Resultados con todas las tablas y aplicar los criterios del punto 7: camino on-device, plan B (paquete compilado en el PC más `dlopen`) o solo APK personal. Verificar: la decisión está escrita con las medidas que la justifican, y el usuario la revisó.
+- [x] 5.2 Proponer en una nota en Resultados el siguiente cambio según la decisión (por ejemplo, el frontal Android del motor y el APK de `alttp-recomp`). Verificar: la nota nombra el cambio y su repositorio.
 
 ## Workflow follow-up
 

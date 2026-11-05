@@ -48,6 +48,11 @@ public class MainActivity extends Activity {
         col.addView(log);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(col);
+        // targetSdk 35 dibuja bajo las barras del sistema: se deja su hueco arriba y abajo.
+        scroll.setOnApplyWindowInsetsListener((v, insets) -> {
+            v.setPadding(0, insets.getSystemWindowInsetTop(), 0, insets.getSystemWindowInsetBottom());
+            return insets;
+        });
         setContentView(scroll);
     }
 
@@ -149,6 +154,8 @@ public class MainActivity extends Activity {
         dest.mkdirs();
         String[] list = getAssets().list(path);
         for (String n : list == null ? new String[0] : list) {
+            String[] sub = getAssets().list(path + "/" + n);
+            if (sub != null && sub.length > 0) { extract(path + "/" + n, new File(dest, n)); continue; }
             try (OutputStream out = new FileOutputStream(new File(dest, n))) {
                 out.write(asset(path + "/" + n));
             }
