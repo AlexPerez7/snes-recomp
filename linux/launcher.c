@@ -190,7 +190,12 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
     if (!main_label) y = 215 - lines * 11; /* sin botones, el mensaje va al centro */
     while (*p) {
         size_t n = strcspn(p, "\n");
-        snprintf(line, sizeof line, "%.*s", (int)(n > 120 ? 120 : n), p);
+        snprintf(line, sizeof line, "%.*s", (int)(n > 200 ? 200 : n), p);
+        if (text_w(line) > WIN_W - 80) { /* una ruta larga: se queda el final, que es lo que distingue */
+            size_t l = strlen(line);
+            while (l > 4 && text_w(line + (strlen(line) - l)) > WIN_W - 120) l--;
+            snprintf(line, sizeof line, "...%s", line + strlen(line) - l + 3 > line ? line + strlen(line) - l + 3 : line);
+        }
         text_center(&cv, 0, WIN_W, y, line, msg_color);
         y += 22;
         p += n + (p[n] ? 1 : 0);
