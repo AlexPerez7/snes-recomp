@@ -45,6 +45,15 @@ pub enum Key {
     NoCompilerTitle,
     BuildFailedTitle,
     GameFailedTitle,
+    UpdateCheckbox,
+    UpdateTitle,
+    /// `{tag}` and `{current}` are replaced.
+    UpdateAsk,
+    UpdateUpToDate,
+    UpdateUnreachable,
+    Updating,
+    UpdateDone,
+    UpdateFailed,
 }
 
 pub fn text(lang: Lang, key: Key) -> &'static str {
@@ -73,6 +82,14 @@ pub fn text(lang: Lang, key: Key) -> &'static str {
             NoCompilerTitle => "A C compiler is needed",
             BuildFailedTitle => "The game could not be built",
             GameFailedTitle => "The game stopped with an error",
+            UpdateCheckbox => "Check for updates (uses the Internet)",
+            UpdateTitle => "New version",
+            UpdateAsk => "Version {tag} is available (you have {current}).\n\nYes: download and install it now (your saves stay).\nNo: not now.\nCancel: skip this version.",
+            UpdateUpToDate => "You are up to date.",
+            UpdateUnreachable => "Could not check for updates (is there an Internet connection?).",
+            Updating => "Downloading and installing the new version. Do not close the window...",
+            UpdateDone => "Updated. The launcher restarts.",
+            UpdateFailed => "Could not update:",
         },
         Lang::Es => match key {
             WindowTitle => "snes-port",
@@ -97,6 +114,14 @@ pub fn text(lang: Lang, key: Key) -> &'static str {
             NoCompilerTitle => "Hace falta un compilador de C",
             BuildFailedTitle => "No se pudo construir el juego",
             GameFailedTitle => "El juego se cerró con un error",
+            UpdateCheckbox => "Buscar actualizaciones (usa Internet)",
+            UpdateTitle => "Versión nueva",
+            UpdateAsk => "Hay una versión nueva: {tag} (tienes la {current}).\n\nSí: descargarla e instalarla ahora (las partidas se conservan).\nNo: ahora no.\nCancelar: omitir esta versión.",
+            UpdateUpToDate => "Estás al día.",
+            UpdateUnreachable => "No se pudo comprobar si hay actualizaciones (¿hay conexión a Internet?).",
+            Updating => "Descargando e instalando la versión nueva. No cierres la ventana...",
+            UpdateDone => "Actualizado. El lanzador se reinicia.",
+            UpdateFailed => "No se pudo actualizar:",
         },
     }
 }

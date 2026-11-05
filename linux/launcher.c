@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include "libtcc.h"
 #include <math.h>
+#include <pthread.h>
 #include "play_ui.h"
 #include "play_touch.h"
 
@@ -33,9 +34,23 @@ typedef struct { const char *name; void *addr; } SnesRtSymbol;
 const SnesRtSymbol *snes_rt_symbols(void);
 int snes_play_main(int argc, char **argv);
 
+/* avisos y actualización (src/update.rs): se llaman desde un hilo, porque esperan a la red */
+typedef struct SnesUpd SnesUpd;
+SnesUpd *snes_upd_version(const char *exe_dir);
+int snes_upd_enabled(const char *dir);
+void snes_upd_set_enabled(const char *dir, int on);
+void snes_upd_skip(const char *dir, const char *tag);
+void snes_upd_clean(const char *exe_dir);
+SnesUpd *snes_upd_check(const char *dir, const char *exe_dir, int force);
+SnesUpd *snes_upd_install(const char *dir, const char *exe_dir);
+int snes_upd_kind(const SnesUpd *r);
+const char *snes_upd_a(const SnesUpd *r);
+const char *snes_upd_b(const SnesUpd *r);
+void snes_upd_free(SnesUpd *r);
+
 /* ---- utilidades ---- */
 
-static char exe_dir[4096], assets[4096], data_dir[4096];
+static char exe_path[4096], exe_dir[4096], assets[4096], data_dir[4096];
 
 static double now_ms(void) {
     struct timespec t;
@@ -115,6 +130,14 @@ static Canvas cv = {pixels, WIN_W, WIN_H};
 typedef struct { int x, y, w, h; } Rect;
 static const Rect btn_main = {170, 256, 300, 52};
 static const Rect btn_other = {195, 320, 250, 38};
+static const Rect btn_third = {215, 364, 210, 26};
+static const Rect chk_rect = {34, 362, 290, 26};
+
+/* lo que el lanzador sabe de las actualizaciones */
+static int upd_ok, upd_on;          /* esta instalación se actualiza sola / la casilla está marcada */
+static char upd_version[32], upd_status[64];
+static const char *g_third;          /* texto del tercer botón, NULL si no hay */
+static int g_footer = 1;             /* la casilla y la versión, abajo */
 
 static int inside(Rect r, int x, int y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
 
@@ -202,6 +225,29 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
     }
     if (main_label) button(btn_main, main_label, 1, inside(btn_main, mx, my));
     if (other_label) button(btn_other, other_label, 0, inside(btn_other, mx, my));
+    if (g_third) {
+        TImg im = spr_text(btn_third.w, btn_third.h, g_third, 1, inside(btn_third, mx, my), 0);
+        blit(&im, btn_third.x, btn_third.y);
+        timg_free(&im);
+    }
+    if (upd_ok && g_footer) { /* casilla de «buscar actualizaciones», estado y versión */
+        TImg box = timg_new(14, 14);
+        TBox bb = {14, 14};
+        char v[48];
+        tplate(&box, tin_plate, &bb, upd_on ? TC_PRESS : TC_STONE, TC_STONE_HI, 0);
+        blit(&box, chk_rect.x, chk_rect.y + 4);
+        timg_free(&box);
+        if (upd_on) { /* la marca */
+            cv_rect(&cv, chk_rect.x + 4, chk_rect.y + 9, 2, 4, TC_TEXT);
+            cv_rect(&cv, chk_rect.x + 6, chk_rect.y + 11, 2, 2, TC_TEXT);
+            cv_rect(&cv, chk_rect.x + 8, chk_rect.y + 6, 2, 6, TC_TEXT);
+            cv_rect(&cv, chk_rect.x + 10, chk_rect.y + 4, 2, 4, TC_TEXT);
+        }
+        text_draw(&cv, chk_rect.x + 22, chk_rect.y + 5, "Buscar actualizaciones (usa Internet)", inside(chk_rect, mx, my) ? UI_GOLD : 0xC8D8B8, 0);
+        snprintf(v, sizeof v, "v%s", upd_version);
+        text_right(&cv, WIN_W - 28, chk_rect.y + 5, v, UI_DIM);
+        if (upd_status[0]) text_right(&cv, WIN_W - 70, chk_rect.y + 5, upd_status, UI_GOLD);
+    }
     SDL_UpdateTexture(tex, NULL, pixels, WIN_W * 3);
     SDL_RenderClear(ren);
     SDL_RenderCopy(ren, tex, NULL, NULL);
@@ -384,17 +430,40 @@ static int prepare_and_play(const char *rom_path, const char *toml, int stats) {
     return snes_play_main(n, args);
 }
 
+/* ---- el trabajo de red en un hilo ---- */
+
+static volatile int job;             /* 0 nada, 1 comprobando al abrir, 2 comprobando a mano, 3 instalando */
+static volatile int job_done;
+static SnesUpd *volatile job_res;
+static int job_force;
+
+static void *job_thread(void *arg) {
+    (void)arg;
+    job_res = job == 3 ? snes_upd_install(data_dir, exe_dir) : snes_upd_check(data_dir, exe_dir, job_force);
+    job_done = 1;
+    return NULL;
+}
+
+static void start_job(int kind, int force) {
+    pthread_t th;
+    job = kind; job_force = force; job_done = 0; job_res = NULL;
+    pthread_create(&th, NULL, job_thread, NULL);
+    pthread_detach(th);
+}
+
 int main(int argc, char **argv) {
     char *toml, rom[4096] = "", msg[512] = "", path[4096];
     const char *xdg;
     ssize_t k;
-    int stats = 0, autoplay = 0, i, mx = -1, my = -1, running = 1, have = 0, no_dialog = 0;
+    int stats = 0, autoplay = 0, i, mx = -1, my = -1, running = 1, have = 0, no_dialog = 0, mode = 0;
+    char new_tag[64] = "", new_page[512] = "";
     char *crc;
     SDL_Event ev;
 
     k = readlink("/proc/self/exe", exe_dir, sizeof exe_dir - 1);
     if (k <= 0) { fprintf(stderr, "no encuentro mi carpeta\n"); return 1; }
     exe_dir[k] = 0;
+    snprintf(exe_path, sizeof exe_path, "%s", exe_dir); /* la ruta completa: tras actualizar, /proc/self/exe apunta al fichero viejo */
     *strrchr(exe_dir, '/') = 0;
     snprintf(assets, sizeof assets, "%s/assets", exe_dir);
     xdg = getenv("XDG_DATA_HOME");
@@ -403,6 +472,16 @@ int main(int argc, char **argv) {
     make_parents(data_dir);
     mkdir(data_dir, 0700);
 
+    {
+        SnesUpd *v;
+        snes_upd_clean(exe_dir); /* restos de una actualización anterior */
+        if ((v = snes_upd_version(exe_dir))) {
+            upd_ok = 1;
+            snprintf(upd_version, sizeof upd_version, "%s", snes_upd_a(v));
+            upd_on = snes_upd_enabled(data_dir);
+            snes_upd_free(v);
+        }
+    }
     snprintf(path, sizeof path, "%s/game/profile.toml", assets);
     if (!(toml = read_file(path, NULL))) { fprintf(stderr, "faltan los ficheros del juego en %s\n", assets); return 1; }
     if (!(crc = strstr(toml, "crc32")) || sscanf(strchr(crc, '"') ? strchr(crc, '"') + 1 : "", "%8[0-9A-Fa-f]", want_crc) != 1) {
@@ -429,16 +508,54 @@ int main(int argc, char **argv) {
     }
     have = rom[0] != 0;
     if (autoplay && have) running = 0;
+    else if (upd_ok && upd_on) start_job(1, 0); /* la comprobación de la casilla, una vez al día como mucho */
 
     while (running) {
         const char *main_label = have ? "JUGAR" : "ELEGIR ROM";
         const char *other_label = have ? "CAMBIAR ROM" : NULL;
         char shown[640];
-        if (have) snprintf(shown, sizeof shown, "ROM: %.90s", rom);
-        else if (msg[0]) snprintf(shown, sizeof shown, "%s", msg);
-        else snprintf(shown, sizeof shown, "Elige tu copia de la ROM (USA, .sfc o .smc).\nSe queda donde está y no se envía a ningún sitio.\nTambién puedes arrastrar el archivo a esta ventana.");
-        if (no_dialog) snprintf(shown, sizeof shown, "No hay un selector de archivos (zenity o kdialog).\nArrastra la ROM a esta ventana, o ejecuta:\n./alttp-recomp ruta/a/alttp_usa.sfc");
-        draw(shown, (!have && msg[0]) || no_dialog ? UI_WARN : UI_TEXT, main_label, other_label, mx, my);
+        if (job_done) { /* terminó el hilo de red */
+            SnesUpd *r = job_res;
+            int was = job;
+            job = 0; job_done = 0; job_res = NULL;
+            if (was == 3) {
+                if (snes_upd_kind(r) == 0) {
+                    snprintf(shown, sizeof shown, "Actualizado a la versión %s.\nReiniciando...", snes_upd_a(r));
+                    g_third = NULL; g_footer = 0;
+                    draw(shown, UI_GOOD, NULL, NULL, -1, -1);
+                    SDL_Delay(1500);
+                    execv(exe_path, argv); /* el ejecutable nuevo */
+                    snprintf(upd_status, sizeof upd_status, "Actualizado: vuelve a abrir el juego");
+                } else {
+                    snprintf(msg, sizeof msg, "No se pudo actualizar:\n%.150s", snes_upd_a(r));
+                    snprintf(upd_status, sizeof upd_status, "No se pudo actualizar");
+                }
+                mode = 0;
+            } else if (snes_upd_kind(r) == 1) {
+                snprintf(new_tag, sizeof new_tag, "%s", snes_upd_a(r));
+                snprintf(new_page, sizeof new_page, "%s", snes_upd_b(r));
+                mode = 1;
+            } else if (was == 2) {
+                if (snes_upd_kind(r) == 3) snprintf(upd_status, sizeof upd_status, "No se pudo comprobar (¿hay Internet?)");
+                else snprintf(upd_status, sizeof upd_status, snes_upd_kind(r) == 2 ? "Esa versión nueva la omitiste" : "Estás al día");
+            }
+            snes_upd_free(r);
+        }
+        g_third = NULL; g_footer = 1;
+        if (mode == 1) { /* hay una versión nueva */
+            snprintf(shown, sizeof shown, "Hay una versión nueva: %s (tienes la %s).\nSe descarga, se comprueba y se reemplazan los archivos;\nlas partidas se conservan.", new_tag, upd_version);
+            main_label = "ACTUALIZAR"; other_label = "AHORA NO"; g_third = "OMITIR ESTA VERSION"; g_footer = 0;
+            draw(shown, UI_TEXT, main_label, other_label, mx, my);
+        } else if (job == 3) {
+            g_footer = 0;
+            draw("Descargando e instalando la versión nueva...\nNo cierres la ventana.", UI_TEXT, NULL, NULL, -1, -1);
+        } else {
+            if (have) snprintf(shown, sizeof shown, "ROM: %.90s", rom);
+            else if (msg[0]) snprintf(shown, sizeof shown, "%s", msg);
+            else snprintf(shown, sizeof shown, "Elige tu copia de la ROM (USA, .sfc o .smc).\nSe queda donde está y no se envía a ningún sitio.\nTambién puedes arrastrar el archivo a esta ventana.");
+            if (no_dialog) snprintf(shown, sizeof shown, "No hay un selector de archivos (zenity o kdialog).\nArrastra la ROM a esta ventana, o ejecuta:\n./alttp-recomp ruta/a/alttp_usa.sfc");
+            draw(shown, (!have && msg[0]) || no_dialog ? UI_WARN : UI_TEXT, main_label, other_label, mx, my);
+        }
         if (!SDL_WaitEventTimeout(&ev, 200)) continue;
         do {
             const char *chosen = NULL;
@@ -447,12 +564,27 @@ int main(int argc, char **argv) {
             case SDL_QUIT: return 0;
             case SDL_KEYDOWN:
                 if (ev.key.keysym.sym == SDLK_ESCAPE) return 0;
+                if (job == 3 || mode == 1) break;
                 if (ev.key.keysym.sym == SDLK_RETURN || ev.key.keysym.sym == SDLK_KP_ENTER) act = 1;
                 break;
             case SDL_MOUSEMOTION: mx = ev.motion.x; my = ev.motion.y; break;
             case SDL_MOUSEBUTTONDOWN:
                 if (ev.button.button == SDL_BUTTON_LEFT) {
                     /* con SDL_RenderSetLogicalSize las coordenadas ya vienen en el espacio lógico */
+                    if (job == 3) break;
+                    if (mode == 1) {
+                        if (inside(btn_main, ev.button.x, ev.button.y)) { mode = 0; start_job(3, 0); }
+                        else if (inside(btn_other, ev.button.x, ev.button.y)) mode = 0;
+                        else if (inside(btn_third, ev.button.x, ev.button.y)) { snes_upd_skip(data_dir, new_tag); mode = 0; }
+                        break;
+                    }
+                    if (upd_ok && inside(chk_rect, ev.button.x, ev.button.y)) {
+                        upd_on = !upd_on;
+                        snes_upd_set_enabled(data_dir, upd_on);
+                        upd_status[0] = 0;
+                        if (upd_on && !job) { snprintf(upd_status, sizeof upd_status, "Buscando..."); start_job(2, 1); }
+                        break;
+                    }
                     if (inside(btn_main, ev.button.x, ev.button.y)) act = 1;
                     else if (have && inside(btn_other, ev.button.x, ev.button.y)) act = 2;
                 }

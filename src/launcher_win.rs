@@ -6,6 +6,7 @@
 //! window with posted messages (a `Screen` to show); a question (the compiler download) waits for its answer on a
 //! channel. The window gets out of the way when the game starts and comes back with the error if the game fails.
 
+use crate::update;
 use crate::launcher::{self, Button, Key, Lang, Screen};
 use crate::port;
 use crate::ui::{DownloadNotice, Ui};
@@ -58,6 +59,18 @@ const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
 const ID_PRIMARY: i32 = 1;
 const ID_SECONDARY: i32 = 2;
 const ID_COPY: i32 = 3;
+const ID_UPDATE: i32 = 4;
+const BS_AUTOCHECKBOX: u32 = 3;
+const BM_GETCHECK: u32 = 0x00F0;
+const BM_SETCHECK: u32 = 0x00F1;
+const WM_CTLCOLORBTN: u32 = 0x0135;
+const MB_OK: u32 = 0;
+const MB_YESNOCANCEL: u32 = 3;
+const MB_ICONERROR: u32 = 0x10;
+const MB_ICONQUESTION: u32 = 0x20;
+const MB_ICONINFORMATION: u32 = 0x40;
+const IDCANCEL: i32 = 2;
+const IDYES: i32 = 6;
 
 const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
@@ -216,6 +229,7 @@ extern "system" {
     fn DrawFocusRect(dc: isize, r: *const Rect) -> i32;
     fn LoadImageW(inst: isize, name: usize, kind: u32, cx: i32, cy: i32, flags: u32) -> isize;
     fn GetWindowTextW(h: Hwnd, buf: *mut u16, n: i32) -> i32;
+    fn MessageBoxW(h: Hwnd, text: *const u16, caption: *const u16, kind: u32) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -314,6 +328,8 @@ struct Controls {
     primary: Hwnd,
     secondary: Hwnd,
     copy: Hwnd,
+    /// The check box of the update notice (only when this installation updates itself).
+    update: Hwnd,
 }
 
 static CONTROLS: OnceLock<Controls> = OnceLock::new();
@@ -373,7 +389,11 @@ unsafe fn create_controls(hwnd: Hwnd) {
     let copy = child(hwnd, "BUTTON", "", WS_TABSTOP, ID_COPY, 24, 286, 150, 34, normal);
     let secondary = child(hwnd, "BUTTON", "", WS_TABSTOP, ID_SECONDARY, 366, 286, 150, 34, normal);
     let primary = child(hwnd, "BUTTON", "", WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON, ID_PRIMARY, 204, 286, 150, 34, normal);
-    let _ = CONTROLS.set(Controls { body, detail, primary, secondary, copy });
+    let update = child(hwnd, "BUTTON", launcher::text(gui().lang, Key::UpdateCheckbox), WS_TABSTOP | BS_AUTOCHECKBOX, ID_UPDATE, 24, 256, 330, 22, normal);
+    if update_info().is_some() {
+        SendMessageW(update, BM_SETCHECK, update::load_settings(&gui().cache).check as usize, 0);
+    }
+    let _ = CONTROLS.set(Controls { body, detail, primary, secondary, copy, update });
 }
 
 fn set_text(h: Hwnd, s: &str) {
@@ -429,6 +449,7 @@ fn draw(screen: &Screen) {
             set_text(h, l);
         }
     }
+    show_control(c.update, update_info().is_some() && matches!(screen, Screen::Pick | Screen::Ready(_)));
     show_control(c.copy, copy);
     if copy {
         set_text(c.copy, t(Key::CopyDetail));
@@ -546,6 +567,16 @@ fn finish(code: i32, ui: &WindowUi) {
 }
 
 unsafe fn on_click(hwnd: Hwnd, id: i32) {
+    if id == ID_UPDATE {
+        if let (Some(c), Some(info)) = (CONTROLS.get(), update_info()) {
+            let on = SendMessageW(c.update, BM_GETCHECK, 0, 0) == 1;
+            update::set_check(&gui().cache, on);
+            if on {
+                std::thread::spawn(move || update_flow(info, true));
+            }
+        }
+        return;
+    }
     let button = match id {
         ID_PRIMARY => Button::Primary,
         ID_SECONDARY => Button::Secondary,
@@ -671,6 +702,11 @@ unsafe extern "system" fn wndproc(hwnd: Hwnd, msg: u32, wp: usize, lp: isize) ->
         WM_DRAWITEM => {
             draw_button(&*(lp as *const DrawItem));
             1
+        }
+        WM_CTLCOLORBTN => {
+            // the text of the check box sits on the page
+            SetBkMode(wp as isize, 1);
+            LOOK.get().map_or(0, |l| l.page)
         }
         WM_CTLCOLORSTATIC => {
             SetBkMode(wp as isize, 1);
@@ -843,6 +879,68 @@ impl Ui for WindowUi {
     }
 }
 
+// ---- update notice ----
+
+/// What this installation says about itself (`update.info` next to the executable); None: it does not update itself.
+fn update_info() -> Option<update::Info> {
+    update::read_info(std::env::current_exe().ok()?.parent()?)
+}
+
+fn message(text: &str, caption: &str, kind: u32) -> i32 {
+    let h = gui().hwnd.load(Ordering::SeqCst);
+    unsafe { MessageBoxW(h, wide(text).as_ptr(), wide(caption).as_ptr(), kind) }
+}
+
+/// The check and what follows, in a thread of its own because it waits for the network. `manual`: the person has just
+/// ticked the box, so every answer is told; otherwise only a new version is.
+fn update_flow(info: update::Info, manual: bool) {
+    let g = gui();
+    let t = |k: Key| launcher::text(g.lang, k);
+    for _ in 0..40 {
+        if g.hwnd.load(Ordering::SeqCst) != 0 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    match update::check(&g.cache, &info, manual) {
+        update::Outcome::Available { tag, .. } => {
+            let ask = t(Key::UpdateAsk).replace("{tag}", &tag).replace("{current}", &info.version);
+            match message(&ask, t(Key::UpdateTitle), MB_YESNOCANCEL | MB_ICONQUESTION) {
+                IDYES => install_now(&info),
+                IDCANCEL => update::skip(&g.cache, &tag),
+                _ => {}
+            }
+        }
+        update::Outcome::UpToDate if manual => {
+            message(t(Key::UpdateUpToDate), t(Key::UpdateTitle), MB_OK | MB_ICONINFORMATION);
+        }
+        update::Outcome::Failed(_) if manual => {
+            message(t(Key::UpdateUnreachable), t(Key::UpdateTitle), MB_OK | MB_ICONERROR);
+        }
+        _ => {}
+    }
+}
+
+fn install_now(info: &update::Info) {
+    let g = gui();
+    let t = |k: Key| launcher::text(g.lang, k);
+    post_screen(Screen::Busy(t(Key::Updating).to_string()));
+    let Some(exe) = std::env::current_exe().ok() else { return };
+    let dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    match update::install(info, &dir, &g.cache.join("update-work")) {
+        Ok(_) => {
+            message(t(Key::UpdateDone), t(Key::UpdateTitle), MB_OK | MB_ICONINFORMATION);
+            let _ = std::process::Command::new(&exe).spawn(); // the new executable
+            EXIT.store(0, Ordering::SeqCst);
+            post(WM_APP_QUIT);
+        }
+        Err(e) => {
+            post_screen(launcher::first_screen(&g.cache));
+            message(&format!("{} {e}", t(Key::UpdateFailed)), t(Key::UpdateTitle), MB_OK | MB_ICONERROR);
+        }
+    }
+}
+
 // ---- entry points ----
 
 fn init(cache: &Path, picks_rom: bool) {
@@ -860,7 +958,15 @@ fn init(cache: &Path, picks_rom: bool) {
 /// The launcher: the window opens at once and everything follows from its buttons. Returns when the window closes.
 pub fn run_launcher(cache: &Path) -> i32 {
     init(cache, true);
+    if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+        update::clean_old(&dir); // leftovers of a previous update
+    }
     open_window(launcher::first_screen(cache));
+    if let Some(info) = update_info() {
+        if update::load_settings(cache).check {
+            std::thread::spawn(move || update_flow(info, false));
+        }
+    }
     let handle = gui().thread.lock().unwrap().take();
     if let Some(h) = handle {
         let _ = h.join();
