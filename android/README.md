@@ -1,6 +1,6 @@
 # App Android de snes-port (`android-frontend`)
 
-La app que un usuario instala, abre, elige su ROM una vez y juega. El teléfono genera el C del juego desde la ROM (biblioteca del generador, Rust) y lo compila en memoria con libtcc al arrancar (unos 0,6 s en un Galaxy S25 Ultra); el frontal es el de `runtime/play.c` sobre SDL2. **La ROM no va en el APK**: se elige con el selector de documentos, se copia a la carpeta privada de la app y se comprueba su CRC32. Sin permiso de Internet.
+La app que un usuario instala, abre, elige su ROM una vez y juega. El teléfono genera el C del juego desde la ROM (biblioteca del generador, Rust) y lo compila en memoria con libtcc al arrancar (unos 0,6 s en un Galaxy S25 Ultra); el frontal es el de `runtime/play.c` sobre SDL2. **La ROM no va en el APK**: se elige con el selector de documentos, se copia a la carpeta privada de la app y se comprueba su CRC32. El único uso de Internet es el aviso opcional de versión nueva (apagado por defecto, ver abajo).
 
 El identificador de la app (`snesPort.applicationId` en `gradle.properties`) es el del juego, `io.github.alexperez7.alttprecomp`; el paquete de Java (`io.github.alexperez7.snesport`) es interno y no se ve. El identificador no se puede cambiar una vez repartida una versión: Android lo contaría como otra app.
 
@@ -42,6 +42,12 @@ snesPort.keyPassword=...
 Con eso `gradle assembleRelease` firma el APK; sin ello lo firma con la clave de depuración y avisa (solo sirve para probar). Comprobar: `apksigner verify --print-certs app-release.apk`.
 
 Antes de repartir un APK: `snes-recomp scan <rom> <carpeta>` sobre el APK descomprimido (fuera del repositorio) debe terminar sin hallazgos, y el APK debe llevar `NOTICE.txt`, la licencia de libtcc y la de SDL2 en `assets/licenses/`.
+
+## Avisos de versión nueva (`android-updates`)
+
+Con el ajuste **Buscar actualizaciones al abrir** (apagado por defecto), la app consulta como mucho una vez al día la última release de GitHub (`snesPort.updateUrl` en `gradle.properties`; vacía, la app no lleva nada de esto) y, si su etiqueta es mayor que la `versionName` instalada, pregunta: **Descargar** (abre la página de la release en el navegador), **Ahora no** u **Omitir esta versión**. No instala nada: la descarga y la instalación las hace el usuario y Android comprueba que la firma sea la misma. El ajuste y el botón **Buscar actualizaciones ahora** están en la pantalla de ajustes (mantener pulsado el icono › *Ajustes y actualizaciones*, o la propia pantalla de elegir ROM); abrir la app normalmente va directo al juego. La app declara el permiso de Internet, pero no se conecta mientras el ajuste esté apagado.
+
+Para que funcione, cada release de `alttp-recomp` se etiqueta `vX.Y` y la `versionName` del APK (en `app/build.gradle`, hoy `0.1` con `versionCode 1`) debe subir con ella. En depuración, un fichero `files/update_url` sustituye la dirección y un servidor local con `adb reverse` permite probar sin GitHub.
 
 ## Licencias
 
