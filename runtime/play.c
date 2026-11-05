@@ -1543,9 +1543,31 @@ static void print_stats(void) {
     if (adev) printf("audio: queue %.1f frames on average, %u frames dropped, %u underruns\n", st_queued_sum / 4.0 / 533.0 / st_frames, (unsigned)st_dropped, (unsigned)st_underruns);
 }
 
+/* With --stats: work time per frame (from the end of the previous wait to the start of this one), reported every 600 frames. */
+#define WORK_N 600
+static float st_work[WORK_N];
+static unsigned st_work_n;
+static uint64_t st_work_t0;
+
+static int cmp_float(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
+static void work_stats(uint64_t now) {
+    if (st_work_t0) st_work[st_work_n++] = (float)((double)(now - st_work_t0) * 1000.0 / perf_freq);
+    if (st_work_n == WORK_N) {
+        qsort(st_work, WORK_N, sizeof st_work[0], cmp_float);
+        printf("work: %u frames, p50 %.2f ms, p99 %.2f ms, max %.2f ms\n", (unsigned)st_frames, st_work[WORK_N / 2], st_work[WORK_N * 99 / 100], st_work[WORK_N - 1]);
+        fflush(stdout);
+        st_work_n = 0;
+    }
+}
+
 static void pace(void) {
     uint64_t now = SDL_GetPerformanceCounter(), period = (uint64_t)((double)perf_freq / 60.0988), w0 = now;
     st_frames++;
+    if (opt_stats) work_stats(now);
     if (fast) {
         int k = ff_factor(cfg.eff.v[O_FFSPEED]);
         if (k == 0) { t_next = now; return; }
@@ -1564,6 +1586,7 @@ static void pace(void) {
         if (left_ms > 2) SDL_Delay((Uint32)(left_ms - 1));
     }
     st_wait += SDL_GetPerformanceCounter() - w0;
+    st_work_t0 = SDL_GetPerformanceCounter();
 }
 
 /* BUTTONS ("START+RIGHT") as a mask, or -1 if a name is wrong. */
