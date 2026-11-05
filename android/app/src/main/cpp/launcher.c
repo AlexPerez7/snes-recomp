@@ -5,6 +5,7 @@
  * No contiene nada de ninguna ROM. */
 #define _GNU_SOURCE
 #include <SDL.h>
+#include <jni.h>
 #include <android/log.h>
 #include <dirent.h>
 #include <dlfcn.h>
@@ -41,7 +42,10 @@ static double now_ms(void) {
     return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
 }
 
+static void progress(const char *text);
+
 static void fail(const char *msg) {
+    progress(NULL);
     LOG("ERROR: %s", msg);
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "SNES Port", msg, NULL);
 }
@@ -108,6 +112,24 @@ static void drain_stdout(void) {
     usleep(300000);
 }
 
+/* El aviso de progreso de GameActivity.setProgress (null lo quita). */
+static void progress(const char *text) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject act = (jobject)SDL_AndroidGetActivity();
+    jclass cls;
+    jmethodID m;
+    if (!env || !act) return;
+    cls = (*env)->GetObjectClass(env, act);
+    m = (*env)->GetMethodID(env, cls, "setProgress", "(Ljava/lang/String;)V");
+    if (m) {
+        jstring js = text ? (*env)->NewStringUTF(env, text) : NULL;
+        (*env)->CallVoidMethod(env, act, m, js);
+        if (js) (*env)->DeleteLocalRef(env, js);
+    }
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, act);
+}
+
 static void stats_to_logcat(void) {
     int fds[2];
     pthread_t th;
@@ -164,7 +186,7 @@ int main(int argc, char **argv) {
         n_game++;
     }
 
-    SDL_AndroidShowToast("Preparando el juego...", 1, -1, 0, 0); /* generar y compilar tarda de medio segundo a unos segundos */
+    progress("Generando el código del juego (1 de 2)...");
     t0 = now_ms();
     gen = snes_gen_generate((const uint8_t *)rom, rom_len, toml, gnames, gtexts, n_game);
     t1 = now_ms();
@@ -182,6 +204,7 @@ int main(int argc, char **argv) {
     free(rom);
     t2 = now_ms();
 
+    progress("Compilando el juego (2 de 2)...");
     s = tcc_new();
     tcc_set_error_func(s, NULL, on_tcc_error);
     tcc_set_options(s, "-nostdinc -nostdlib");
@@ -224,6 +247,7 @@ int main(int argc, char **argv) {
         LOG("preparado: generar %.0f ms, escribir %.0f ms, compilar y enlazar %.0f ms, memoria pico %.0f MiB", t1 - t0, t2 - t1, t3 - t2, ru.ru_maxrss / 1024.0);
     }
 
+    progress(NULL);
     args[0] = "snes-port"; args[1] = rom_path;
     args[2] = "--saves-dir"; args[3] = saves;
     args[4] = "--game-dir"; args[5] = gamedir;

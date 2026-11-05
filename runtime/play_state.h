@@ -34,13 +34,19 @@ static void st_say(const char *text) {
     if (st_echo) printf("state: %s (frame %u)\n", text, (unsigned)frames);
 }
 
-/* --hash-wram: at exit, an FNV-1a of WRAM, so a test can tell two runs apart without a dump. */
+/* --hash-wram: at exit, an FNV-1a of WRAM, VRAM, CGRAM and OAM, so a test can tell two runs apart without a dump. */
 static int st_hash_wram;
-static void st_print_hash(void) {
+static uint32_t st_fnv(const uint8_t *d, size_t n) {
     uint32_t h = 2166136261u;
     size_t i;
-    for (i = 0; i < sizeof wram; i++) h = (h ^ wram[i]) * 16777619u;
-    printf("wram: %08x\n", (unsigned)h);
+    for (i = 0; i < n; i++) h = (h ^ d[i]) * 16777619u;
+    return h;
+}
+static void st_print_hash(void) {
+    printf("wram: %08x\n", (unsigned)st_fnv(wram, sizeof wram));
+    printf("vram: %08x\n", (unsigned)st_fnv(vram, sizeof vram));
+    printf("cgram: %08x\n", (unsigned)st_fnv(cgram, sizeof cgram));
+    printf("oam: %08x\n", (unsigned)st_fnv(oam, sizeof oam));
 }
 
 /* ---- Rewind: the newest state whole, the older ones as differences ---- */
