@@ -1,7 +1,13 @@
 package io.github.alexperez7.snesport;
 
 import android.content.res.AssetManager;
+import android.graphics.Color;
 import android.os.Bundle;
+import android.view.Gravity;
+import android.view.ViewGroup;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -11,6 +17,9 @@ import org.libsdl.app.SDLActivity;
 
 /** Ejecuta el juego: SDL arranca libmain.so (launcher.c), que genera y compila el C con la ROM de files/rom.sfc. */
 public class GameActivity extends SDLActivity {
+    private LinearLayout progress;
+    private TextView progressText;
+
     @Override
     protected String[] getLibraries() {
         return new String[] {"SDL2", "main"};
@@ -27,6 +36,29 @@ public class GameActivity extends SDLActivity {
             throw new RuntimeException("no puedo copiar los ficheros del juego", e);
         }
         super.onCreate(savedInstanceState);
+        // Mientras el hilo nativo genera y compila el juego (de medio segundo a unos segundos) la pantalla estaria en negro.
+        progress = new LinearLayout(this);
+        progress.setOrientation(LinearLayout.VERTICAL);
+        progress.setGravity(Gravity.CENTER);
+        progress.setBackgroundColor(Color.BLACK);
+        progressText = new TextView(this);
+        progressText.setTextColor(Color.WHITE);
+        progressText.setTextSize(16);
+        progressText.setGravity(Gravity.CENTER);
+        progressText.setPadding(48, 32, 48, 0);
+        progress.addView(new ProgressBar(this));
+        progress.addView(progressText);
+        addContentView(progress, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setProgress("Preparando el juego...");
+    }
+
+    /** Lo llama el codigo nativo (launcher.c) desde su hilo: un texto cambia el aviso, null lo quita. */
+    public void setProgress(final String text) {
+        runOnUiThread(() -> {
+            if (progress == null) return;
+            if (text == null) progress.setVisibility(android.view.View.GONE);
+            else { progressText.setText(text); progress.setVisibility(android.view.View.VISIBLE); }
+        });
     }
 
     @Override
