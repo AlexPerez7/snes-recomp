@@ -1527,6 +1527,12 @@ static void print_config(void) {
     for (i = 0; i < ini.n; i++) printf("%s\n", ini.line[i]);
 }
 
+/* Library mode (SNES_RT_LIBRARY): the host (the Android app) calls snes_rt_module_init of the game and then this. */
+#ifdef SNES_RT_LIBRARY
+int snes_play_main(int argc, char **argv);
+#define main snes_play_main
+#endif
+
 int main(int argc, char **argv) {
     const char *path = NULL;
     int i, bad = 0;
