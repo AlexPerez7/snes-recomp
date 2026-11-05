@@ -12,7 +12,7 @@ Proyecto en `android/` (2026-11-05): compila con `gradle assembleDebug` (Gradle 
 
 - [x] 2.1 Selector de ROM con SAF, copia a `filesDir`, comprobación del CRC32 y mensaje para una ROM desconocida con los dos CRC32. Probado a mano en el S25 Ultra (2026-11-05, datos de la app borrados antes): una ROM aleatoria de 1 MiB se rechaza con «CRC32 29F0D5ED, se esperaba 777AAC2F»; la ROM buena arranca y llega a la pantalla de título.
 - [x] 2.2 ROM recordada: la copia queda en `filesDir/rom.sfc` (no hace falta permiso persistente del SAF). Probado en el S25 Ultra: `force-stop` y abrir de nuevo arranca el juego sin pedir la ROM.
-- [ ] 2.3 Generar y compilar en el arranque, con una pantalla de progreso. Verificar: registro con tiempos y memoria; hashes iguales a los del PC tras 3000 fotogramas.
+- [~] 2.3 Generar y compilar en el arranque, con una pantalla de progreso. Verificar: registro con tiempos y memoria; hashes iguales a los del PC tras 3000 fotogramas. **Hecho (2026-11-05, S25 Ultra):** `logcat` da «generar 462 ms, escribir 7 ms, compilar y enlazar 148 ms, memoria pico 232 MiB»; el aviso «Preparando el juego...» (un *toast* de Android) sale mientras se genera y compila; con `hash=3000` en `files/stats` (3000 fotogramas sin ventana, `language=0`) el hash de la WRAM es `f1d662c4`, igual que en el PC (`snes-port ... -- --no-window --frames 3000 --hash-wram --game-opt language=0`). **Falta:** una pantalla de progreso de verdad (hoy solo el aviso, con la pantalla en negro), y comparar también VRAM, CGRAM y OAM (hoy solo se compara la WRAM).
 
 ## 3. Frontal
 
@@ -25,7 +25,7 @@ Horizontal (2026-11-05, S25 Ultra, 20:9): la imagen salía cortada arriba y abaj
 
 ## 4. Calidad y entrega
 
-Medición (2026-11-05): con un fichero `files/stats` en la carpeta de la app (`adb shell run-as io.github.alexperez7.snesport touch files/stats`; con el texto `unpaced` dentro, sin esperar entre fotogramas) el runtime imprime en logcat (`adb logcat -s snesport`) cada 600 fotogramas el tiempo de trabajo por fotograma (p50, p99 y máximo), repartido en `emu` (CPU, PPU y SPC700 hasta el final del fotograma), `tail` (imagen para la pantalla, eventos, cola de audio, capa táctil) y `pres` (la llamada de presentación, que puede esperar a la sincronización vertical). S25 Ultra, intro del juego (fotogramas 601 a 1200), 3 repeticiones de cada modo, vsync apagado:
+Medición (2026-11-05): con un fichero `files/stats` en la carpeta de la app (`adb shell run-as io.github.alexperez7.snesport touch files/stats`; con el texto `unpaced` dentro, sin esperar entre fotogramas; `hash=N` corre N fotogramas sin ventana e imprime el hash de la WRAM; `perf=cpus=auto` fija el hilo a los núcleos más rápidos, que lee de `cpuinfo_max_freq`: en el S25 Ultra da `0xC0`) el runtime imprime en logcat (`adb logcat -s snesport`) cada 600 fotogramas el tiempo de trabajo por fotograma (p50, p99 y máximo), repartido en `emu` (CPU, PPU y SPC700 hasta el final del fotograma), `tail` (imagen para la pantalla, eventos, cola de audio, capa táctil) y `pres` (la llamada de presentación, que puede esperar a la sincronización vertical). S25 Ultra, intro del juego (fotogramas 601 a 1200), 3 repeticiones de cada modo, vsync apagado:
 
 | Modo | emu p50 | emu p99 | pres p50 | tail p99 | total p99 |
 |---|---|---|---|---|---|

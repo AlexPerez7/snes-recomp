@@ -1606,6 +1606,27 @@ static void *(*p_create)(void *, const int32_t *, size_t, int64_t);
 static int (*p_report)(void *, int64_t);
 static void (*p_close)(void *);
 
+/* The mask of the fastest cores: those with the highest maximum frequency, and the next class too if that leaves fewer
+   than two. 0 if the frequencies cannot be read. */
+static int perf_fast_cores(void) {
+    long f[32], top = 0, second = 0;
+    int c, n = 0, mask = 0;
+    for (c = 0; c < 32; c++) {
+        char path[96];
+        FILE *fp;
+        f[c] = 0;
+        snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", c);
+        if (!(fp = fopen(path, "r"))) continue;
+        if (fscanf(fp, "%ld", &f[c]) != 1) f[c] = 0;
+        fclose(fp);
+        if (f[c] > top) top = f[c];
+    }
+    for (c = 0; c < 32; c++) if (f[c] == top) n++; else if (f[c] > second) second = f[c];
+    if (!top) return 0;
+    for (c = 0; c < 32; c++) if (f[c] == top || (n < 2 && f[c] == second && second)) mask |= 1 << c;
+    return mask;
+}
+
 static void perf_init(void) {
     const char *e = getenv("SNES_PERF");
     const char *h;
@@ -1614,7 +1635,8 @@ static void perf_init(void) {
     perf_prio = strstr(e, "prio") != NULL;
     if ((h = strstr(e, "spin=")) != NULL) perf_spin = atoi(h + 5);
     else if (strstr(e, "spin")) perf_spin = 999;
-    if ((h = strstr(e, "cpus=")) != NULL) perf_cpus = (int)strtol(h + 5, NULL, 0);
+    if ((h = strstr(e, "cpus=auto")) != NULL) perf_cpus = perf_fast_cores();
+    else if ((h = strstr(e, "cpus=")) != NULL) perf_cpus = (int)strtol(h + 5, NULL, 0);
     if ((h = strstr(e, "hint=")) != NULL) perf_hint_ns = (int)(atof(h + 5) * 1e6);
     if (!perf_hint_ns || !(lib = dlopen("libandroid.so", RTLD_NOW))) return;
     p_get_manager = (void *(*)(void))dlsym(lib, "APerformanceHint_getManager");
