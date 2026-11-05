@@ -1,7 +1,7 @@
 //! Tests of `runtime/headless.c`: small ROMs are recompiled with `generate_all`, built together with the
 //! runtime and run. They skip themselves when there is no C compiler.
 
-use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_GL, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
+use crate::codegen::{Emitter, HEADLESS_RUNTIME, PLAY_CFG, PLAY_GL, PLAY_I18N, PLAY_ICON, PLAY_RUNTIME, PLAY_STATE, PLAY_TOUCH, PLAY_UI, RUNTIME_CORE, RUNTIME_HEADER, RUNTIME_PPU, RUNTIME_SPC, RUNTIME_STATE};
 use crate::config::Config;
 use crate::disasm::Flags;
 use crate::discover::discover;
@@ -128,6 +128,7 @@ fn run_play_times(name: &str, segments: &[(u32, &[u8])], roots: &[u32], args: &[
         ("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()),
         ("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()),
         ("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()),
+        ("play_touch.h".into(), PLAY_TOUCH.as_bytes().to_vec()),
         ("snes_core.inc".into(), RUNTIME_CORE.as_bytes().to_vec()),
         ("snes_ppu.inc".into(), RUNTIME_PPU.as_bytes().to_vec()),
         ("snes_spc.inc".into(), RUNTIME_SPC.as_bytes().to_vec()),
@@ -185,6 +186,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
         files.push(("play_gl.h".into(), PLAY_GL.as_bytes().to_vec()));
         files.push(("play_icon.h".into(), PLAY_ICON.as_bytes().to_vec()));
         files.push(("play_state.h".into(), PLAY_STATE.as_bytes().to_vec()));
+        files.push(("play_touch.h".into(), PLAY_TOUCH.as_bytes().to_vec()));
     } else {
         files.push(("headless.c".into(), HEADLESS_RUNTIME.as_bytes().to_vec()));
     }
@@ -2693,6 +2695,108 @@ fn the_menu_font_and_panel_pieces_measure_fit_and_stay_inside_the_canvas() {
     }
 }
 
+/// The C program that checks `runtime/play_touch.h` (hit tests, the state the fingers give, the settings file and the
+/// sprites) and prints `ok` or the first thing that is wrong.
+const PLAY_TOUCH_TEST: &str = r##"
+#include "play_touch.h"
+#define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); return 1; } } while (0)
+int main(void) {
+    TouchCfg t, u;
+    TLayout *l;
+    TFinger f[TOUCH_FINGERS];
+    TState s;
+    TRect r;
+    int i, id;
+    const char *path = "touch_test.ini";
+    touch_defaults(&t);
+    l = touch_layout(&t, 1080, 2340);
+    CHECK(l == &t.port && touch_layout(&t, 2340, 1080) == &t.land);
+    /* a finger on the centre of each control presses that control, and only it */
+    for (id = 0; id < T_COUNT; id++) {
+        memset(f, 0, sizeof f);
+        r = touch_rect(&t, l, id, 1080, 2340);
+        f[0].active = 1; f[0].x = (float)r.cx / 1080; f[0].y = (float)r.cy / 2340;
+        s = touch_state(&t, l, f, 1080, 2340);
+        if (id == T_DPAD) CHECK(s.ctl == 0);
+        else CHECK(s.ctl == (1u << id) && s.dirs == 0);
+        CHECK(touch_hit(&t, l, 1080, 2340, r.cx, r.cy) == id);
+    }
+    /* the pad: left of the centre is left, above and to the right is up and right (a diagonal), the centre nothing */
+    memset(f, 0, sizeof f);
+    r = touch_rect(&t, l, T_DPAD, 1080, 2340);
+    f[0].active = 1; f[0].x = (float)(r.cx - r.w / 3) / 1080; f[0].y = (float)r.cy / 2340;
+    s = touch_state(&t, l, f, 1080, 2340);
+    CHECK(s.dirs == TD_LEFT);
+    f[0].x = (float)(r.cx + r.w / 3) / 1080; f[0].y = (float)(r.cy - r.h / 3) / 2340;
+    s = touch_state(&t, l, f, 1080, 2340);
+    CHECK(s.dirs == (TD_RIGHT | TD_UP));
+    f[0].x = (float)r.cx / 1080; f[0].y = (float)r.cy / 2340;
+    s = touch_state(&t, l, f, 1080, 2340);
+    CHECK(s.dirs == 0);
+    /* two fingers: a direction and a button together; a finger that is lifted presses nothing */
+    f[0].x = (float)(r.cx - r.w / 3) / 1080; f[0].y = (float)r.cy / 2340;
+    r = touch_rect(&t, l, T_B, 1080, 2340);
+    f[1].active = 1; f[1].x = (float)r.cx / 1080; f[1].y = (float)r.cy / 2340;
+    s = touch_state(&t, l, f, 1080, 2340);
+    CHECK(s.dirs == TD_LEFT && s.ctl == (1u << T_B));
+    f[0].active = f[1].active = 0;
+    s = touch_state(&t, l, f, 1080, 2340);
+    CHECK(s.ctl == 0 && s.dirs == 0);
+    /* the sizes are whole factors of the sprite and follow the size setting and the scale of the control */
+    r = touch_rect(&t, l, T_A, 1080, 2340);
+    CHECK(r.w == tspec[T_A].w * r.k && r.k >= 1);
+    t.size = 150;
+    CHECK(touch_rect(&t, l, T_A, 1080, 2340).k > r.k);
+    t.size = 100; l->c[T_A].s = 2.0f;
+    CHECK(touch_rect(&t, l, T_A, 1080, 2340).k > r.k);
+    l->c[T_A].s = 1.0f;
+    /* the settings file keeps what was edited, clamps what is out of range and ignores what it does not know */
+    t.size = 120; t.opacity = 40; t.haptic = 0; t.port.c[T_X].x = 0.31f; t.port.c[T_X].y = 0.52f; t.port.c[T_X].s = 1.4f;
+    CHECK(touch_save(&t, path));
+    touch_load(&u, path);
+    CHECK(u.size == 120 && u.opacity == 40 && u.haptic == 0);
+    CHECK(fabsf(u.port.c[T_X].x - 0.31f) < 0.002f && fabsf(u.port.c[T_X].y - 0.52f) < 0.002f && fabsf(u.port.c[T_X].s - 1.4f) < 0.011f);
+    CHECK(fabsf(u.land.c[T_X].x - t.land.c[T_X].x) < 0.002f);
+    { FILE *g = fopen(path, "w"); fputs("size=900\nopacity=0\nport.a=5,-3,9\nnonsense\n", g); fclose(g); }
+    touch_load(&u, path);
+    CHECK(u.size == 150 && u.opacity == 10 && u.port.c[T_A].x == 0.97f && u.port.c[T_A].y == 0.03f && u.port.c[T_A].s == 2.0f);
+    remove(path);
+    touch_load(&u, "no_such_touch_file.ini"); /* no file: the defaults */
+    CHECK(u.size == 100 && u.opacity == 85);
+    /* every sprite exists, has the size of its spec and some ink; the lit arms too */
+    for (id = 0; id < T_COUNT; id++) {
+        int st;
+        for (st = 0; st < 2; st++) {
+            TImg im = touch_sprite(id, id == T_DPAD ? 0 : st);
+            long ink = 0;
+            CHECK(im.px && im.w == tspec[id].w && im.h == tspec[id].h);
+            for (i = 0; i < im.w * im.h; i++) ink += im.px[i * 4 + 3] != 0;
+            CHECK(ink > im.w * im.h / 4);
+            timg_free(&im);
+        }
+    }
+    for (i = 0; i < 4; i++) {
+        TImg im = spr_dpad(1 << i);
+        long ink = 0;
+        int k;
+        for (k = 0; k < im.w * im.h; k++) ink += im.px[k * 4 + 3] != 0;
+        CHECK(ink > 0 && ink < im.w * im.h / 4);
+        timg_free(&im);
+    }
+    printf("ok\n");
+    return 0;
+}
+"##;
+
+#[test]
+fn the_touch_controls_hit_test_settings_and_sprites_work() {
+    let cc = crate::need_compiler!();
+    match cc.compile_run("play-touch", &[("play_touch.h", PLAY_TOUCH), ("t.c", PLAY_TOUCH_TEST)], &[]) {
+        Ok(out) => assert!(out.trim_end().ends_with("ok"), "{out}"),
+        Err(e) => panic!("{e}"),
+    }
+}
+
 /// Runs the interactive frontend on a program that only loops, without a window, for `frames` frames with `args` and
 /// the files `extra` next to the ROM (a `config.ini`, for one); `--print-config` is added, so the output ends with the
 /// lines of the config file as it was left.
@@ -3387,8 +3491,8 @@ int main(void) {
     {
         enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
         static const Group groups[] = {
-            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Output device", "Controls of", "Fast forward", "Language"}},
-            {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit"}},
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Output device", "Controls of", "Fast forward", "Language", "Size", "Opacity", "Vibration"}},
+            {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit", "Edit layout", "Reset layout"}},
             {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "off", "crt", "max", "Player %d"}},
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
             {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
@@ -3397,7 +3501,7 @@ int main(void) {
             {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
             {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "an interrupt is running", "the game is switching execution contexts", "another execution context is running", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},
         };
-        static const char *const tabs[] = {"Image", "Audio", "Controls", "Game"};
+        static const char *const tabs[] = {"Image", "Audio", "Controls", "Game", "Touch"};
         char line[128];
         int used = 0, checked = 0, g, bad = 0;
         for (g = 0; g < (int)(sizeof groups / sizeof groups[0]); g++)
@@ -3412,9 +3516,19 @@ int main(void) {
                 if (w > groups[g].max) { printf("too wide (%s, %d > %d): %s\n", groups[g].what, w, groups[g].max, es); return 1; }
                 checked++;
             }
-        /* the four tabs share the width of the row */
+        /* the four tabs share the width of the row (12 pixels of margin each); with the Touch tab there are five and the
+         * margin is 3 and the gap 2 (tab_margin() and tab_gap() in runtime/play.c) */
         for (i = 0; i < 4; i++) { used += text_w(tr(tabs[i])) + 12 + 3; checked++; }
         if (used - 3 > ROW_W - 8) { printf("tabs too wide: %d\n", used - 3); return 1; }
+        used = 0;
+        for (i = 0; i < 5; i++) used += text_w(tr(tabs[i])) + 2 + 2;
+        checked++;
+        if (used - 2 > ROW_W - 8) { printf("five tabs too wide: %d\n", used - 2); return 1; }
+        ui_es = 0; /* and in English */
+        used = 0;
+        for (i = 0; i < 5; i++) used += text_w(tr(tabs[i])) + 2 + 2;
+        if (used - 2 > ROW_W - 8) { printf("five tabs too wide in English: %d\n", used - 2); return 1; }
+        ui_es = 1;
         /* every string of the table was checked in one of the groups (the tabs are checked above) */
         CHECK(checked == I18N_COUNT);
         if (bad) return 1;

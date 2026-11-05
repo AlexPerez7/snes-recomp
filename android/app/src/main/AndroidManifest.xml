@@ -3,6 +3,7 @@
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Sin permiso de Internet ni de almacenamiento: la ROM llega por el selector de documentos. -->
     <application
         android:label="SNES Port"

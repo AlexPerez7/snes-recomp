@@ -26,6 +26,9 @@ static const I18n i18n_table[] = {
     /* Game */
     {"Fast forward", "Avance rápido"}, {"max", "máx."}, {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},
     {"Quit", "Salir"},
+    /* Touch */
+    {"Touch", "Tacto"}, {"Size", "Tamaño"}, {"Opacity", "Opacidad"}, {"Vibration", "Vibración"}, {"Edit layout", "Editar disposición"},
+    {"Reset layout", "Restaurar disposición"},
     /* notices */
     {"Image options restored", "Vídeo restaurado"}, {"Audio options restored", "Audio restaurado"},
     {"Everything restored to the defaults", "Todo restaurado"},

@@ -35,6 +35,7 @@
 #include "play_ui.h"
 #include "play_i18n.h"
 #include "play_gl.h"
+#include "play_touch.h"
 #ifdef _WIN32
 #include <windows.h>
 #ifndef __TINYC__ /* TinyCC has no commdlg.h: with it the program takes the ROM from the command line only */
@@ -426,6 +427,7 @@ static int view_lines(void) {
 /* Draws the picture `fb` (show_w x 224, as shown_frame() set it) in the window with the options: aspect, scaling, filter,
  * overscan and effects. The texture has the size of the picture, so that the filters do not read what lies beyond it. */
 static void present_gl(const uint8_t *fb);
+static void touch_draw(void);
 
 static void present(const uint8_t *fb) {
     int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER], pw = show_w;
@@ -493,6 +495,7 @@ static void present(const uint8_t *fb) {
         }
         if (tex_ovl) SDL_RenderCopy(ren, tex_ovl, NULL, &dst);
     }
+    touch_draw();
     SDL_RenderPresent(ren);
     st_present += SDL_GetPerformanceCounter() - p0;
 }
@@ -635,8 +638,12 @@ static void set_fullscreen(int on) {
 static uint8_t fb_menu[SCREEN_H * SCREEN_W * 3];
 static Canvas cv = {fb_menu, SCREEN_W, SCREEN_H};
 
-enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_COUNT };
-static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game"};
+enum { TAB_IMAGE, TAB_AUDIO, TAB_CONTROLS, TAB_GAME, TAB_TOUCH, TAB_COUNT };
+static const char *const tab_names[TAB_COUNT] = {"Image", "Audio", "Controls", "Game", "Touch"};
+static int touch_on;                      /* the on-screen controls exist (Android, or --touch) */
+#define tab_count() (touch_on ? TAB_COUNT : TAB_COUNT - 1) /* the Touch tab is only there with them */
+#define tab_margin() (touch_on ? 2 : 12) /* five tabs need less margin each, and a smaller gap between them */
+#define tab_gap() (touch_on ? 2 : 3)
 enum { ASK_NONE, ASK_RESTORE, ASK_QUIT };
 static void menu_lang_sync(void);
 static int menu_open, menu_tab, menu_sel[TAB_COUNT], menu_player, menu_capture = -1, menu_confirm, menu_ask, menu_tick, menu_by_pad; /* menu_ask: an ASK_* waiting for Enter or Esc */
@@ -676,6 +683,7 @@ static int menu_count(int tab) {
     case TAB_IMAGE: return image_row_count() + 1;
     case TAB_AUDIO: return 3;
     case TAB_CONTROLS: return 13;
+    case TAB_TOUCH: return 5;
     default: return 1 + GOPTS + 4; /* the fast forward speed, the options of the game, then Resume, Save, Restore and Quit */
     }
 }
@@ -823,13 +831,258 @@ static void restore_all(void) {
     snprintf(menu_msg, sizeof menu_msg, tr("Everything restored to the defaults"));
 }
 
+/* ---- on-screen touch controls (play_touch.h) ---- */
+
+static void menu_pad(SDL_GameControllerButton b);
+static void menu_open_now(void);
+static void menu_close(void);
+
+static TouchCfg tcfg;
+static char touch_path[1100];
+static TFinger fingers[TOUCH_FINGERS];
+static int touch_visible;              /* shown until a controller is used, and again at the next touch */
+static int touch_edit, touch_sel = -1; /* editing the layout; the control picked */
+static int touch_drag = -1;            /* index of the finger dragging it */
+static float touch_dx, touch_dy;       /* where the finger holds the control, as fractions of the window */
+static TState touch_cur, touch_latch; /* touch_latch: what a finger pressed since the last poll, even if it was lifted already */
+static unsigned touch_prev;            /* what was down at the last poll: controls, then the pad directions << 16 */
+static int touch_rep;                  /* frames a direction has been held in the menu, for the repeat */
+static SDL_Haptic *touch_haptic;
+static SDL_Renderer *touch_ren;        /* the renderer the textures below belong to */
+static SDL_Texture *touch_tex[T_COUNT][2], *touch_arm[4], *touch_bar[5][2];
+static const char *const bar_label[5] = {"-", "+", "RESET", "OK", ""};
+static const int bar_w[4] = {17, 17, 41, 25}, bar_h = 17;
+
+/* `touch.ini` goes next to config.ini, in the folder of the game. */
+static void touch_init(const char *rom_path) {
+    const char *sep = strrchr(rom_path, '/'), *bsep = strrchr(rom_path, 92);
+    size_t dir;
+    if (bsep && (!sep || bsep > sep)) sep = bsep;
+    dir = sep ? (size_t)(sep - rom_path + 1) : 0;
+    if (dir + 10 <= sizeof touch_path) { memcpy(touch_path, rom_path, dir); strcpy(touch_path + dir, "touch.ini"); }
+    touch_load(&tcfg, touch_path);
+    touch_visible = 1;
+    if (SDL_InitSubSystem(SDL_INIT_HAPTIC) == 0 && SDL_NumHaptics() > 0) {
+        touch_haptic = SDL_HapticOpen(0);
+        if (touch_haptic && SDL_HapticRumbleInit(touch_haptic) != 0) { SDL_HapticClose(touch_haptic); touch_haptic = NULL; }
+    }
+}
+
+static void touch_save_cfg(void) {
+    if (touch_on && touch_path[0]) touch_save(&tcfg, touch_path);
+}
+
+static void touch_win(int *w, int *h) {
+    if (ren) SDL_GetRendererOutputSize(ren, w, h); else SDL_GetWindowSize(win, w, h);
+}
+
+static SDL_Texture *touch_make(const TImg *im) {
+    SDL_Texture *t = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, im->w, im->h);
+    if (!t) return NULL;
+    SDL_UpdateTexture(t, NULL, im->px, im->w * 4);
+    SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(t, SDL_ScaleModeNearest);
+    return t;
+}
+
+static void touch_textures(void) {
+    int id, st;
+    if (touch_ren == ren) return;
+    touch_ren = ren;
+    for (id = 0; id < T_COUNT; id++)
+        for (st = 0; st < 2; st++) {
+            TImg im = touch_sprite(id, id == T_DPAD ? 0 : st);
+            if (id == T_DPAD && st) { timg_free(&im); continue; }
+            touch_tex[id][st] = touch_make(&im);
+            timg_free(&im);
+        }
+    for (st = 0; st < 4; st++) {
+        TImg im = spr_dpad(1 << st);
+        touch_arm[st] = touch_make(&im);
+        timg_free(&im);
+    }
+    for (id = 0; id < 4; id++)
+        for (st = 0; st < 2; st++) {
+            TImg im = spr_text(bar_w[id], bar_h, bar_label[id], id < 2 ? 2 : 1, st, id < 2);
+            touch_bar[id][st] = touch_make(&im);
+            timg_free(&im);
+        }
+}
+
+/* The editor bar: four plates in a row, in the middle of the window. Returns the rectangle of plate i. */
+static SDL_Rect bar_rect(int i, int w, int h) {
+    int side = w < h ? w : h, k = side / 200 > 1 ? side / 200 : 1, total = 0, x, j;
+    SDL_Rect r;
+    for (j = 0; j < 4; j++) total += bar_w[j] * k + 4 * k;
+    total -= 4 * k;
+    x = (w - total) / 2;
+    for (j = 0; j < i; j++) x += bar_w[j] * k + 4 * k;
+    r.x = x; r.y = h / 2 - bar_h * k / 2; r.w = bar_w[i] * k; r.h = bar_h * k;
+    return r;
+}
+
+static void touch_draw(void) {
+    int w, h, id;
+    unsigned dirs = touch_cur.dirs;
+    TLayout *l;
+    Uint8 alpha;
+    if (!touch_on || (!touch_visible && !touch_edit) || !ren || opt_no_window) return;
+    touch_textures();
+    touch_win(&w, &h);
+    l = touch_layout(&tcfg, w, h);
+    alpha = (Uint8)(tcfg.opacity * 255 / 100);
+    for (id = 0; id < T_COUNT; id++) {
+        TRect r = touch_rect(&tcfg, l, id, w, h);
+        SDL_Rect dst = {r.cx - r.w / 2, r.cy - r.h / 2, r.w, r.h};
+        int down = id != T_DPAD && (touch_cur.ctl >> id & 1u);
+        SDL_Texture *t = touch_tex[id][down];
+        if (!t) continue;
+        SDL_SetTextureAlphaMod(t, alpha);
+        SDL_RenderCopy(ren, t, NULL, &dst);
+        if (id == T_DPAD) {
+            int d;
+            for (d = 0; d < 4; d++)
+                if (dirs & (1u << d) && touch_arm[d]) { SDL_SetTextureAlphaMod(touch_arm[d], alpha); SDL_RenderCopy(ren, touch_arm[d], NULL, &dst); }
+        }
+        if (touch_edit && id == touch_sel) {
+            int b;
+            SDL_SetRenderDrawColor(ren, 0xF8, 0xD8, 0x60, 255);
+            for (b = 0; b < 3; b++) {
+                SDL_Rect o = {dst.x - 6 - b, dst.y - 6 - b, dst.w + 12 + 2 * b, dst.h + 12 + 2 * b};
+                SDL_RenderDrawRect(ren, &o);
+            }
+        }
+    }
+    if (touch_edit) {
+        int i;
+        for (i = 0; i < 4; i++) {
+            SDL_Rect r = bar_rect(i, w, h);
+            SDL_Texture *t = touch_bar[i][0];
+            if (t) { SDL_SetTextureAlphaMod(t, 255); SDL_RenderCopy(ren, t, NULL, &r); }
+        }
+    }
+}
+
+static void touch_finger(const SDL_Event *e) {
+    int i, slot = -1, w, h, id;
+    int64_t fid = (int64_t)e->tfinger.fingerId;
+    for (i = 0; i < TOUCH_FINGERS; i++) if (fingers[i].active && fingers[i].id == fid) slot = i;
+    if (e->type == SDL_FINGERDOWN) {
+        if (slot < 0) for (i = 0; i < TOUCH_FINGERS && slot < 0; i++) if (!fingers[i].active) slot = i;
+        if (slot < 0) return;
+        fingers[slot].active = 1; fingers[slot].id = fid;
+        touch_visible = 1;
+    }
+    if (slot < 0) return;
+    fingers[slot].x = e->tfinger.x; fingers[slot].y = e->tfinger.y;
+    touch_win(&w, &h);
+    if (e->type == SDL_FINGERDOWN && !touch_edit) {
+        TFinger one[TOUCH_FINGERS];
+        TState st;
+        memset(one, 0, sizeof one);
+        one[0] = fingers[slot];
+        st = touch_state(&tcfg, touch_layout(&tcfg, w, h), one, w, h);
+        touch_latch.ctl |= st.ctl; touch_latch.dirs |= st.dirs;
+    }
+    if (touch_edit) {
+        TLayout *l = touch_layout(&tcfg, w, h);
+        int px = (int)(e->tfinger.x * w), py = (int)(e->tfinger.y * h);
+        if (e->type == SDL_FINGERDOWN) {
+            for (i = 0; i < 4; i++) {
+                SDL_Rect r = bar_rect(i, w, h);
+                if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) {
+                    if (i < 2 && touch_sel >= 0) l->c[touch_sel].s = clampf(l->c[touch_sel].s + (i ? 0.1f : -0.1f), 0.5f, 2.0f);
+                    else if (i == 2) { TouchCfg d; touch_defaults(&d); *l = *touch_layout(&d, w, h); touch_sel = -1; }
+                    else if (i == 3) { touch_edit = 0; touch_sel = -1; touch_save_cfg(); }
+                    touch_save_cfg();
+                    fingers[slot].active = 0;
+                    return;
+                }
+            }
+            id = touch_hit(&tcfg, l, w, h, px, py);
+            touch_sel = id;
+            if (id >= 0) { touch_drag = slot; touch_dx = l->c[id].x - e->tfinger.x; touch_dy = l->c[id].y - e->tfinger.y; }
+        } else if (e->type == SDL_FINGERMOTION && touch_drag == slot && touch_sel >= 0) {
+            l->c[touch_sel].x = clampf(e->tfinger.x + touch_dx, 0.03f, 0.97f);
+            l->c[touch_sel].y = clampf(e->tfinger.y + touch_dy, 0.03f, 0.97f);
+        }
+    }
+    if (e->type == SDL_FINGERUP) {
+        if (touch_drag == slot) { touch_drag = -1; if (touch_edit) touch_save_cfg(); }
+        fingers[slot].active = 0;
+    }
+}
+
+/* Each frame: the buttons the fingers hold, the menu driven by them while it is open and the menu button. */
+static void touch_poll(void) {
+    int w, h;
+    unsigned now, fresh, dirs;
+    static const struct { unsigned bit; SDL_GameControllerButton b; } nav[] = {
+        {1u << (16 + 0), SDL_CONTROLLER_BUTTON_DPAD_UP}, {1u << (16 + 1), SDL_CONTROLLER_BUTTON_DPAD_DOWN},
+        {1u << (16 + 2), SDL_CONTROLLER_BUTTON_DPAD_LEFT}, {1u << (16 + 3), SDL_CONTROLLER_BUTTON_DPAD_RIGHT},
+        {1u << T_A, SDL_CONTROLLER_BUTTON_A}, {1u << T_B, SDL_CONTROLLER_BUTTON_B},
+        {1u << T_L, SDL_CONTROLLER_BUTTON_LEFTSHOULDER}, {1u << T_R, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER}};
+    int i;
+    if (!touch_on) return;
+    touch_win(&w, &h);
+    touch_cur = touch_edit ? (TState){0, 0} : touch_state(&tcfg, touch_layout(&tcfg, w, h), fingers, w, h);
+    touch_cur.ctl |= touch_latch.ctl; touch_cur.dirs |= touch_latch.dirs;
+    touch_latch.ctl = touch_latch.dirs = 0;
+    dirs = touch_cur.dirs;
+    now = touch_cur.ctl | dirs << 16;
+    fresh = now & ~touch_prev;
+    if (fresh && tcfg.haptic && touch_haptic) SDL_HapticRumblePlay(touch_haptic, 0.45f, 22);
+    if (menu_open) {
+        for (i = 0; i < 8; i++) if (fresh & nav[i].bit) menu_pad(nav[i].b);
+        if (fresh & (1u << T_MENU)) menu_pad(SDL_CONTROLLER_BUTTON_B);
+        if (now & 0xF0000u && !(fresh & 0xF0000u)) { /* a held direction repeats */
+            if (++touch_rep > 14 && touch_rep % 5 == 0)
+                for (i = 0; i < 4; i++) if (now & nav[i].bit) menu_pad(nav[i].b);
+        } else if (fresh & 0xF0000u) touch_rep = 0;
+    } else if (fresh & (1u << T_MENU)) { menu_open_now(); menu_by_pad = 1; }
+    touch_prev = now;
+}
+
+/* The buttons of the pad that the fingers hold, for the game. */
+static uint16_t touch_pad(void) {
+    uint16_t m = 0;
+    if (!touch_on || menu_open || touch_edit) return 0;
+    if (touch_cur.dirs & TD_UP) m |= PAD_UP;
+    if (touch_cur.dirs & TD_DOWN) m |= PAD_DOWN;
+    if (touch_cur.dirs & TD_LEFT) m |= PAD_LEFT;
+    if (touch_cur.dirs & TD_RIGHT) m |= PAD_RIGHT;
+    if (touch_cur.ctl & 1u << T_A) m |= PAD_A;
+    if (touch_cur.ctl & 1u << T_B) m |= PAD_B;
+    if (touch_cur.ctl & 1u << T_X) m |= PAD_X;
+    if (touch_cur.ctl & 1u << T_Y) m |= PAD_Y;
+    if (touch_cur.ctl & 1u << T_L) m |= PAD_L;
+    if (touch_cur.ctl & 1u << T_R) m |= PAD_R;
+    if (touch_cur.ctl & 1u << T_START) m |= PAD_START;
+    if (touch_cur.ctl & 1u << T_SELECT) m |= PAD_SELECT;
+    if ((m & (PAD_LEFT | PAD_RIGHT)) == (PAD_LEFT | PAD_RIGHT)) m &= (uint16_t)~(PAD_LEFT | PAD_RIGHT);
+    if ((m & (PAD_UP | PAD_DOWN)) == (PAD_UP | PAD_DOWN)) m &= (uint16_t)~(PAD_UP | PAD_DOWN);
+    return m;
+}
+
+/* The rows of the Touch tab: size, opacity, vibration, edit the layout and put it back as it was. */
+static void touch_menu_change(int s, int dir) {
+    int w, h;
+    if (s == 0 && dir) tcfg.size += dir * 10;
+    else if (s == 1 && dir) tcfg.opacity += dir * 10;
+    else if (s == 2) tcfg.haptic = !tcfg.haptic;
+    else if (s == 3 && dir == 0) { menu_close(); touch_edit = 1; touch_sel = -1; touch_drag = -1; }
+    else if (s == 4 && dir == 0) { TouchCfg d; touch_defaults(&d); touch_win(&w, &h); *touch_layout(&tcfg, w, h) = *touch_layout(&d, w, h); }
+    touch_clamp(&tcfg);
+}
+
 static void menu_close(void) {
     menu_open = 0;
     config_save();
+    touch_save_cfg();
 }
 
 static void menu_tab_move(int d) {
-    menu_tab = (menu_tab + d + TAB_COUNT) % TAB_COUNT;
+    menu_tab = (menu_tab + d + tab_count()) % tab_count();
     menu_msg[0] = 0;
 }
 
@@ -856,6 +1109,9 @@ static void menu_change(int dir) {
     case TAB_CONTROLS:
         if (s == 0) menu_player = (menu_player + (dir ? dir : 1) + 2) % 2;
         else if (dir == 0) { menu_capture = s - 1; snprintf(menu_msg, sizeof menu_msg, tr("Press a key or a controller button")); }
+        break;
+    case TAB_TOUCH:
+        touch_menu_change(s, dir);
         break;
     default:
         if (s == 0) { opt_change(O_FFSPEED, dir ? dir : 1); break; }
@@ -1076,16 +1332,16 @@ static void menu_draw(const uint8_t *fb) {
     const char *help;
     ui_backdrop(&cv, fb);
     ui_panel(&cv, PX, PY, PW, PH);
-    for (t = 0; t < TAB_COUNT; t++) used += text_w(tr(tab_names[t])) + 12 + 3; /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
-    extra = (ROW_W - 8 - used + 3) / TAB_COUNT;
+    for (t = 0; t < tab_count(); t++) used += text_w(tr(tab_names[t])) + tab_margin() + tab_gap(); /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
+    extra = (ROW_W - 8 - used + tab_gap()) / tab_count();
     text_draw2x(&cv, PX + (PW - text_w2x(tr("OPTIONS"))) / 2, PY + 7, tr("OPTIONS"), UI_GOLD, UI_SHADOW);
     ui_rule(&cv, PX + 10, PY + 25, PW - 20);
-    for (t = 0, x = ROW_X + 4; t < TAB_COUNT; t++) {
-        int on = t == menu_tab, w = text_w(tr(tab_names[t])) + 12 + extra;
+    for (t = 0, x = ROW_X + 4; t < tab_count(); t++) {
+        int on = t == menu_tab, w = text_w(tr(tab_names[t])) + tab_margin() + extra;
         if (on) { cv_rect(&cv, x, PY + 30, w, 13, 0x4A64C8u); cv_rect(&cv, x, PY + 30, w, 1, 0xE8ECFAu); }
         else cv_rect(&cv, x, PY + 33, w, 10, 0x141C50u);
         text_center(&cv, x, w, PY + (on ? 33 : 34), tr(tab_names[t]), on ? UI_GOLD : UI_DIM);
-        x += w + 3;
+        x += w + tab_gap();
     }
     if (menu_tab == TAB_CONTROLS) {
         int labw, keyx, keyw;
@@ -1116,6 +1372,13 @@ static void menu_draw(const uint8_t *fb) {
             break;
         case TAB_CONTROLS:
             ctl_row(i, on, menu_player);
+            break;
+        case TAB_TOUCH:
+            if (i == 0) { snprintf(val, sizeof val, "%d%%", tcfg.size); menu_row(i, on, "Size", 1, val, 0, tcfg.size <= 50, tcfg.size >= 150); }
+            else if (i == 1) { snprintf(val, sizeof val, "%d%%", tcfg.opacity); menu_row(i, on, "Opacity", 1, val, 0, tcfg.opacity <= 10, tcfg.opacity >= 100); }
+            else if (i == 2) menu_row(i, on, "Vibration", 1, tr(tcfg.haptic ? "On" : "Off"), 0, 0, 0);
+            else if (i == 3) menu_row(i, on, "Edit layout", 0, "", 0, 0, 0);
+            else menu_row(i, on, "Reset layout", 0, "", 0, 0, 0);
             break;
         default:
             if (i == 0) { opt_label(O_FFSPEED, val, sizeof val); menu_row(i, on, "Fast forward", 1, val, 0, 0, 0); break; }
@@ -1219,11 +1482,13 @@ static void handle_events(void) {
                 }
             open_pads();
         }
-        if (e.type == SDL_CONTROLLERBUTTONDOWN) last_input_pad = 1;
+        if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) { if (touch_on) touch_finger(&e); continue; }
+        if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; touch_visible = 0; }
         if (e.type == SDL_KEYDOWN) last_input_pad = 0;
         if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             SDL_Scancode sc = e.key.keysym.scancode;
+            if (sc == SDL_SCANCODE_AC_BACK) sc = SDL_SCANCODE_ESCAPE; /* the Back button of Android */
             if (menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
             switch (sc) {
             case SDL_SCANCODE_P: paused = !paused; break;
@@ -1242,6 +1507,7 @@ static void handle_events(void) {
             }
         }
     }
+    touch_poll();
 }
 
 /* Waits until the time of the next frame (60.0988 Hz) unless fast forward is on; a late run does not try to catch up. */
@@ -1431,7 +1697,7 @@ static void play_frame(void) {
     {
         int rew = play_state_script();
         if (!opt_no_window && SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]) rew = 1;
-        play_state_tick(rew, !opt_no_window && (paused || menu_open));
+        play_state_tick(rew, !opt_no_window && (paused || menu_open || touch_edit));
         if (st_toast_left > 0) st_toast_left--;
     }
     if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
@@ -1461,8 +1727,8 @@ static void play_frame(void) {
     handle_events();
     fast = ff_toggle || SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
     flush_audio();
-    if (paused || menu_open) {
-        while (paused || menu_open) {
+    if (paused || menu_open || touch_edit) {
+        while (paused || menu_open || touch_edit) {
             SDL_Delay(20);
             handle_events();
             present(shown_frame());
@@ -1470,9 +1736,14 @@ static void play_frame(void) {
         }
         if (adev) audio_silence(AUD_PRIME);
     }
-    live_pad = read_keyboard(0) | read_pad(0) | held;
+    live_pad = read_keyboard(0) | read_pad(0) | held | touch_pad();
     live_pad2 = read_keyboard(1) | read_pad(1);
     pace();
+}
+
+/* With contexts on threads (Android) the window's GL context follows the thread that runs: the one leaving lets it go. */
+static void play_ctx_release(void) {
+    if (SDL_GL_GetCurrentContext()) SDL_GL_MakeCurrent(win, NULL);
 }
 
 static int open_window(void) {
@@ -1497,6 +1768,9 @@ static int open_window(void) {
         return 0;
     }
     snes_set_window_icon(play_icon, PLAY_ICON_SIZE, PLAY_ICON_SIZE);
+#ifdef SNES_RT_THREAD_CONTEXTS
+    snes_rt_ctx_release = play_ctx_release;
+#endif
     perf_freq = SDL_GetPerformanceFrequency();
     t_next = st_start = SDL_GetPerformanceCounter();
     if (opt_stats) atexit(print_stats);
@@ -1550,6 +1824,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--print-keys")) opt_print_keys = 1;
         else if (!strcmp(argv[i], "--print-config")) opt_print_config = 1;
         else if (!strcmp(argv[i], "--no-window")) opt_no_window = 1;
+        else if (!strcmp(argv[i], "--touch")) touch_on = 1; /* the on-screen controls on a desktop, to try them */
         else if (!strcmp(argv[i], "--present-shot") && i + 1 < argc) present_shot_path = argv[++i];
         else if (!strcmp(argv[i], "--present-size") && i + 1 < argc) {
             if (sscanf(argv[++i], "%dx%d", &present_w, &present_h) != 2 || present_w < 1 || present_h < 1 || present_w > 4096 || present_h > 4096) { bad = 1; break; }
@@ -1563,7 +1838,7 @@ int main(int argc, char **argv) {
             cli_set[o] = 1; cli_val[o] = v;
         }
         else if (!strcmp(argv[i], "--menu-shot") && i + 1 < argc) menu_shot_path = argv[++i];
-        else if (!strcmp(argv[i], "--menu-page") && i + 1 < argc) { menu_shot_page = atoi(argv[++i]); if (menu_shot_page < 0 || menu_shot_page >= TAB_COUNT) { bad = 1; break; } }
+        else if (!strcmp(argv[i], "--menu-page") && i + 1 < argc) { menu_shot_page = atoi(argv[++i]); if (menu_shot_page < 0 || menu_shot_page >= tab_count()) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--menu-keys") && i + 1 < argc) {
             char *tok, list[1024];
             snprintf(list, sizeof list, "%s", argv[++i]);
@@ -1596,6 +1871,10 @@ int main(int argc, char **argv) {
     if (!load_rom(path)) return 2;
     if (wav_path && !wav_open(wav_path)) return 2;
     SDL_SetMainReady();
+#ifdef __ANDROID__
+    touch_on = 1;
+#endif
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); /* a finger is a finger, not a mouse click */
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
     ppu_set_wide(cfg.eff.v[O_WIDE]);
@@ -1611,6 +1890,7 @@ int main(int argc, char **argv) {
     }
     if (opt_print_config) atexit(print_config);
     if (!opt_no_window && !open_window()) return 2;
+    if (touch_on) touch_init(path);
     if (!opt_no_window) {
         quiet_exit = !opt_stats && !shot_path;
         open_pads();
