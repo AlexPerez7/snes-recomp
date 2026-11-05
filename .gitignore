@@ -15,3 +15,10 @@ spikes/android/local.properties
 spikes/android/build/
 spikes/android/app/build/
 spikes/android/app/.cxx/
+
+# Android: lo que construye Gradle y CMake
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties

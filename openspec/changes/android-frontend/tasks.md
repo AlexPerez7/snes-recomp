@@ -2,9 +2,11 @@
 
 ## 1. Base de la app
 
-- [ ] 1.1 Proyecto Gradle definitivo (SDL2 `SDLActivity`, NDK 27 o 28, `arm64-v8a`, sin permiso de Internet, sin `debuggable` en release). Verificar: `gradlew assembleRelease` termina y el APK se instala con `adb install`.
-- [ ] 1.2 Libc para TinyCC: llevar `spikes/tcc_include/` a la app y la tabla de símbolos de la libc con `dlsym`. Verificar: el C del juego compila en el teléfono sin referencias sin resolver (como en la prueba).
-- [ ] 1.3 Biblioteca nativa con el runtime en modo biblioteca, la biblioteca del generador y libtcc; alinear a 16 KB. Verificar: `llvm-readelf` muestra `p_align` 0x4000 en los `LOAD` de cada `.so` y Android no muestra el aviso de compatibilidad.
+Proyecto en `android/` (2026-11-05): compila con `gradle assembleDebug` (Gradle 8.9), se instala en el S25 Ultra, `libmain.so` y `libSDL2.so` alineadas a 16 KB (`p_align` 0x4000) y el juego llega a la pantalla de título generado y compilado en el teléfono (generar 449 ms, compilar y enlazar 170 ms). `LauncherActivity` (selector de ROM con CRC32) y `GameActivity` (SDL) están escritas pero el selector aún no se ha probado a mano; la prueba se hizo dejando la ROM en `files/rom.sfc`. Sin sonido ni controles probados todavía.
+
+- [x] 1.1 Proyecto Gradle definitivo (SDL2 `SDLActivity`, NDK 27 o 28, `arm64-v8a`, sin permiso de Internet, sin `debuggable` en release). Verificar: `gradlew assembleRelease` termina y el APK se instala con `adb install`.
+- [x] 1.2 Libc para TinyCC: llevar `spikes/tcc_include/` a la app y la tabla de símbolos de la libc con `dlsym`. Verificar: el C del juego compila en el teléfono sin referencias sin resolver (como en la prueba).
+- [x] 1.3 Biblioteca nativa con el runtime en modo biblioteca, la biblioteca del generador y libtcc; alinear a 16 KB. Verificar: `llvm-readelf` muestra `p_align` 0x4000 en los `LOAD` de cada `.so` y Android no muestra el aviso de compatibilidad.
 
 ## 2. Arranque de usuario
 
