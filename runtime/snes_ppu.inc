@@ -329,27 +329,60 @@ static int win_area(int layer, int x) {
     }
 }
 
-/* CGRAM index of the front pixel of the layers in `mask` (a $212C/$212D value); `*layer` says which layer gave it. */
-static int pixel_index(const Layer *order, int count, int x, int xc, int y, int mode, uint8_t mask, uint8_t wmask, int *layer) {
-    int i, c;
+/* One entry of the layers that can show a pixel in this row: render_row keeps only the layers of `order` that the screen
+ * mask enables (and that exist in the mode), with what pixel_index would otherwise ask again at every pixel. */
+typedef struct { uint8_t kind, n, win, mosaic; } LayerSel;
+
+/* Whether the window of `layer` (see win_area) can be anywhere: win_area is 0 everywhere when neither window is enabled. */
+static int win_enabled(int layer) {
+    static const uint16_t sel_reg[6] = {0x2123, 0x2123, 0x2124, 0x2124, 0x2125, 0x2125};
+    return (hw[sel_reg[layer]] >> ((layer & 1) * 4) & 0xA) != 0;
+}
+
+/* The layers of `order` that matter for the screen with mask `mask` ($212C/$212D) and window mask `wmask` ($212E/$212F). */
+static int select_layers(LayerSel *sel, const Layer *order, int count, int mode, uint8_t mask, uint8_t wmask) {
+    int i, m = 0, mosaic_on = (hw[0x2106] >> 4) != 0;
     for (i = 0; i < count; i++) {
         int n = order[i].n;
+        LayerSel *e = &sel[m];
+        e->kind = (uint8_t)order[i].kind;
+        e->n = (uint8_t)n;
+        e->mosaic = 0;
         if (order[i].kind == 0) {
             if (!(mask & 0x10)) continue;
-            if (spr_col[y][x + WIDE_MAX] >= 0 && spr_pri[y][x + WIDE_MAX] == n && !((wmask & 0x10) && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x + WIDE_MAX]; }
+            e->win = (wmask & 0x10) && win_enabled(4);
         } else if (order[i].kind == 3) {
-            if (!(mask & 1) || ((wmask & 1) && win_area(0, x))) continue;
+            if (!(mask & 1)) continue;
+            e->win = (wmask & 1) && win_enabled(0);
+        } else {
+            if (mode == 7 || !bg_bpp[mode][n] || !(mask >> n & 1)) continue;
+            e->win = (wmask >> n & 1) && win_enabled(n);
+            e->mosaic = mosaic_on && (hw[0x2106] >> n & 1);
+        }
+        m++;
+    }
+    return m;
+}
+
+/* CGRAM index of the front pixel of the layers in `sel` (from select_layers); `*layer` says which layer gave it. */
+static int pixel_index(const LayerSel *sel, int count, int x, int xc, int y, int mode, int *layer) {
+    int i, c;
+    for (i = 0; i < count; i++) {
+        int n = sel[i].n;
+        if (sel[i].kind == 0) {
+            if (spr_col[y][x + WIDE_MAX] >= 0 && spr_pri[y][x + WIDE_MAX] == n && !(sel[i].win && win_area(4, x))) { *layer = LAYER_OBJ; return spr_col[y][x + WIDE_MAX]; }
+        } else if (sel[i].kind == 3) {
+            if (sel[i].win && win_area(0, x)) continue;
             c = m7_pixel(x, y);
             if (c >= 0) { *layer = 0; return c; }
         } else {
-            if (mode == 7 || !bg_bpp[mode][n] || !(mask >> n & 1)) continue;
-            if ((wmask >> n & 1) && win_area(n, x)) continue;
-            if (hw[0x2106] >> n & 1 && hw[0x2106] >> 4) {
+            if (sel[i].win && win_area(n, x)) continue;
+            if (sel[i].mosaic) {
                 /* mosaic: the block of (size) x (size) pixels shows the colour at its top left; vertical blocks start at line 1 */
                 int size = (hw[0x2106] >> 4) + 1, span = size * (mode == 5 || mode == 6 ? 2 : 1);
-                c = bg_pixel(mode, n, xc - ((xc % span) + span) % span, y < 1 ? y : (y - 1) / size * size + 1, order[i].kind == 1);
+                c = bg_pixel(mode, n, xc - ((xc % span) + span) % span, y < 1 ? y : (y - 1) / size * size + 1, sel[i].kind == 1);
             } else {
-                c = bg_pixel_memo(mode, n, xc, y, order[i].kind == 1);
+                c = bg_pixel_memo(mode, n, xc, y, sel[i].kind == 1);
             }
             if (c >= 0) { *layer = n; return c; }
         }
@@ -549,8 +582,13 @@ static void render_row(int y, uint8_t *out) {
     case 7: order = mode7_order; count = 5; break;
     default: order = mode2_5; count = 8; break;
     }
+    LayerSel main_sel[12], sub_sel[12];
+    int main_n, sub_n, hires = mode == 5 || mode == 6, black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
+    int need_cw = black == 1 || black == 2 || math == 1 || math == 2, math_regs = (hw[0x2131] & 0x3F) != 0, use_sub = (hw[0x2130] & 2) != 0;
     draw_sprites_row(y);
     bgm_cur++;
+    main_n = select_layers(main_sel, order, count, mode, hw[0x212C], hw[0x212E]);
+    sub_n = select_layers(sub_sel, order, count, mode, hw[0x212D], hw[0x212F]);
     for (x = -wide_x0; x < SCREEN_W + wide_x0; x++) {
         if ((x < 0 && x + wide_x0 < wide_blank_l) || (x >= SCREEN_W && x - SCREEN_W >= wide_x0 - wide_blank_r)) {
             uint8_t *q = out + (size_t)(x + wide_x0) * 3;
@@ -559,18 +597,17 @@ static void render_row(int y, uint8_t *out) {
         }
         /* The main screen pixel; in the modes 5 and 6 it is the right one of the two 512-pixel columns of x, and the left
          * one comes from the subscreen. */
-        int hires = mode == 5 || mode == 6, xc = hires ? 2 * x + 1 : x;
-        int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(order, count, x, xc, y, mode, hw[0x212C], hw[0x212E], &layer);
+        int xc = hires ? 2 * x + 1 : x;
+        int layer = LAYER_BACKDROP, sub_layer, idx = blank ? -1 : pixel_index(main_sel, main_n, x, xc, y, mode, &layer);
         uint8_t *p = out + (size_t)(x + wide_x0) * 3;
         int c = idx < 0 ? 0 : cgram_color(idx), k, left = -1;
-        int black = hw[0x2130] >> 6 & 3, math = hw[0x2130] >> 4 & 3;
-        int in_colour_window = (black == 1 || black == 2 || math == 1 || math == 2) ? win_area(5, x) : 0;
+        int in_colour_window = need_cw ? win_area(5, x) : 0;
         if (black == 3 || (black == 1 && !in_colour_window) || (black == 2 && in_colour_window)) c = 0;
-        if (idx >= 0 && (hw[0x2131] & 0x3F) && (math == 0 || (math == 1 && in_colour_window) || (math == 2 && !in_colour_window))) {
+        if (idx >= 0 && math_regs && (math == 0 || (math == 1 && in_colour_window) || (math == 2 && !in_colour_window))) {
             /* the subscreen only counts when colour_math will look at it: the layer takes part in the maths and $2130 bit 1 asks for it */
             int chosen = layer == LAYER_OBJ ? (idx >= 192 && (hw[0x2131] & 0x10)) : (hw[0x2131] >> layer & 1);
-            if (chosen && (hw[0x2130] & 2)) {
-                int sub_idx = pixel_index(order, count, x, hires ? 2 * x : x, y, mode, hw[0x212D], hw[0x212F], &sub_layer);
+            if (chosen && use_sub) {
+                int sub_idx = pixel_index(sub_sel, sub_n, x, hires ? 2 * x : x, y, mode, &sub_layer);
                 c = colour_math(c, layer, idx, cgram_color(sub_idx), sub_layer != LAYER_BACKDROP);
             } else {
                 c = colour_math(c, layer, idx, 0, 0);
@@ -578,7 +615,7 @@ static void render_row(int y, uint8_t *out) {
         }
         if (hires && idx >= 0) {
             /* The picture is 256 pixels wide: the two columns are blended, as a television does. */
-            int sl, sidx = pixel_index(order, count, x, 2 * x, y, mode, hw[0x212D], hw[0x212F], &sl);
+            int sl, sidx = pixel_index(sub_sel, sub_n, x, 2 * x, y, mode, &sl);
             left = cgram_color(sidx);
         }
         for (k = 0; k < 3; k++) {
