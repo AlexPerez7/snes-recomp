@@ -59,6 +59,8 @@ Repetición (2026-11-05, 3 ejecuciones por modo, mismos fotogramas, pantalla des
 
 Las repeticiones coinciden entre sí (±0,1 ms), y la lectura anterior de 5,2 ms con `cpus=auto,hint=8` fue un valor aislado (la primera ejecución justo tras despertar el teléfono), no se repite. Conclusión: fijar el hilo a los núcleos rápidos baja 1,2 ms la mediana y 2 ms el p99; ADPF encima no añade nada medible.
 
+**Decisión (2026-11-05): fijar el hilo a los núcleos rápidos (`cpus=auto`) va activado por defecto en Android**; `perf=none` en `files/stats` lo apaga (comprobado con `Cpus_allowed_list`: 6-7 por defecto, 0-7 con `none`). Prioridad, ADPF y la espera en bucle siguen apagados. Falta probarlo en un móvil más lento y medir batería y temperatura; si va peor en otro modelo, el interruptor es `perf=none`.
+
 - **Ni la prioridad ni ADPF suben los relojes**; ADPF se crea (el sistema lo registra) pero no cambia la frecuencia.
 - **Fijar el hilo a los núcleos más rápidos da lo más barato**: p99 de 15 a 11,7 ms, sin coste de batería conocido. Hay que calcular la máscara en cada teléfono (por `cpuinfo_max_freq`); `0xC0` es del S25 Ultra.
 - **Lo que de verdad sube los relojes es que el hilo parezca ocupado**: esperar en bucle da el coste a pleno reloj (p99 3 ms), pero gasta un núcleo Prime entero y calienta. Sin medir el consumo (pendiente) no es una opción por defecto; la mejor relación está entre los últimos 4 y 8 ms.

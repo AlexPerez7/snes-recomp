@@ -1588,7 +1588,10 @@ static void work_stats(uint64_t now) {
 }
 
 /* Android: the system lowers the clocks of a thread that is only 60 % busy, and then the frame takes 3 times longer (see
-   android-frontend, tasks.md, 4). Two ways to ask for more, tried with SNES_PERF="prio" and SNES_PERF="hint=MS":
+   android-frontend, tasks.md, 4). Pinning the thread to the fastest cores (cpus=auto, the default) gains 1.2 ms of the
+   median and 2 ms of the p99 frame on a Galaxy S25 Ultra. Tried and off by default: SNES_PERF="prio", "hint=MS" (ADPF,
+   no measurable gain) and "spin" (busy waiting: fast, but it burns a core). SNES_PERF="none" turns everything off. Two
+   ways to ask for more, tried with SNES_PERF="prio" and SNES_PERF="hint=MS":
    a higher scheduling priority, and a performance hint session (ADPF, API 33; found with dlsym), which tells the system
    how long each frame of work takes and how long it should take. */
 #ifdef __ANDROID__
@@ -1631,7 +1634,8 @@ static void perf_init(void) {
     const char *e = getenv("SNES_PERF");
     const char *h;
     void *lib;
-    if (!e) return;
+    if (!e) e = "cpus=auto"; /* by default the thread runs on the fastest cores; SNES_PERF=none turns it off */
+    if (strstr(e, "none")) return;
     perf_prio = strstr(e, "prio") != NULL;
     if ((h = strstr(e, "spin=")) != NULL) perf_spin = atoi(h + 5);
     else if (strstr(e, "spin")) perf_spin = 999;
