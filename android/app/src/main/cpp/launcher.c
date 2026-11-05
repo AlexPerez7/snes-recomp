@@ -9,7 +9,9 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #include <ftw.h>
+#include <pthread.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +91,25 @@ static const char *const libc_names[] = {
     "memcpy", "memmove", "memset", "memcmp", "strlen", "strcmp", "strncmp", "strchr", "strrchr", "strstr", "strcspn",
     "strcpy", "strncpy", "malloc", "calloc", "realloc", "free", "exit", "atoi", "strtol", "strtoul", "fopen", "fclose",
     "fread", "fwrite", "fprintf", "snprintf", "fputs", "fputc", "fgets", "stat", "stderr", NULL};
+
+static void *stdout_pump(void *arg) {
+    int fd = (int)(intptr_t)arg;
+    char buf[512];
+    FILE *f = fdopen(fd, "r");
+    while (f && fgets(buf, sizeof buf, f)) LOG("%s", buf);
+    return NULL;
+}
+
+/* stdout no llega a ningun sitio en Android: una tuberia con un hilo que lo pasa a logcat. */
+static void stats_to_logcat(void) {
+    int fds[2];
+    pthread_t th;
+    if (pipe(fds)) return;
+    dup2(fds[1], 1);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    pthread_create(&th, NULL, stdout_pump, (void *)(intptr_t)fds[0]);
+    pthread_detach(th);
+}
 
 int main(int argc, char **argv) {
     const char *files = SDL_AndroidGetInternalStoragePath();
@@ -195,5 +216,8 @@ int main(int argc, char **argv) {
     args[2] = "--saves-dir"; args[3] = saves;
     args[4] = "--game-dir"; args[5] = gamedir;
     args[6] = NULL;
+    /* medicion: con un fichero files/stats el runtime imprime el tiempo de trabajo por fotograma, y stdout va a logcat */
+    snprintf(path, sizeof path, "%s/stats", files);
+    if (access(path, F_OK) == 0) { stats_to_logcat(); args[6] = "--stats"; args[7] = NULL; return snes_play_main(7, args); }
     return snes_play_main(6, args);
 }
