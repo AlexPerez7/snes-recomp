@@ -218,6 +218,12 @@ int main(int argc, char **argv) {
     args[6] = NULL;
     /* medicion: con un fichero files/stats el runtime imprime el tiempo de trabajo por fotograma, y stdout va a logcat */
     snprintf(path, sizeof path, "%s/stats", files);
-    if (access(path, F_OK) == 0) { stats_to_logcat(); args[6] = "--stats"; args[7] = NULL; return snes_play_main(7, args); }
+    if (access(path, F_OK) == 0) {
+        char *txt = read_file(path, NULL); /* el contenido "unpaced" quita la espera entre fotogramas: mide el coste con los relojes al maximo */
+        stats_to_logcat();
+        args[6] = "--stats";
+        args[7] = (txt && strstr(txt, "unpaced")) ? "--unpaced" : NULL;
+        return snes_play_main(args[7] ? 8 : 7, args);
+    }
     return snes_play_main(6, args);
 }

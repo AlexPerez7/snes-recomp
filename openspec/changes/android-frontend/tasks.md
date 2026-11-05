@@ -23,7 +23,16 @@ Proyecto en `android/` (2026-11-05): compila con `gradle assembleDebug` (Gradle 
 
 ## 4. Calidad y entrega
 
-Medición (2026-11-05): con un fichero `files/stats` en la carpeta de la app (`adb shell run-as io.github.alexperez7.snesport touch files/stats`) el runtime imprime en logcat (`adb logcat -s snesport`) cada 600 fotogramas el tiempo de trabajo por fotograma (`work: p50, p99, max`). Primera lectura en el S25 Ultra con los táctiles y la pantalla encendida: p50 10,5 ms, p99 15,4 ms, que no es comparable con los 5,65 ms de la prueba (aquí cuenta también la presentación del fotograma, que puede esperar a la sincronización vertical); hay que separar emulación y presentación antes de dar la cifra de 4.1.
+Medición (2026-11-05): con un fichero `files/stats` en la carpeta de la app (`adb shell run-as io.github.alexperez7.snesport touch files/stats`; con el texto `unpaced` dentro, sin esperar entre fotogramas) el runtime imprime en logcat (`adb logcat -s snesport`) cada 600 fotogramas el tiempo de trabajo por fotograma (p50, p99 y máximo), repartido en `emu` (CPU, PPU y SPC700 hasta el final del fotograma), `tail` (imagen para la pantalla, eventos, cola de audio, capa táctil) y `pres` (la llamada de presentación, que puede esperar a la sincronización vertical). S25 Ultra, intro del juego (fotogramas 601 a 1200), 3 repeticiones de cada modo, vsync apagado:
+
+| Modo | emu p50 | emu p99 | pres p50 | tail p99 | total p99 |
+|---|---|---|---|---|---|
+| Con espera a 60 Hz | 10,1 ms | 14,8 a 16,3 ms | 0,8 ms | 0,5 ms | 16,4 a 17,3 ms |
+| Sin espera (`unpaced`) | 2,8 a 3,5 ms | 6,1 a 7,4 ms | 0,3 a 0,4 ms | 0,1 ms | 6,6 a 7,9 ms |
+
+- **La presentación y la capa táctil casi no cuestan** (menos de 1 ms y 0,5 ms): el trabajo está en la emulación.
+- **El tiempo de la emulación depende de la frecuencia del procesador.** Con la espera a 60 Hz el sistema baja los relojes (los núcleos Performance a 2,4 a 2,7 GHz y los Prime parados a 1 GHz, `SDLThread` al 74 % de un núcleo) y cada fotograma tarda 3 veces más que a pleno reloj. Sin espera sale 2,8 a 3,5 ms de mediana, en línea con la prueba (media 2,6 ms, p99 5,67 ms; aquí p99 6,1 a 7,4 ms con otro recorrido y los táctiles).
+- **Consecuencia para 4.1:** el coste real se mide con `unpaced`; la fluidez real, con la espera. En el S25 Ultra la espera mantiene 60,1 fps, pero el p99 del trabajo (16,4 a 17,3 ms) roza el presupuesto de 16,64 ms, y con un móvil más lento y relojes bajados sería peor. Falta probar si fijar un mínimo de reloj o un hilo de más prioridad lo arregla antes de dar la cifra para gama media.
 
 - [ ] 4.1 Medir el p99 por fotograma con la app completa, 3 repeticiones, en el S25 Ultra y en al menos un teléfono de gama media. Verificar: tabla en `design.md › Resultados` con los modelos.
 - [ ] 4.2 GLES 3 si 4.1 lo pide; si no, dejar `SDL_Renderer`.

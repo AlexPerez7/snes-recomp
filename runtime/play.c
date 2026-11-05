@@ -74,7 +74,7 @@ static SDL_Texture *tex;
 static int paused, fast, ff_toggle, fullscreen, shot_n;
 static uint64_t t_next, perf_freq;
 static uint16_t held; /* --hold */
-static int opt_print_keys, opt_stats, opt_print_config;
+static int opt_print_keys, opt_stats, opt_print_config, opt_unpaced; /* --unpaced (with --stats): no waiting, so the clocks of the CPU ramp up */
 
 #define PAD_B 0x8000
 #define PAD_Y 0x4000
@@ -1543,22 +1543,44 @@ static void print_stats(void) {
     if (adev) printf("audio: queue %.1f frames on average, %u frames dropped, %u underruns\n", st_queued_sum / 4.0 / 533.0 / st_frames, (unsigned)st_dropped, (unsigned)st_underruns);
 }
 
-/* With --stats: work time per frame (from the end of the previous wait to the start of this one), reported every 600 frames. */
+/* With --stats: per frame, the time from the end of the previous wait to the start of this one (work), split into the
+   emulation (CPU, PPU and SPC700 up to the end of the frame), the tail of play_frame() before pace() (picture for the
+   screen, events, audio queue, touch layer) and what the present call took (it may block on the display's vertical
+   sync), reported every 600 frames. */
 #define WORK_N 600
-static float st_work[WORK_N];
+static float st_work[WORK_N], st_pres[WORK_N], st_emu[WORK_N], st_tail[WORK_N];
 static unsigned st_work_n;
-static uint64_t st_work_t0;
+static uint64_t st_work_t0, st_pres_t0, st_frame_t0; /* st_frame_t0: where play_frame() starts */
 
 static int cmp_float(const void *a, const void *b) {
     float x = *(const float *)a, y = *(const float *)b;
     return (x > y) - (x < y);
 }
 
+static void work_line(const char *name, float *v) {
+    qsort(v, WORK_N, sizeof v[0], cmp_float);
+    printf("  %-5s p50 %5.2f  p99 %5.2f  max %5.2f ms\n", name, v[WORK_N / 2], v[WORK_N * 99 / 100], v[WORK_N - 1]);
+}
+
 static void work_stats(uint64_t now) {
-    if (st_work_t0) st_work[st_work_n++] = (float)((double)(now - st_work_t0) * 1000.0 / perf_freq);
+    if (st_work_t0) {
+        double f = (double)perf_freq / 1000.0, w = (double)(now - st_work_t0) / f, p = (double)(st_present - st_pres_t0) / f;
+        st_work[st_work_n] = (float)w;
+        st_pres[st_work_n] = (float)p;
+        {
+            double tail = (double)(now - st_frame_t0) / f - p; /* shown_frame, events, audio queue, touch layer: not the emulation */
+            st_tail[st_work_n] = (float)tail;
+            st_emu[st_work_n] = (float)(w - p - tail);
+        }
+        st_work_n++;
+    }
+    st_pres_t0 = st_present;
     if (st_work_n == WORK_N) {
-        qsort(st_work, WORK_N, sizeof st_work[0], cmp_float);
-        printf("work: %u frames, p50 %.2f ms, p99 %.2f ms, max %.2f ms\n", (unsigned)st_frames, st_work[WORK_N / 2], st_work[WORK_N * 99 / 100], st_work[WORK_N - 1]);
+        printf("work: %u frames (vsync %d)\n", (unsigned)st_frames, cfg.eff.v[O_VSYNC]);
+        work_line("total", st_work);
+        work_line("emu", st_emu);
+        work_line("tail", st_tail);
+        work_line("pres", st_pres);
         fflush(stdout);
         st_work_n = 0;
     }
@@ -1568,6 +1590,7 @@ static void pace(void) {
     uint64_t now = SDL_GetPerformanceCounter(), period = (uint64_t)((double)perf_freq / 60.0988), w0 = now;
     st_frames++;
     if (opt_stats) work_stats(now);
+    if (opt_unpaced) { t_next = now; st_work_t0 = SDL_GetPerformanceCounter(); return; }
     if (fast) {
         int k = ff_factor(cfg.eff.v[O_FFSPEED]);
         if (k == 0) { t_next = now; return; }
@@ -1741,6 +1764,7 @@ static const char *menu_shot_path;
 static int menu_shot_page;
 
 static void play_frame(void) {
+    if (opt_stats) st_frame_t0 = SDL_GetPerformanceCounter();
     if (++srm_frames >= 60) { srm_frames = 0; srm_save(); }
     fps_tick();
     {
@@ -1868,6 +1892,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--mute")) opt_mute = 1;
         else if (!strcmp(argv[i], "--stats")) opt_stats = 1;
+        else if (!strcmp(argv[i], "--unpaced")) opt_unpaced = 1;
         else if (!strcmp(argv[i], "--scale") && i + 1 < argc) { opt_scale = atoi(argv[++i]); cli_scale = 1; }
         else if (!strcmp(argv[i], "--fullscreen")) { opt_fullscreen = 1; cli_fullscreen = 1; }
         else if (!strcmp(argv[i], "--print-keys")) opt_print_keys = 1;
