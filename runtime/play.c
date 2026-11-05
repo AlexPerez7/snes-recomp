@@ -428,6 +428,7 @@ static int view_lines(void) {
  * overscan and effects. The texture has the size of the picture, so that the filters do not read what lies beyond it. */
 static void present_gl(const uint8_t *fb);
 static void touch_draw(void);
+static void touch_place(Rect *r, int w, int h);
 
 static void present(const uint8_t *fb) {
     int w, h, lines = view_lines(), filter = cfg.eff.v[O_FILTER], pw = show_w;
@@ -443,6 +444,7 @@ static void present(const uint8_t *fb) {
     }
     SDL_GetRendererOutputSize(ren, &w, &h);
     r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, pw);
+    touch_place(&r, w, h);
     dst.x = r.x; dst.y = r.y; dst.w = r.w; dst.h = r.h;
     src.x = 0; src.y = cfg.eff.v[O_OVERSCAN]; src.w = pw; src.h = lines;
     SDL_UpdateTexture(tex, NULL, fb, pw * 3);
@@ -860,12 +862,29 @@ static void touch_init(const char *rom_path) {
     if (bsep && (!sep || bsep > sep)) sep = bsep;
     dir = sep ? (size_t)(sep - rom_path + 1) : 0;
     if (dir + 10 <= sizeof touch_path) { memcpy(touch_path, rom_path, dir); strcpy(touch_path + dir, "touch.ini"); }
+    {
+        FILE *seen = fopen(touch_path, "r");
+        if (seen) fclose(seen);
+        else { /* the first run on this device: the picture fills the width of the screen instead of whole multiples */
+            config_user_set(&cfg, O_SCALING, SCALING_FIT);
+            config_save();
+        }
+    }
     touch_load(&tcfg, touch_path);
     touch_visible = 1;
     if (SDL_InitSubSystem(SDL_INIT_HAPTIC) == 0 && SDL_NumHaptics() > 0) {
         touch_haptic = SDL_HapticOpen(0);
         if (touch_haptic && SDL_HapticRumbleInit(touch_haptic) != 0) { SDL_HapticClose(touch_haptic); touch_haptic = NULL; }
     }
+}
+
+/* With the touch controls on a window taller than wide (a phone upright) the picture goes near the top, under the status
+ * bar, and the controls take the room below it, instead of the picture floating in the middle. */
+static void touch_place(Rect *r, int w, int h) {
+    int top = h * 8 / 100;
+    if (!touch_on || h <= w || cfg.eff.v[O_ASPECT] == ASPECT_FREE) return;
+    if (top + r->h > h) top = h - r->h;
+    r->y = top < 0 ? 0 : top;
 }
 
 static void touch_save_cfg(void) {
@@ -1482,6 +1501,8 @@ static void handle_events(void) {
                 }
             open_pads();
         }
+        if (e.type == SDL_APP_WILLENTERBACKGROUND) { srm_save(); touch_save_cfg(); }
+        if (e.type == SDL_APP_DIDENTERFOREGROUND) t_next = SDL_GetPerformanceCounter(); /* the time spent away is not a stall */
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) { if (touch_on) touch_finger(&e); continue; }
         if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; touch_visible = 0; }
         if (e.type == SDL_KEYDOWN) last_input_pad = 0;
@@ -1671,7 +1692,11 @@ static void open_audio(void) {
     want.freq = 32000;
     want.format = AUDIO_S16SYS;
     want.channels = 2;
+#ifdef __ANDROID__
+    want.samples = 1024; /* the Android audio path likes bigger buffers */
+#else
     want.samples = 512;
+#endif
     adev = SDL_OpenAudioDevice(name, 0, &want, &have, 0);
     if (!adev && name) {
         fprintf(stderr, "warning: cannot open the audio device '%s' (%s): using the default one\n", name, SDL_GetError());
@@ -1681,6 +1706,7 @@ static void open_audio(void) {
         fprintf(stderr, "warning: no audio: %s\n", SDL_GetError());
         return;
     }
+    SDL_Log("audio: %s, %d Hz, %d channels, %d samples a buffer", SDL_GetCurrentAudioDriver(), have.freq, have.channels, have.samples);
     audio_silence(AUD_PRIME);
     SDL_PauseAudioDevice(adev, 0);
 }
@@ -1874,6 +1900,7 @@ int main(int argc, char **argv) {
 #ifdef __ANDROID__
     touch_on = 1;
 #endif
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight Portrait"); /* it follows the way the phone is held */
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); /* a finger is a finger, not a mouse click */
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);

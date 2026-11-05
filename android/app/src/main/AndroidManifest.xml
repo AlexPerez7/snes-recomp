@@ -22,7 +22,7 @@
             android:name=".GameActivity"
             android:exported="false"
             android:configChanges="keyboardHidden|keyboard|orientation|screenSize|screenLayout|uiMode|smallestScreenSize|density"
-            android:screenOrientation="sensorLandscape"
+            android:screenOrientation="fullSensor"
             android:theme="@android:style/Theme.NoTitleBar.Fullscreen" />
     </application>
 </manifest>
