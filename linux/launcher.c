@@ -16,7 +16,9 @@
 #include <time.h>
 #include <unistd.h>
 #include "libtcc.h"
+#include <math.h>
 #include "play_ui.h"
+#include "play_touch.h"
 
 typedef struct SnesGenResult SnesGenResult;
 SnesGenResult *snes_gen_generate(const uint8_t *rom, size_t rom_len, const char *profile_toml,
@@ -111,29 +113,81 @@ static uint8_t pixels[WIN_W * WIN_H * 3];
 static Canvas cv = {pixels, WIN_W, WIN_H};
 
 typedef struct { int x, y, w, h; } Rect;
-static const Rect btn_main = {170, 230, 300, 48};
-static const Rect btn_other = {170, 292, 300, 40};
+static const Rect btn_main = {170, 256, 300, 52};
+static const Rect btn_other = {195, 320, 250, 38};
 
 static int inside(Rect r, int x, int y) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; }
 
-static void button(Rect r, const char *label, int primary, int hot) {
-    cv_rect(&cv, r.x, r.y, r.w, r.h, primary ? (hot ? 0x3C7A4C : 0x2C5C3A) : (hot ? 0x3A4068 : 0x2A2F4E));
-    cv_rect(&cv, r.x, r.y, r.w, 2, UI_GOLD);
-    cv_rect(&cv, r.x, r.y + r.h - 2, r.w, 2, UI_GOLD);
-    cv_rect(&cv, r.x, r.y, 2, r.h, UI_GOLD);
-    cv_rect(&cv, r.x + r.w - 2, r.y, 2, r.h, UI_GOLD);
-    text_center(&cv, r.x, r.w, r.y + (r.h - 16) / 2, label, UI_TEXT);
+/* un sprite RGBA de play_touch.h (el mismo arte de los botones del móvil) sobre el lienzo */
+static void blit(const TImg *im, int x0, int y0) {
+    int x, y;
+    for (y = 0; y < im->h; y++)
+        for (x = 0; x < im->w; x++) {
+            const uint8_t *p = im->px + ((size_t)y * im->w + x) * 4;
+            if (p[3]) cv_put(&cv, x0 + x, y0 + y, (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2]);
+        }
 }
 
-/* pantalla: title, mensaje (una o varias líneas separadas por \n), botones (NULL = no hay) */
+/* botón: la misma placa dorada y la misma letra que los botones táctiles; con el puntero encima se ilumina */
+static void button(Rect r, const char *label, int primary, int hot) {
+    TImg im = spr_text(r.w, r.h, label, primary ? 3 : 2, hot, 1);
+    blit(&im, r.x, r.y);
+    timg_free(&im);
+}
+
+/* una pieza de la Trifuerza: triángulo con bisel dorado (luz arriba a la izquierda), de `w` de base y `h` de alto */
+static void triangle(int cx, int top, int w, int h) {
+    int y, x;
+    for (y = 0; y < h; y++) {
+        int half = (int)((long)y * (w / 2) / h) + 1;
+        for (x = -half; x <= half; x++) {
+            uint32_t c = TC_GOLD;
+            if (y == h - 1 || x == half) c = TC_GOLD_LO;
+            else if (x == -half || y < 2) c = TC_GOLD_HI;
+            if (y >= h - 3 || x >= half - 1) c = (y == h - 1) ? TC_OUTLINE : TC_GOLD_LO;
+            cv_put(&cv, cx + x, top + y, c);
+        }
+    }
+    for (x = -(w / 2) - 1; x <= w / 2 + 1; x++) cv_put(&cv, cx + x, top + h, TC_OUTLINE);
+}
+
+/* el fondo: piedra verde oscura con un damero tenue, marco dorado biselado con esquinas, y la Trifuerza */
+static void backdrop(void) {
+    int x, y, i;
+    for (y = 0; y < WIN_H; y++)
+        for (x = 0; x < WIN_W; x++) {
+            uint32_t c = ui_mix(0x0C1C14, 0x1A3828, y, WIN_H);
+            if ((x / 16 + y / 16) % 2 == 0) c = ui_mix(c, 0x2E5A40, 1, 10);
+            cv_put(&cv, x, y, c);
+        }
+    for (i = 0; i < 3; i++) { /* marco: contorno, oro claro, oro oscuro */
+        static const uint32_t col[3] = {TC_OUTLINE, TC_GOLD, TC_GOLD_LO};
+        int m = 8 + i * 2;
+        cv_rect(&cv, m, m, WIN_W - 2 * m, 2, col[i]);
+        cv_rect(&cv, m, WIN_H - m - 2, WIN_W - 2 * m, 2, col[i]);
+        cv_rect(&cv, m, m, 2, WIN_H - 2 * m, col[i]);
+        cv_rect(&cv, WIN_W - m - 2, m, 2, WIN_H - 2 * m, col[i]);
+    }
+    for (i = 0; i < 4; i++) { /* rombos en las esquinas */
+        int cx = (i & 1) ? WIN_W - 20 : 20, cy = (i & 2) ? WIN_H - 20 : 20, d;
+        for (d = 0; d < 7; d++) cv_rect(&cv, cx - (6 - d), cy - d + 0, 2 * (6 - d) + 1, 1, d < 2 ? TC_GOLD_HI : TC_GOLD);
+        for (d = 0; d < 7; d++) cv_rect(&cv, cx - (6 - d), cy + d, 2 * (6 - d) + 1, 1, d < 2 ? TC_GOLD : TC_GOLD_LO);
+    }
+    triangle(WIN_W / 2, 30, 26, 22);
+    triangle(WIN_W / 2 - 14, 54, 26, 22);
+    triangle(WIN_W / 2 + 14, 54, 26, 22);
+}
+
+/* pantalla: mensaje (líneas separadas por \n) y botones (NULL = no hay) */
 static void draw(const char *msg, uint32_t msg_color, const char *main_label, const char *other_label, int mx, int my) {
     char line[256];
     const char *p = msg ? msg : "";
-    int y = 118;
-    cv_rect(&cv, 0, 0, WIN_W, WIN_H, 0x14142C);
-    cv_rect(&cv, 0, 0, WIN_W, 6, UI_GOLD);
-    text_draw2x(&cv, (WIN_W - text_w2x("ALttP Recomp")) / 2, 40, "ALttP Recomp", UI_GOLD, UI_SHADOW);
-    text_center(&cv, 0, WIN_W, 86, "The Legend of Zelda: A Link to the Past", UI_DIM);
+    int y = 150, lines = 0;
+    backdrop();
+    text_draw2x(&cv, (WIN_W - text_w2x("ALttP Recomp")) / 2, 94, "ALttP Recomp", TC_GOLD_HI, TC_SHADOW);
+    text_center(&cv, 0, WIN_W, 126, "The Legend of Zelda: A Link to the Past", 0xC8D8B8);
+    for (const char *q = p; *q; q += strcspn(q, "\n") + (q[strcspn(q, "\n")] ? 1 : 0)) lines++;
+    if (!main_label) y = 215 - lines * 11; /* sin botones, el mensaje va al centro */
     while (*p) {
         size_t n = strcspn(p, "\n");
         snprintf(line, sizeof line, "%.*s", (int)(n > 120 ? 120 : n), p);
@@ -372,8 +426,8 @@ int main(int argc, char **argv) {
     if (autoplay && have) running = 0;
 
     while (running) {
-        const char *main_label = have ? "Jugar" : "Elegir ROM...";
-        const char *other_label = have ? "Cambiar ROM..." : NULL;
+        const char *main_label = have ? "JUGAR" : "ELEGIR ROM";
+        const char *other_label = have ? "CAMBIAR ROM" : NULL;
         char shown[640];
         if (have) snprintf(shown, sizeof shown, "ROM: %.90s", rom);
         else if (msg[0]) snprintf(shown, sizeof shown, "%s", msg);
