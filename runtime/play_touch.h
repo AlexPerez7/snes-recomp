@@ -38,9 +38,11 @@ static const TSpec tspec[T_COUNT] = {
 };
 
 static void touch_defaults(TouchCfg *t) {
+    /* Landscape: the picture (4:3, as tall as the window) stays in the middle and every control goes in the side bands,
+       on a phone as wide as 20:9. On a narrower window the bands are thinner and the controls reach onto the picture. */
     static const TCtl land[T_COUNT] = {
-        {0.15f, 0.64f, 1}, {0.89f, 0.64f, 1}, {0.80f, 0.80f, 1}, {0.80f, 0.48f, 1}, {0.71f, 0.64f, 1},
-        {0.10f, 0.12f, 1}, {0.90f, 0.12f, 1}, {0.56f, 0.90f, 1}, {0.44f, 0.90f, 1}, {0.50f, 0.07f, 1}};
+        {0.135f, 0.62f, 1}, {0.931f, 0.62f, 1}, {0.882f, 0.726f, 1}, {0.882f, 0.514f, 1}, {0.833f, 0.62f, 1},
+        {0.10f, 0.12f, 1}, {0.90f, 0.12f, 1}, {0.89f, 0.91f, 1}, {0.11f, 0.91f, 1}, {0.115f, 0.30f, 1}};
     static const TCtl port[T_COUNT] = {
         {0.24f, 0.80f, 1}, {0.90f, 0.80f, 1}, {0.78f, 0.89f, 1}, {0.78f, 0.71f, 1}, {0.66f, 0.80f, 1},
         {0.14f, 0.62f, 1}, {0.86f, 0.62f, 1}, {0.62f, 0.96f, 1}, {0.38f, 0.96f, 1}, {0.88f, 0.075f, 1}};
