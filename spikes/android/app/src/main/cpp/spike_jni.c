@@ -236,7 +236,19 @@ JNIEXPORT jstring JNICALL Java_io_github_alexperez7_snesspike_Native_bench(JNIEn
         tcc_add_library(s, "snesrt"); /* el .so del juego depende de libsnesrt.so, ya cargada */
     } else {
         const SnesRtSymbol *sym;
+        static const char *const libc_names[] = {
+            "memcpy", "memmove", "memset", "memcmp", "strlen", "strcmp", "strncmp", "strchr", "strrchr", "strstr",
+            "strcspn", "strcpy", "strncpy", "malloc", "calloc", "realloc", "free", "exit", "atoi", "strtol",
+            "strtoul", "fopen", "fclose", "fread", "fwrite", "fprintf", "snprintf", "fputs", "fputc", "fgets",
+            "stat", "stderr", NULL};
+        const char *const *ln;
         for (sym = snes_rt_symbols(); sym->name; sym++) tcc_add_symbol(s, sym->name, sym->addr);
+        /* la libc de Android: con -nostdlib libtcc no la busca, así que se la damos con dlsym */
+        for (ln = libc_names; *ln; ln++) {
+            void *a = dlsym(RTLD_DEFAULT, *ln);
+            if (a) tcc_add_symbol(s, *ln, a);
+            else LOG("libc: no encuentro %s", *ln);
+        }
     }
     n = add_dir(s, src);
     snprintf(path, sizeof path, "%s/game", src);
