@@ -54,7 +54,9 @@
 //! addr = "06:9271"         # entry of a function of the graph
 //! kind = "before"          # before = on entry, after = before each return, replace = instead of the body
 //! call = "my_hook"         # void my_hook(Cpu *c)
-//! ret = "rts"              # only with replace: how the function returns (rts or rtl)
+//! ret = "rts"              # replace: how the function returns (rts or rtl); guard: how it returns when the hook asks to leave
+//! # kind = "guard"       # at any instruction of a function: `int my_guard(Cpu *c)`; if it returns non-zero the function
+//! #                      # leaves with `ret`, or goes on at `goto = "BB:AAAA"` (an address of the same function)
 //!
 //! [resume]                 # where the runtime can save and load states: a block of the main loop, with the 65816 stack at its base
 //! addr = "00:8034"         # start of a block of the graph; the generator calls rt_resume(c) there
@@ -133,6 +135,7 @@ struct RawHook {
     kind: HookKind,
     call: String,
     ret: Option<HookReturn>,
+    goto: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -197,6 +200,8 @@ pub enum HookKind {
     Before,
     After,
     Replace,
+    /// At an instruction inside a function: `int call(Cpu *c)`; a result other than 0 leaves the function (`ret`) or goes on at `goto`.
+    Guard,
 }
 
 /// How a function whose body a hook replaces returns.
@@ -213,8 +218,10 @@ pub struct Hook {
     pub addr: u32,
     pub kind: HookKind,
     pub call: String,
-    /// Set for `Replace`, and only then.
+    /// Set for `Replace` (how it returns), and for `Guard` when it leaves the function by returning.
     pub ret: Option<HookReturn>,
+    /// Set for `Guard` when it goes on at another address of the same function (or jumps to another function).
+    pub goto: Option<u32>,
 }
 
 /// A setting of the game that the player chooses from a list: the `[[option]]` sections.
@@ -401,15 +408,20 @@ impl Config {
             if !ident {
                 return Err(format!("hook at {}: call must be a C identifier, got {:?}", h.addr, h.call));
             }
-            match (h.kind, h.ret) {
-                (HookKind::Replace, None) => return Err(format!("hook at {}: replace needs `ret` (rts or rtl)", h.addr)),
-                (HookKind::Before | HookKind::After, Some(_)) => return Err(format!("hook at {}: only replace can set `ret`", h.addr)),
+            let goto = h.goto.as_deref().map(parse_addr).transpose()?;
+            match (h.kind, h.ret, goto) {
+                (HookKind::Replace, None, _) => return Err(format!("hook at {}: replace needs `ret` (rts or rtl)", h.addr)),
+                (HookKind::Replace, Some(_), Some(_)) => return Err(format!("hook at {}: only guard can set `goto`", h.addr)),
+                (HookKind::Before | HookKind::After, Some(_), _) => return Err(format!("hook at {}: only replace and guard can set `ret`", h.addr)),
+                (HookKind::Before | HookKind::After, _, Some(_)) => return Err(format!("hook at {}: only guard can set `goto`", h.addr)),
+                (HookKind::Guard, None, None) => return Err(format!("hook at {}: guard needs `ret` (rts or rtl) or `goto`", h.addr)),
+                (HookKind::Guard, Some(_), Some(_)) => return Err(format!("hook at {}: guard takes `ret` or `goto`, not both", h.addr)),
                 _ => {}
             }
             if cfg.hooks.iter().any(|o| o.addr == addr && o.kind == h.kind) {
                 return Err(format!("duplicate {:?} hook for {}", h.kind, h.addr));
             }
-            cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret });
+            cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret, goto });
         }
 
         if let Some(r) = raw.resume {
@@ -559,7 +571,7 @@ ret=\"rtl\"",
         .unwrap();
         assert_eq!(cfg.game, Some(GameId { id: "g1".into(), name: "Game One".into(), crc32: 0xABCD }));
         assert_eq!(cfg.hooks.len(), 2);
-        assert_eq!(cfg.hooks[1], Hook { addr: 0x8000, kind: HookKind::Replace, call: "f2".into(), ret: Some(HookReturn::Rtl) });
+        assert_eq!(cfg.hooks[1], Hook { addr: 0x8000, kind: HookKind::Replace, call: "f2".into(), ret: Some(HookReturn::Rtl), goto: None });
         assert!(Config::parse("[[entry]]
 addr=\"00:8000\"").unwrap().game.is_none());
     }
@@ -571,6 +583,11 @@ addr=\"00:8000\"
 call=\"f\"
 {extra}");
         assert!(Config::parse(&hook("kind=\"replace\"")).is_err(), "replace without ret");
+        assert!(Config::parse(&hook("kind=\"guard\"")).is_err(), "guard without ret or goto");
+        assert!(Config::parse(&hook("kind=\"guard\"\nret=\"rts\"\ngoto=\"00:8004\"")).is_err(), "guard with ret and goto");
+        assert!(Config::parse(&hook("kind=\"before\"\ngoto=\"00:8004\"")).is_err(), "goto only with guard");
+        let g = Config::parse(&hook("kind=\"guard\"\ngoto=\"00:8004\"")).unwrap();
+        assert_eq!((g.hooks[0].kind, g.hooks[0].goto, g.hooks[0].ret), (HookKind::Guard, Some(0x8004), None));
         assert!(Config::parse(&hook("kind=\"before\"
 ret=\"rts\"")).is_err(), "ret without replace");
         assert!(Config::parse("[[hook]]

@@ -29,6 +29,29 @@ El perfil SHALL poder declarar `[[hook]]` con `addr` (entrada de una función de
 - **WHEN** el perfil no declara ningún `[[hook]]`
 - **THEN** el C generado es idéntico al que se generaba antes de este cambio
 
+### Requirement: Ganchos guarda dentro de una función
+El perfil SHALL poder declarar `[[hook]]` con `kind = "guard"`, `addr` (la dirección de cualquier instrucción del código descubierto, no solo la entrada de una función) y `call` (una función C del juego con la firma `int nombre(Cpu *c)`), más `ret` (`rts` o `rtl`) o `goto` (otra dirección, normalmente del mismo cuerpo), exactamente uno de los dos. El generador MUST emitir antes de esa instrucción una llamada a `call` y, si devuelve un valor distinto de 0, salir de la función con el retorno de `ret` o continuar en `goto`; si devuelve 0, la ejecución sigue con la instrucción. Un guarda MUST poder también limitarse a observar o cambiar el estado de la CPU y devolver siempre 0.
+
+#### Scenario: Guarda que sale
+- **WHEN** un `[[hook]]` `guard` con `ret = "rts"` apunta a una instrucción del medio de una función y `call` devuelve un valor distinto de 0
+- **THEN** la función vuelve a quien la llamó sin ejecutar esa instrucción ni las siguientes, con el estado de la CPU que dejó `call`
+
+#### Scenario: Guarda que sigue
+- **WHEN** `call` devuelve 0
+- **THEN** la instrucción y el resto de la función se ejecutan como sin gancho
+
+#### Scenario: Guarda que salta
+- **WHEN** el gancho lleva `goto` con la dirección de un bloque de la misma función y `call` devuelve un valor distinto de 0
+- **THEN** la ejecución continúa en esa dirección
+
+#### Scenario: Dirección que no es una instrucción
+- **WHEN** el `addr` de un `guard` cae en medio de una instrucción o fuera del código descubierto
+- **THEN** el generador informa del error con la dirección y no genera nada
+
+#### Scenario: Perfil mal formado
+- **WHEN** un `guard` no tiene ni `ret` ni `goto`, o tiene los dos, o `goto` lo lleva un gancho que no es `guard`
+- **THEN** el perfil se rechaza al leerlo, con la dirección del gancho
+
 ### Requirement: Código C propio del juego
 Si existe un directorio hermano del perfil con el mismo nombre sin extensión, `snes-port` SHALL copiar sus `*.c` y `*.h` al directorio de construcción y compilar los `.c` junto al C generado, con acceso a `snes_rt.h`. Ese código MUST poder incrustarse en el binario y distribuirse, y el programa MUST seguir sin incluir bytes de la ROM en lo construido.
 

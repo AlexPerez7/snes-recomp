@@ -332,6 +332,8 @@ pub struct Emitter<'a> {
     g: &'a Graph,
     /// Calls to C functions of the game, by the entry of the function they hook.
     hooks: BTreeMap<u32, Vec<Hook>>,
+    /// Guards, by the address of the instruction they come before.
+    guards: BTreeMap<u32, Hook>,
     options: Vec<GameOption>,
     /// The block where the runtime may save and load states: it starts with a call to rt_resume.
     resume: Option<u32>,
@@ -368,7 +370,7 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g, hooks: BTreeMap::new(), options: Vec::new(), resume: None }
+        Emitter { d, g, hooks: BTreeMap::new(), guards: BTreeMap::new(), options: Vec::new(), resume: None }
     }
 
     /// Marks the block at `addr` as the resume point of the profile (`[resume]`): it must be the start of a block of the graph.
@@ -384,13 +386,25 @@ impl<'a> Emitter<'a> {
 
     /// Hooks the functions of the game's profile: a hook runs `before` the body of the function at `addr`, `after` it
     /// has returned (by any of its returns, or a tail call), or `replace`s the body and returns as the hook says.
-    /// Every `addr` has to be the entry of a function of the graph.
+    /// Every `addr` has to be the entry of a function of the graph, except for a `guard`: that one is called before
+    /// any instruction of the code and, if it returns non-zero, leaves the function or goes on at another address.
     pub fn with_hooks(mut self, hooks: &[Hook]) -> Result<Self, String> {
         for h in hooks {
+            if h.kind == HookKind::Guard {
+                if !self.d.instrs.contains_key(&h.addr) {
+                    return Err(format!("hook `{}`: {} is not an instruction of the code", h.call, fmt_addr(h.addr)));
+                }
+                self.guards.insert(h.addr, h.clone());
+                continue;
+            }
             if !self.g.functions.contains_key(&h.addr) {
                 return Err(format!("hook `{}`: {} is not the entry of a function", h.call, fmt_addr(h.addr)));
             }
             self.hooks.entry(h.addr).or_default().push(h.clone());
+        }
+        let guard_calls: BTreeSet<&str> = self.guards.values().map(|h| h.call.as_str()).collect();
+        if let Some(h) = self.hooks.values().flatten().find(|h| guard_calls.contains(h.call.as_str())) {
+            return Err(format!("hook `{}` is used as a guard (it returns int) and as another kind (it returns void)", h.call));
         }
         Ok(self)
     }
@@ -423,8 +437,10 @@ impl<'a> Emitter<'a> {
     }
 
     /// The names of the C functions the hooks call, each once.
-    fn hook_calls(&self) -> BTreeSet<&str> {
-        self.hooks.values().flatten().map(|h| h.call.as_str()).collect()
+    fn hook_calls(&self) -> BTreeSet<String> {
+        let plain = self.hooks.values().flatten().map(|h| format!("void {}(Cpu *c);", h.call));
+        let guards = self.guards.values().map(|h| format!("int {}(Cpu *c);", h.call));
+        plain.chain(guards).collect()
     }
 
     /// Blocks reachable from `entry` without entering another function. Unlike the graph's own
@@ -579,6 +595,15 @@ impl<'a> Emitter<'a> {
         for (i, &a) in block.instrs.iter().enumerate() {
             let ins = &self.d.instrs[&a];
             let f = widths[i];
+            if let Some(g) = self.guards.get(&a) {
+                let leave = match (g.ret, g.goto) {
+                    (Some(HookReturn::Rtl), _) => "c->ret = rt_pull16(c); (void)rt_pull8(c); return;".to_string(),
+                    (Some(HookReturn::Rts), _) => "c->ret = rt_pull16(c); return;".to_string(),
+                    (None, Some(t)) => self.jump(body, t)?,
+                    (None, None) => unreachable!("a guard has `ret` or `goto`"),
+                };
+                out.push(format!("if ({}(c)) {{ {leave} }}", g.call));
+            }
             out.push(format!("// {} {}", fmt_addr(a), ins.text()));
             let lines = match ins.flow() {
                 Flow::Call(t) => {
@@ -797,7 +822,7 @@ impl<'a> Emitter<'a> {
             out.push_str(&format!("void {}(Cpu *c);\n", func_name(*r)));
         }
         for call in self.hook_calls() {
-            out.push_str(&format!("void {call}(Cpu *c);\n"));
+            out.push_str(&format!("{call}\n"));
         }
         for (_, text) in bodies {
             out.push('\n');
@@ -831,7 +856,7 @@ impl<'a> Emitter<'a> {
             header.push_str(&format!("void {}(Cpu *c);\n", func_name(*r)));
         }
         for call in self.hook_calls() {
-            header.push_str(&format!("void {call}(Cpu *c);\n"));
+            header.push_str(&format!("{call}\n"));
         }
         let banks = banks
             .into_iter()
@@ -1777,6 +1802,46 @@ int main(void) {{
         let Some(out) = exec_with("hook-replace-rtl", &rom, &cfg, &[0x8100, 0x1_8000], extra, r#"//report
             printf("m11=%02X s=%04X\n", bus_read8(0x11), c.s);"#) else { return };
         assert_eq!(out, "m11=37 s=0201\n");
+    }
+
+    #[test]
+    fn a_guard_leaves_the_function_when_it_returns_non_zero_and_runs_on_when_it_returns_zero() {
+        // 8100: JSR $8000 ; STA $12 ; RTS      8000: LDA #$01 ; STA $10 ; LDA #$02 ; STA $11 ; RTS (guard before the second LDA)
+        let rom = [(0x8100, &[0x20, 0x00, 0x80, 0x85, 0x12, 0x60][..]), (0x8000, &[0xA9, 0x01, 0x85, 0x10, 0xA9, 0x02, 0x85, 0x11, 0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8004\"\nkind=\"guard\"\ncall=\"hk_guard\"\nret=\"rts\"");
+        let extra = "static int want; int hk_guard(Cpu *c) { c->a = 0x77; return want; }";
+        let Some(out) = exec_with("hook-guard-ret", &rom, &cfg, &[0x8100, 0x8000], extra, r#"//report
+            printf("a m10=%02X m11=%02X s=%04X\n", bus_read8(0x10), bus_read8(0x11), c.s);
+            bus_write8(0x11, 0); want = 1; c.s = 0x01FF; f_00_8100(&c);
+            printf("b m10=%02X m11=%02X m12=%02X s=%04X\n", bus_read8(0x10), bus_read8(0x11), bus_read8(0x12), c.s);"#) else { return };
+        assert!(out.contains("a m10=01 m11=02"), "{out}");
+        assert!(out.contains("b m10=01 m11=00 m12=77 s=0201"), "{out}");
+    }
+
+    #[test]
+    fn a_guard_can_go_on_at_another_address_of_the_function() {
+        // LDA #$00 ; BNE $8008 ; LDA #$02 ; STA $11 ; 8008: STA $10 ; RTS   (guard before the LDA #$02: go on at 8008)
+        let rom = [(0x8000, &[0xA9, 0x00, 0xD0, 0x04, 0xA9, 0x02, 0x85, 0x11, 0x85, 0x10, 0x60][..])];
+        let cfg = hook_cfg("HOOK\naddr=\"00:8004\"\nkind=\"guard\"\ncall=\"hk_guard\"\ngoto=\"00:8008\"");
+        let extra = "static int want; int hk_guard(Cpu *c) { c->a = 0x55; return want; }";
+        let Some(out) = exec_with("hook-guard-goto", &rom, &cfg, &[0x8000], extra, r#"//report
+            printf("a m10=%02X m11=%02X\n", bus_read8(0x10), bus_read8(0x11));
+            bus_write8(0x10, 0); bus_write8(0x11, 0); want = 1; c.s = 0x01FF; f_00_8000(&c);
+            printf("b m10=%02X m11=%02X\n", bus_read8(0x10), bus_read8(0x11));"#) else { return };
+        assert!(out.contains("a m10=02 m11=02"), "{out}");
+        assert!(out.contains("b m10=55 m11=00"), "{out}");
+    }
+
+    #[test]
+    fn a_guard_has_to_be_at_an_instruction_and_a_function_cannot_be_hook_and_guard() {
+        let rom = [(0x8000, &[0xA9, 0x01, 0x60][..])];
+        let mid = hook_cfg("HOOK\naddr=\"00:8001\"\nkind=\"guard\"\ncall=\"g\"\nret=\"rts\"");
+        let err = gen(&rom, &mid, &[0x8000], 0x8000, 0).unwrap_err();
+        assert!(err.contains("not an instruction"), "8001 is the middle of LDA #$01: {err}");
+        let both = hook_cfg("HOOK\naddr=\"00:8000\"\nkind=\"guard\"\ncall=\"g\"\nret=\"rts\"\nHOOK\naddr=\"00:8000\"\nkind=\"before\"\ncall=\"g\"");
+        assert!(gen(&rom, &both, &[0x8000], 0x8000, 0).is_err(), "g would return int and void");
+        let ok = hook_cfg("HOOK\naddr=\"00:8002\"\nkind=\"guard\"\ncall=\"g\"\nret=\"rts\"");
+        assert!(gen(&rom, &ok, &[0x8000], 0x8000, 0).unwrap().contains("int g(Cpu *c);"));
     }
 
     #[test]
