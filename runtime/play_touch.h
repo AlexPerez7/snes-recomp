@@ -14,9 +14,9 @@
 
 /* ---- the controls ---- */
 
-/* T_SAVE, T_LOAD and T_REWIND drive the save states (play_state.h): save the slot, load it, and rewind while held. They only
+/* T_SAVE, T_LOAD, T_REWIND and T_SLOT drive the save states (play_state.h): save the slot, load it, rewind while held, and go to the next slot. They only
  * exist for a game that has a resume point (`touch_extra`), and always while the layout is being edited. */
-enum { T_DPAD, T_A, T_B, T_X, T_Y, T_L, T_R, T_START, T_SELECT, T_MENU, T_SAVE, T_LOAD, T_REWIND, T_COUNT };
+enum { T_DPAD, T_A, T_B, T_X, T_Y, T_L, T_R, T_START, T_SELECT, T_MENU, T_SAVE, T_LOAD, T_REWIND, T_SLOT, T_COUNT };
 
 static int touch_extra = 1; /* the controls from T_SAVE on count: hit tests and the state the fingers give skip them when it is 0 */
 
@@ -39,7 +39,7 @@ typedef struct { int w, h; float unit; const char *name; } TSpec;
 static const TSpec tspec[T_COUNT] = {
     {65, 65, 0.34f, "dpad"}, {25, 25, 0.13f, "a"}, {25, 25, 0.13f, "b"}, {25, 25, 0.13f, "x"}, {25, 25, 0.13f, "y"},
     {41, 17, 0.20f, "l"}, {41, 17, 0.20f, "r"}, {45, 13, 0.16f, "start"}, {45, 13, 0.16f, "select"}, {33, 13, 0.12f, "menu"},
-    {33, 13, 0.12f, "save"}, {33, 13, 0.12f, "load"}, {41, 13, 0.15f, "rewind"},
+    {33, 13, 0.12f, "save"}, {33, 13, 0.12f, "load"}, {41, 13, 0.15f, "rewind"}, {33, 13, 0.12f, "slot"},
 };
 
 static void touch_defaults(TouchCfg *t) {
@@ -48,11 +48,11 @@ static void touch_defaults(TouchCfg *t) {
     static const TCtl land[T_COUNT] = {
         {0.135f, 0.62f, 1}, {0.931f, 0.62f, 1}, {0.882f, 0.726f, 1}, {0.882f, 0.514f, 1}, {0.833f, 0.62f, 1},
         {0.10f, 0.12f, 1}, {0.90f, 0.12f, 1}, {0.89f, 0.91f, 1}, {0.11f, 0.91f, 1}, {0.115f, 0.30f, 1},
-        {0.90f, 0.26f, 1}, {0.90f, 0.34f, 1}, {0.115f, 0.39f, 1}};
+        {0.90f, 0.26f, 1}, {0.90f, 0.34f, 1}, {0.115f, 0.39f, 1}, {0.90f, 0.20f, 1}};
     static const TCtl port[T_COUNT] = {
         {0.24f, 0.80f, 1}, {0.90f, 0.80f, 1}, {0.78f, 0.89f, 1}, {0.78f, 0.71f, 1}, {0.66f, 0.80f, 1},
         {0.14f, 0.62f, 1}, {0.86f, 0.62f, 1}, {0.62f, 0.96f, 1}, {0.38f, 0.96f, 1}, {0.88f, 0.075f, 1},
-        {0.38f, 0.075f, 1}, {0.62f, 0.075f, 1}, {0.14f, 0.075f, 1}};
+        {0.38f, 0.075f, 1}, {0.62f, 0.075f, 1}, {0.14f, 0.075f, 1}, {0.50f, 0.52f, 1}};
     memcpy(t->land.c, land, sizeof land);
     memcpy(t->port.c, port, sizeof port);
     t->size = 100; t->opacity = 85; t->haptic = 1;
@@ -171,13 +171,22 @@ static void touch_load(TouchCfg *t, const char *path) {
     touch_clamp(t);
 }
 
+/* Whether two controls are in the same place, as far as the file can tell (it keeps three decimals). */
+static int touch_same(const TCtl *a, const TCtl *b) {
+    return fabsf(a->x - b->x) < 0.0005f && fabsf(a->y - b->y) < 0.0005f && fabsf(a->s - b->s) < 0.005f;
+}
+
 static int touch_save(const TouchCfg *t, const char *path) {
     FILE *f = fopen(path, "w");
+    TouchCfg d;
     int i;
     if (!f) return 0;
-    fprintf(f, "# Touch controls of the Android app. Edited from the menu (Touch tab).\nsize=%d\nopacity=%d\nhaptic=%d\n", t->size, t->opacity, t->haptic);
-    for (i = 0; i < T_COUNT; i++) fprintf(f, "land.%s=%.3f,%.3f,%.2f\n", tspec[i].name, t->land.c[i].x, t->land.c[i].y, t->land.c[i].s);
-    for (i = 0; i < T_COUNT; i++) fprintf(f, "port.%s=%.3f,%.3f,%.2f\n", tspec[i].name, t->port.c[i].x, t->port.c[i].y, t->port.c[i].s);
+    fprintf(f, "# Touch controls of the Android app. Edited from the menu (Touch tab). Only the controls that were moved are listed.\nsize=%d\nopacity=%d\nhaptic=%d\n", t->size, t->opacity, t->haptic);
+    /* only the controls that are not where the defaults put them: a control that was never moved follows the defaults of the
+       next version, instead of being frozen in the file at the place it had on the day the file was written */
+    touch_defaults(&d);
+    for (i = 0; i < T_COUNT; i++) if (!touch_same(&t->land.c[i], &d.land.c[i])) fprintf(f, "land.%s=%.3f,%.3f,%.2f\n", tspec[i].name, t->land.c[i].x, t->land.c[i].y, t->land.c[i].s);
+    for (i = 0; i < T_COUNT; i++) if (!touch_same(&t->port.c[i], &d.port.c[i])) fprintf(f, "port.%s=%.3f,%.3f,%.2f\n", tspec[i].name, t->port.c[i].x, t->port.c[i].y, t->port.c[i].s);
     return fclose(f) == 0;
 }
 
@@ -394,6 +403,7 @@ static TImg touch_sprite(int id, int state) {
     case T_SAVE: return spr_label(id, state, "SAVE", 1);
     case T_LOAD: return spr_label(id, state, "LOAD", 1);
     case T_REWIND: return spr_label(id, state, "REWIND", 1);
+    case T_SLOT: return spr_label(id, state, "SLOT", 1);
     default: return spr_label(id, state, "MENU", 1);
     }
 }

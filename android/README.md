@@ -65,7 +65,7 @@ La salida (`work: p50, p99, max` cada 600 fotogramas, desglosado en `emu`, `tail
 
 ## Estados guardados
 
-En un juego con `[resume]` en su perfil (ALttP lo tiene) la pantalla táctil trae tres placas: **SAVE** y **LOAD** guardan y cargan el estado de la ranura 1, y **REWIND**, mantenida, rebobina. Son los mismos controles que F5, F7 y Retroceso en el PC (estados en `saves/`, formato de `snes_state.inc`) y se colocan y escalan en el editor de la pestaña Touch como el resto. No hay control para cambiar de ranura. En un juego sin `[resume]` no aparecen. Probado con las pruebas del motor (posiciones y pulsaciones) y a mano el 2026-11-07 en un Galaxy S25 Ultra: guardar, cargar y rebobinar funcionan.
+En un juego con `[resume]` en su perfil (ALttP lo tiene) la pantalla táctil trae tres placas: **SAVE** y **LOAD** guardan y cargan el estado de la ranura actual, **SLOT** pasa a la siguiente (de la 1 a la 9 y vuelta a la 1, con el aviso «Slot N») y **REWIND**, mantenida, rebobina. Son los mismos controles que F5, F7, F4 y Retroceso en el PC (estados en `saves/`, formato de `snes_state.inc`) y se colocan y escalan en el editor de la pestaña Touch como el resto. En un juego sin `[resume]` no aparecen. Probado con las pruebas del motor (posiciones y pulsaciones) y a mano el 2026-11-07 en un Galaxy S25 Ultra: guardar, cargar y rebobinar funcionan (SLOT, añadida después, sin probar en el teléfono).
 
 ## Ciclo de vida
 

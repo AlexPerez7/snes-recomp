@@ -22,8 +22,8 @@
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
  * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
  * F5 = save a state, F7 = load it, F3/F4 = previous/next slot (1 to 9), Backspace held = rewind (games with a [resume] point; see play_state.h),
- * With the touch controls (Android, or --touch) the SAVE and LOAD plates do what F5 and F7 do and REWIND, held, what Backspace does; they
- * are only there for a game with a resume point.
+ * With the touch controls (Android, or --touch) the SAVE and LOAD plates do what F5 and F7 do, SLOT goes to the next slot (F4) and REWIND, held,
+ * does what Backspace does; they are only there for a game with a resume point.
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
@@ -846,6 +846,7 @@ static void menu_pad(SDL_GameControllerButton b);
 static void menu_open_now(void);
 static void menu_close(void);
 static void st_request(int kind); /* play_state.h */
+static void st_change_slot(int d);
 
 static TouchCfg tcfg;
 static char touch_path[1100];
@@ -1076,6 +1077,7 @@ static void touch_poll(void) {
     else {
         if (fresh & (1u << T_SAVE)) st_request(1);
         if (fresh & (1u << T_LOAD)) st_request(2);
+        if (fresh & (1u << T_SLOT)) st_change_slot(1);
     }
     touch_prev = now;
 }

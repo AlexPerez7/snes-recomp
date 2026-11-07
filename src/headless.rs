@@ -2863,6 +2863,28 @@ int main(void) {
     touch_defaults(&t);
     CHECK(u.land.c[T_SAVE].x == t.land.c[T_SAVE].x && u.port.c[T_REWIND].y == t.port.c[T_REWIND].y);
     remove(path);
+    /* with the default places no two controls overlap, in either orientation and on several screens (a phone, a small phone, a tablet) */
+    {
+        static const int sizes[][2] = {{1080, 2340}, {720, 1600}, {923, 2000}, {1600, 2560}, {2340, 1080}, {1600, 720}, {2000, 923}, {2560, 1600}};
+        int z, a_, b_;
+        for (z = 0; z < 8; z++) {
+            int w = sizes[z][0], h = sizes[z][1];
+            TLayout *lz = touch_layout(&t, w, h);
+            for (a_ = 0; a_ < T_COUNT; a_++)
+                for (b_ = a_ + 1; b_ < T_COUNT; b_++) {
+                    TRect ra = touch_rect(&t, lz, a_, w, h), rb = touch_rect(&t, lz, b_, w, h);
+                    int round_a = a_ >= T_A && a_ <= T_Y, round_b = b_ >= T_A && b_ <= T_Y;
+                    int apart = ra.cx + ra.w / 2 <= rb.cx - rb.w / 2 || rb.cx + rb.w / 2 <= ra.cx - ra.w / 2 ||
+                                ra.cy + ra.h / 2 <= rb.cy - rb.h / 2 || rb.cy + rb.h / 2 <= ra.cy - ra.h / 2;
+                    if (round_a && round_b) { /* two round buttons: circles, not their boxes */
+                        long dx = ra.cx - rb.cx, dy = ra.cy - rb.cy, rr = (ra.w + rb.w) / 2;
+                        apart = dx * dx + dy * dy >= rr * rr;
+                    }
+                    if (!apart) printf("controls %s and %s overlap on %dx%d\n", tspec[a_].name, tspec[b_].name, w, h);
+                    CHECK(apart);
+                }
+        }
+    }
     /* the pad: left of the centre is left, above and to the right is up and right (a diagonal), the centre nothing */
     memset(f, 0, sizeof f);
     r = touch_rect(&t, l, T_DPAD, 1080, 2340);
@@ -2899,6 +2921,15 @@ int main(void) {
     CHECK(u.size == 120 && u.opacity == 40 && u.haptic == 0);
     CHECK(fabsf(u.port.c[T_X].x - 0.31f) < 0.002f && fabsf(u.port.c[T_X].y - 0.52f) < 0.002f && fabsf(u.port.c[T_X].s - 1.4f) < 0.011f);
     CHECK(fabsf(u.land.c[T_X].x - t.land.c[T_X].x) < 0.002f);
+    /* the file lists only what was moved: one control here, so a later change of the defaults reaches every other */
+    {
+        FILE *g = fopen(path, "r");
+        char ln[160];
+        int lines = 0, moved = 0;
+        while (g && fgets(ln, sizeof ln, g)) { if (!strncmp(ln, "land.", 5) || !strncmp(ln, "port.", 5)) lines++; if (!strncmp(ln, "port.x=", 7)) moved++; }
+        if (g) fclose(g);
+        CHECK(lines == 1 && moved == 1);
+    }
     { FILE *g = fopen(path, "w"); fputs("size=900\nopacity=0\nport.a=5,-3,9\nnonsense\n", g); fclose(g); }
     touch_load(&u, path);
     CHECK(u.size == 150 && u.opacity == 10 && u.port.c[T_A].x == 0.97f && u.port.c[T_A].y == 0.03f && u.port.c[T_A].s == 2.0f);
