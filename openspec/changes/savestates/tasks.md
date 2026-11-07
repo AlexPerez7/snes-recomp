@@ -23,7 +23,7 @@
 
 - [x] 4.1 Determinismo: guardar, N fotogramas, cargar, N fotogramas; misma WRAM (pruebas `the_headless_frontend_gives_the_same_memory...`, frontal sin ventana, corre en Linux sin SDL2). Falta comparar imagen y audio
 - [x] 4.2 Estado de otra ROM o de otra versión: rechazado sin tocar el juego (prueba `a_state_of_another_rom_or_not_a_state_is_refused...`: otra ROM, bytes que no son un estado y fichero que no existe; no cubre «otra profundidad de pila»)
-- [x] 4.3 Rebobinado: cada diferencia del anillo se comprueba deshaciéndola (prueba `a_state_saved_in_the_main_loop...`); falta una prueba de que K pasos vuelven al hash esperado. OJO: esa prueba usa el frontal con SDL2 y en Linux se omite sola (`cctest::sdl2_dir` solo mira `SDL2_DIR` y `out/sdl2`, y el compilador GNU de los tests no enlaza SDL), así que aquí pasa sin ejecutarse
+- [x] 4.3 Rebobinado: cada diferencia del anillo se comprueba deshaciéndola (prueba `a_state_saved_in_the_main_loop...`) y K pasos retroceden K capturas de 4 fotogramas (prueba `k_steps_of_rewind_go_back_k_captures...`, con un contador de 16 bits que el C del juego imprime). Ya se ejecutan en Linux (`cctest` usa SDL2 de `pkg-config`)
 - [ ] 4.4 `cargo test` completo sin regresiones y fuzz de ALttP con guardar/cargar aleatorio
 
 ## 5. Cierre

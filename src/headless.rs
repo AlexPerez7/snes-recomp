@@ -305,6 +305,51 @@ fn a_state_of_another_rom_or_not_a_state_is_refused_without_touching_the_game() 
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A 16-bit counter in $10/$11 that moves in a subroutine (00:8100, hooked) called from the main loop (resume point 00:8006): the C of
+/// the game prints it on every call, so a run tells where the memory was at each moment.
+const COUNTER16_ROM: [(u32, &[u8]); 2] = [(0x8000, &[0xA9, 0x00, 0x85, 0x10, 0x85, 0x11, 0x20, 0x00, 0x81, 0x80, 0xFB]), (0x8100, &[0xE6, 0x10, 0xD0, 0x02, 0xE6, 0x11, 0x60])];
+const COUNTER16_CFG: &str = "[resume]\naddr=\"00:8006\"\n[[hook]]\naddr=\"00:8100\"\nkind=\"before\"\ncall=\"game_hook\"";
+const COUNTER16_C: &str = "#include <stdio.h>\n#include \"snes_rt.h\"\nvoid game_hook(Cpu *c) { (void)c; printf(\"c=%u\\n\", wram_read8(0x10) | wram_read8(0x11) << 8); }\n";
+
+/// The values of the counter printed by a run of `COUNTER16_ROM` with the interactive frontend and `extra` arguments, one per call.
+fn counter16_run(name: &str, frames: &str, extra: &[&str]) -> Option<Vec<String>> {
+    let mut args = vec!["rom.sfc", "--no-window", "--frame-blocks", "50", "--frames", frames];
+    args.extend(extra);
+    let r = run_hooked_with(name, true, &COUNTER16_ROM, &[0x8000, 0x8100], COUNTER16_CFG, COUNTER16_C, &args, &[])?;
+    assert_eq!(r.code, 0, "{}", r.out);
+    Some(r.out.lines().map(str::to_string).collect())
+}
+
+fn counter_of(line: &str) -> Option<i64> {
+    line.strip_prefix("c=").and_then(|n| n.parse().ok())
+}
+
+#[test]
+fn k_steps_of_rewind_go_back_k_captures_of_four_frames_each() {
+    // a plain run gives what four frames are worth in counter: the counter at the end of frame 36 minus that of frame 32
+    let Some(p32) = counter16_run("rewind-k-plain32", "32", &[]) else { return };
+    let Some(p36) = counter16_run("rewind-k-plain36", "36", &[]) else { return };
+    let last = |l: &Vec<String>| l.iter().rev().find_map(|x| counter_of(x)).unwrap();
+    let four_frames = last(&p36) - last(&p32);
+    assert!((60..=70).contains(&four_frames), "four frames move the counter {four_frames} times");
+    // the rewind key held from frame 30: each step loads the next older capture, and the first thing the game prints after the load is its counter
+    let Some(w) = counter16_run("rewind-k-held", "60", &["--state-script", "rewind@30-44"]) else { return };
+    let mut loaded = Vec::new();
+    for (i, l) in w.iter().enumerate() {
+        if l.contains("rewind step") {
+            loaded.push(w[i + 1..].iter().find_map(|x| counter_of(x)).expect("the game goes on after a step"));
+        }
+    }
+    assert!(loaded.len() >= 5, "five steps or more were expected: {loaded:?}\n{}", w.join("\n"));
+    for k in 1..loaded.len() {
+        let back = loaded[k - 1] - loaded[k];
+        assert!((back - four_frames).abs() <= 1, "step {} goes back {back} (four frames are worth {four_frames}): {loaded:?}", k + 1);
+    }
+    // and every step lands before the point where the run was when the key went down (the counter of frame 30 of a plain run is about 500)
+    let Some(p30) = counter16_run("rewind-k-plain30", "30", &[]) else { return };
+    assert!(loaded[0] < last(&p30) + 20 && loaded[0] > last(&p30) - 3 * four_frames, "the first step lands near the newest capture: {loaded:?} (frame 30 = {})", last(&p30));
+}
+
 /// LDA #$05 ; STA $10 ; JSR $8100 ; BRA to itself    and at 00:8100 an RTS.
 const HOOKED_ROM: [(u32, &[u8]); 2] = [(0x8000, &[0xA9, 0x05, 0x85, 0x10, 0x20, 0x00, 0x81, 0x80, 0xFE]), (0x8100, &[0x60])];
 const HOOK_CFG: &str = "[[hook]]\naddr=\"00:8100\"\nkind=\"before\"\ncall=\"game_hook\"";
