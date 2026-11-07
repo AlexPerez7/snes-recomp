@@ -35,6 +35,20 @@ static uint8_t dsp_reg[128];
 static uint8_t dsp_addr;
 static Voice voice[8];
 static uint8_t kon_latch, endx;
+/* Music and effects share the voices of the DSP, so the driver of the game says which are the effects' at the moment: a byte of the
+ * SPC700 RAM (the profile's `[audio] sfx_voice_mask`) with a bit per voice. The voice keeps the class it had when it was keyed on. The
+ * volumes (0-100) scale the voices of each class before the mix and the echo send; 100 and 100 leave the sound as it was. */
+#ifdef SNES_RT_LIBRARY
+static int audio_sfx_mask_addr = -1;
+void snes_rt_register_audio(int sfx_mask_addr) { audio_sfx_mask_addr = sfx_mask_addr; }
+#else
+/* linked in one piece: the address is the constant snes_entry.c holds, no registration needed */
+extern const int snes_game_sfx_voice_mask;
+#define audio_sfx_mask_addr snes_game_sfx_voice_mask
+void snes_rt_register_audio(int sfx_mask_addr) { (void)sfx_mask_addr; }
+#endif
+static uint8_t sfx_voices;
+static int audio_music_vol = 100, audio_sfx_vol = 100;
 static unsigned dsp_counter = 0x77FF;
 static int noise = 0x4000;
 static uint16_t echo_pos, echo_len = 4;
@@ -165,6 +179,8 @@ static void dsp_sample(void) {
             vo->mode = ENV_ATTACK; vo->env = 0; vo->cnt = 0; vo->kon_delay = 5; vo->active = 1;
             vo->p1 = vo->p2 = 0; vo->blk_end = vo->blk_loop = 0; vo->pos = 16;
             vo->addr = dir_word(r[4], 0);
+            if (audio_sfx_mask_addr >= 0 && (aram[audio_sfx_mask_addr & 0xFFFF] & bit)) sfx_voices |= bit;
+            else sfx_voices &= (uint8_t)~bit;
         }
         if (flg & 0x80) { vo->mode = ENV_RELEASE; vo->env = 0; }
         else if ((dsp_reg[0x5C] & bit) && !vo->kon_delay) vo->mode = ENV_RELEASE;
@@ -197,11 +213,14 @@ static void dsp_sample(void) {
         prev = out;
         r[8] = (uint8_t)(vo->env >> 4);
         r[9] = (uint8_t)(out >> 7);
-        mixl = clamp16(mixl + ((out * (int8_t)r[0]) >> 7));
-        mixr = clamp16(mixr + ((out * (int8_t)r[1]) >> 7));
-        if (dsp_reg[0x4D] & bit) {
-            echol = clamp16(echol + ((out * (int8_t)r[0]) >> 7));
-            echor = clamp16(echor + ((out * (int8_t)r[1]) >> 7));
+        {
+            int gv = (sfx_voices & bit) ? audio_sfx_vol : audio_music_vol, og = gv == 100 ? out : out * gv / 100;
+            mixl = clamp16(mixl + ((og * (int8_t)r[0]) >> 7));
+            mixr = clamp16(mixr + ((og * (int8_t)r[1]) >> 7));
+            if (dsp_reg[0x4D] & bit) {
+                echol = clamp16(echol + ((og * (int8_t)r[0]) >> 7));
+                echor = clamp16(echor + ((og * (int8_t)r[1]) >> 7));
+            }
         }
         if (vo->mode == ENV_RELEASE && vo->env == 0) vo->active = 0;
     }
@@ -654,6 +673,7 @@ static void spc_reset(void) {
     spc_pc = 0xFFC0;
     dsp_reg[0x6C] = 0xE0;
     kon_latch = endx = 0;
+    sfx_voices = 0;
     dsp_counter = 0x77FF;
     noise = 0x4000;
     echo_pos = 0; echo_len = 4;

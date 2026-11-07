@@ -152,6 +152,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `crt_curve` | `15` (0 a 100) | curvatura del tubo del shader `crt` |
 | `crt_bloom` | `20` (0 a 100) | resplandor alrededor de los píxeles brillantes del shader `crt` |
 | `volume` | `100` (0 a 100) | volumen maestro |
+| `music_volume`, `sfx_volume` | `100` (0 a 100) | volumen de la música y de los efectos por separado (el perfil declara `[audio] sfx_voice_mask`: qué voces del DSP son efectos; sin esa clave todo cuenta como música). Con 100 y 100 el sonido no cambia. En el ejecutable sin vídeo: `--music-volume N`, `--sfx-volume N` |
 | `audio_device` | vacío = el del sistema | nombre del dispositivo de salida |
 | `p1.key.A`, `p2.pad.B`… | nombres de tecla o de botón de SDL separados por comas | asignación por jugador (`key` teclado, `pad` mando) y botón (`B Y SELECT START UP DOWN LEFT RIGHT A X L R`) |
 

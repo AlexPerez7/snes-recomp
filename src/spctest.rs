@@ -4,7 +4,7 @@
 use crate::codegen::RUNTIME_SPC;
 
 const HEAD: &str = "#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\n#include <math.h>\n\
-static uint32_t frame_len = 1000;\n#include \"snes_spc.inc\"\n";
+static uint32_t frame_len = 1000;\nconst int snes_game_sfx_voice_mask = -1;\n#include \"snes_spc.inc\"\n";
 
 /// Compila y ejecuta `main_body` (el cuerpo de `main`) junto al runtime de sonido; `None` si no hay compilador.
 fn run_c(name: &str, extra: &str, main_body: &str) -> Option<String> {

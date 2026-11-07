@@ -21,7 +21,7 @@ static const I18n i18n_table[] = {
     {"On", "Sí"}, {"Off", "No"}, {"integer", "entero"}, {"fit", "ajustado"}, {"free", "libre"}, {"nearest", "cercano"},
     {"bilinear", "bilineal"}, {"sharp", "nítido"}, {"Default", "Por defecto"}, {"off", "no"}, {"crt", "CRT"},
     /* Audio and Controls */
-    {"Volume", "Volumen"}, {"Output device", "Salida"}, {"Controls of", "Controles de"}, {"Player %d", "Jugador %d"},
+    {"Volume", "Volumen"}, {"Music volume", "Música"}, {"Effects volume", "Efectos"}, {"Output device", "Salida"}, {"Controls of", "Controles de"}, {"Player %d", "Jugador %d"},
     {"Keyboard", "Teclado"}, {"Controller", "Mando"}, {"Up", "Arriba"}, {"Down", "Abajo"}, {"Left", "Izquierda"}, {"Right", "Derecha"},
     /* Game */
     {"Fast forward", "Avance rápido"}, {"max", "máx."}, {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},

@@ -166,7 +166,7 @@ fn run_hooked_with(name: &str, play: bool, segments: &[(u32, &[u8])], roots: &[u
     let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
     let d = discover(&rom_obj, &cfg, &r);
     let g = Graph::build(&d, roots);
-    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).with_resume(cfg.resume).unwrap().generate_all();
+    let out = Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).with_resume(cfg.resume).unwrap().with_audio_sfx_mask(cfg.audio_sfx_mask).generate_all();
     let mut files: Vec<(String, Vec<u8>)> = vec![
         ("snes_rt.h".into(), RUNTIME_HEADER.as_bytes().to_vec()),
         ("snes_funcs.h".into(), out.header.clone().into_bytes()),
@@ -3428,7 +3428,7 @@ static int valid_utf8(const char *s) {
     return 1;
 }
 
-typedef struct { const char *what; int max; const char *items[24]; } Group;
+typedef struct { const char *what; int max; const char *items[32]; } Group;
 
 int main(void) {
     static uint8_t mem[GUARD + W * H * 3 + GUARD];
@@ -3491,7 +3491,7 @@ int main(void) {
     {
         enum { PW = 236, ROW_X = 22, ROW_W = 212, VAL_R = 228, VAL_W = 92 };
         static const Group groups[] = {
-            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Output device", "Controls of", "Fast forward", "Language", "Size", "Opacity", "Vibration"}},
+            {"label of a row with a value", VAL_R - VAL_W - 4 - (ROW_X + 16) - 2, {"Fullscreen", "VSync", "Aspect", "Scaling", "Filter", "Overscan", "Wide", "Scanlines", "Grid", "FPS counter", "Shader", "Mask", "Curve", "Bloom", "Volume", "Music volume", "Effects volume", "Output device", "Controls of", "Fast forward", "Language", "Size", "Opacity", "Vibration"}},
             {"label of an action", 180, {"Restore defaults", "Resume", "Save game now", "Restore all defaults", "Quit", "Edit layout", "Reset layout"}},
             {"value", VAL_W - 4, {"On", "Off", "integer", "fit", "free", "nearest", "bilinear", "sharp", "Default", "off", "crt", "max", "Player %d"}},
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},

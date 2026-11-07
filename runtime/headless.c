@@ -87,6 +87,15 @@ int main(int argc, char **argv) {
             shot_path = argv[++i];
         } else if (!strcmp(argv[i], "--wav") && i + 1 < argc) {
             wav_path = argv[++i];
+        } else if ((!strcmp(argv[i], "--music-volume") || !strcmp(argv[i], "--sfx-volume")) && i + 1 < argc) {
+            char *end;
+            unsigned long v = strtoul(argv[i + 1], &end, 10);
+            if (*end || !*argv[i + 1] || v > 100) {
+                fprintf(stderr, "error: %s takes a number from 0 to 100\n", argv[i]);
+                return 2;
+            }
+            if (!strcmp(argv[i], "--music-volume")) audio_music_vol = (int)v; else audio_sfx_vol = (int)v;
+            i++;
         } else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) {
             char *end;
             trace_lo = (uint32_t)strtoul(argv[++i], &end, 10);
