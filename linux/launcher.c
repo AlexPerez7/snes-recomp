@@ -52,6 +52,65 @@ void snes_upd_free(SnesUpd *r);
 
 static char exe_path[4096], exe_dir[4096], assets[4096], data_dir[4096];
 
+/* ---- idioma: inglés o español (tabla {en, es}; el botón de la esquina lo cambia y se recuerda en lang.txt) ---- */
+
+enum {
+    S_CHECK_UPDATES, S_PLAY, S_CHOOSE, S_CHANGE, S_UPDATE, S_NOT_NOW, S_SKIP, S_NEWVER, S_INSTALLING, S_UPDATED, S_UPDATED_STATUS,
+    S_UPD_FAIL, S_UPD_FAIL_STATUS, S_NO_CHECK, S_SKIPPED, S_UPTODATE, S_SEARCHING, S_PICK_MSG, S_NO_DIALOG, S_CANT_READ, S_WRONG_ROM,
+    S_PREP1, S_PREP2, S_BAD_ROM, S_NO_COMPILE, S_NO_LINK, S_DLG_TITLE, S_DLG_FILTER, S_DLG_ALL, S_N
+};
+static const char *const strs[S_N][2] = {
+    [S_CHECK_UPDATES] = {"Check for updates (uses the Internet)", "Buscar actualizaciones (usa Internet)"},
+    [S_PLAY] = {"PLAY", "JUGAR"},
+    [S_CHOOSE] = {"CHOOSE ROM", "ELEGIR ROM"},
+    [S_CHANGE] = {"CHANGE ROM", "CAMBIAR ROM"},
+    [S_UPDATE] = {"UPDATE", "ACTUALIZAR"},
+    [S_NOT_NOW] = {"NOT NOW", "AHORA NO"},
+    [S_SKIP] = {"SKIP THIS VERSION", "OMITIR ESTA VERSION"},
+    [S_NEWVER] = {"A new version is available: %s (you have %s).\nIt is downloaded, checked and the files replaced;\nyour saves are kept.",
+                  "Hay una versión nueva: %s (tienes la %s).\nSe descarga, se comprueba y se reemplazan los archivos;\nlas partidas se conservan."},
+    [S_INSTALLING] = {"Downloading and installing the new version...\nDo not close the window.",
+                      "Descargando e instalando la versión nueva...\nNo cierres la ventana."},
+    [S_UPDATED] = {"Updated to version %s.\nRestarting...", "Actualizado a la versión %s.\nReiniciando..."},
+    [S_UPDATED_STATUS] = {"Updated: open the game again", "Actualizado: vuelve a abrir el juego"},
+    [S_UPD_FAIL] = {"Could not update:\n%.150s", "No se pudo actualizar:\n%.150s"},
+    [S_UPD_FAIL_STATUS] = {"Could not update", "No se pudo actualizar"},
+    [S_NO_CHECK] = {"Could not check (is there Internet?)", "No se pudo comprobar (¿hay Internet?)"},
+    [S_SKIPPED] = {"You skipped that new version", "Esa versión nueva la omitiste"},
+    [S_UPTODATE] = {"You are up to date", "Estás al día"},
+    [S_SEARCHING] = {"Checking...", "Buscando..."},
+    [S_PICK_MSG] = {"Choose your copy of the ROM (USA, .sfc or .smc).\nIt stays where it is and is not sent anywhere.\nYou can also drag the file onto this window.",
+                    "Elige tu copia de la ROM (USA, .sfc o .smc).\nSe queda donde está y no se envía a ningún sitio.\nTambién puedes arrastrar el archivo a esta ventana."},
+    [S_NO_DIALOG] = {"There is no file picker (zenity or kdialog).\nDrag the ROM onto this window, or run:\n./alttp-recomp path/to/alttp_usa.sfc",
+                     "No hay un selector de archivos (zenity o kdialog).\nArrastra la ROM a esta ventana, o ejecuta:\n./alttp-recomp ruta/a/alttp_usa.sfc"},
+    [S_CANT_READ] = {"Cannot read the file:\n%.100s", "No puedo leer el archivo:\n%.100s"},
+    [S_WRONG_ROM] = {"This is not the expected ROM (CRC32 %s, expected %s).\nTry the USA version.",
+                     "Esta ROM no es la esperada (CRC32 %s, se esperaba %s).\nPrueba con la versión USA."},
+    [S_PREP1] = {"Getting the game ready (1 of 2)...\nOnly the first time of each start; a few seconds.",
+                 "Preparando el juego (1 de 2)...\nSolo la primera vez de cada arranque; unos segundos."},
+    [S_PREP2] = {"Getting the game ready (2 of 2)...", "Preparando el juego (2 de 2)..."},
+    [S_BAD_ROM] = {"This ROM does not work: %.200s", "Esta ROM no sirve: %.200s"},
+    [S_NO_COMPILE] = {"The game's C does not compile (details in the terminal).", "El C del juego no compila (detalles en la terminal)."},
+    [S_NO_LINK] = {"The game could not be linked.", "No se pudo enlazar el juego."},
+    [S_DLG_TITLE] = {"Choose your Zelda: A Link to the Past ROM (USA)", "Elige tu ROM de Zelda: A Link to the Past (USA)"},
+    [S_DLG_FILTER] = {"SNES ROM", "ROM de SNES"},
+    [S_DLG_ALL] = {"All files", "Todos"},
+};
+static int lang;                      /* 0 = inglés, 1 = español */
+static char lang_file[4096 + 16];
+#define TR(id) strs[id][lang]
+
+/* el idioma del entorno: español si el primero de LANGUAGE, LC_ALL, LC_MESSAGES o LANG que esté puesto empieza por «es» */
+static int env_lang(void) {
+    static const char *const vars[] = {"LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG", NULL};
+    int i;
+    for (i = 0; vars[i]; i++) {
+        const char *v = getenv(vars[i]);
+        if (v && *v) return v[0] == 'e' && v[1] == 's' && (v[2] == 0 || v[2] == '_' || v[2] == '.' || v[2] == ':' || v[2] == '@');
+    }
+    return 0;
+}
+
 static double now_ms(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -132,6 +191,7 @@ static const Rect btn_main = {170, 256, 300, 52};
 static const Rect btn_other = {195, 320, 250, 38};
 static const Rect btn_third = {215, 364, 210, 26};
 static const Rect chk_rect = {34, 362, 290, 26};
+static const Rect btn_lang = {WIN_W - 98, 22, 66, 22};   /* globo y código del idioma, arriba a la derecha */
 
 /* lo que el lanzador sabe de las actualizaciones */
 static int upd_ok, upd_on;          /* esta instalación se actualiza sola / la casilla está marcada */
@@ -201,6 +261,18 @@ static void backdrop(void) {
     triangle(WIN_W / 2 + 14, 54, 26, 22);
 }
 
+/* el botón de idioma: la placa con el código del idioma actual y un globo (círculo, ecuador y meridiano) a la izquierda */
+static void lang_button(int mx, int my) {
+    int x, y, cx = btn_lang.x + 11, cy = btn_lang.y + 11;
+    button(btn_lang, lang ? "ES" : "EN", 0, inside(btn_lang, mx, my));
+    for (y = -6; y <= 6; y++)
+        for (x = -6; x <= 6; x++) {
+            int d = x * x + y * y, e = x * x * 25 + y * y * 9 - 225; /* e ~ 0: un meridiano curvo */
+            if ((d >= 25 && d <= 36) || (d < 25 && (y == 0 || x == 0 || (e > -40 && e < 40))))
+                cv_put(&cv, cx + x, cy + y, TC_TEXT);
+        }
+}
+
 /* pantalla: mensaje (líneas separadas por \n) y botones (NULL = no hay) */
 static void draw(const char *msg, uint32_t msg_color, const char *main_label, const char *other_label, int mx, int my) {
     char line[256];
@@ -230,6 +302,7 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
         blit(&im, btn_third.x, btn_third.y);
         timg_free(&im);
     }
+    if (main_label) lang_button(mx, my);
     if (upd_ok && g_footer) { /* casilla de «buscar actualizaciones», estado y versión */
         TImg box = timg_new(14, 14);
         TBox bb = {14, 14};
@@ -243,7 +316,7 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
             cv_rect(&cv, chk_rect.x + 8, chk_rect.y + 6, 2, 6, TC_TEXT);
             cv_rect(&cv, chk_rect.x + 10, chk_rect.y + 4, 2, 4, TC_TEXT);
         }
-        text_draw(&cv, chk_rect.x + 22, chk_rect.y + 5, "Buscar actualizaciones (usa Internet)", inside(chk_rect, mx, my) ? UI_GOLD : 0xC8D8B8, 0);
+        text_draw(&cv, chk_rect.x + 22, chk_rect.y + 5, TR(S_CHECK_UPDATES), inside(chk_rect, mx, my) ? UI_GOLD : 0xC8D8B8, 0);
         snprintf(v, sizeof v, "v%s", upd_version);
         text_right(&cv, WIN_W - 28, chk_rect.y + 5, v, UI_DIM);
         if (upd_status[0]) text_right(&cv, WIN_W - 70, chk_rect.y + 5, upd_status, UI_GOLD);
@@ -257,11 +330,14 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
 /* el diálogo de archivos del sistema (zenity o kdialog); NULL si el usuario cancela o no hay ninguno */
 static char *pick_rom_dialog(int *no_dialog) {
     static char out[4096];
-    const char *cmds[] = {
-        "zenity --file-selection --title='Elige tu ROM de Zelda: A Link to the Past (USA)' --file-filter='ROM de SNES | *.sfc *.smc *.SFC *.SMC' --file-filter='Todos | *' 2>/dev/null",
-        "kdialog --getopenfilename \"$HOME\" 'ROM de SNES (*.sfc *.smc)|ROM (*.sfc *.smc)' 2>/dev/null",
-        "yad --file --title='Elige tu ROM' 2>/dev/null", NULL};
+    char zen[512], kde[512], yad[256];
+    const char *cmds[4];
     int i;
+    snprintf(zen, sizeof zen, "zenity --file-selection --title='%s' --file-filter='%s | *.sfc *.smc *.SFC *.SMC' --file-filter='%s | *' 2>/dev/null",
+             TR(S_DLG_TITLE), TR(S_DLG_FILTER), TR(S_DLG_ALL));
+    snprintf(kde, sizeof kde, "kdialog --getopenfilename \"$HOME\" '%s (*.sfc *.smc)|ROM (*.sfc *.smc)' 2>/dev/null", TR(S_DLG_FILTER));
+    snprintf(yad, sizeof yad, "yad --file --title='%s' 2>/dev/null", TR(S_DLG_FILTER));
+    cmds[0] = zen; cmds[1] = kde; cmds[2] = yad; cmds[3] = NULL;
     *no_dialog = 1;
     for (i = 0; cmds[i]; i++) {
         char probe[64];
@@ -288,12 +364,12 @@ static int check_rom(const char *path, char *why, size_t why_n) {
     size_t len = 0, skip = 0;
     uint8_t *d = (uint8_t *)read_file(path, &len);
     char got[16];
-    if (!d) { snprintf(why, why_n, "No puedo leer el archivo:\n%.100s", path); return 1; }
+    if (!d) { snprintf(why, why_n, TR(S_CANT_READ), path); return 1; }
     if (len % 1024 == 512) skip = 512; /* cabecera de copión */
     snprintf(got, sizeof got, "%08X", crc32_of(d + skip, len - skip));
     free(d);
     if (strcasecmp(got, want_crc)) {
-        snprintf(why, why_n, "Esta ROM no es la esperada (CRC32 %s, se esperaba %s).\nPrueba con la versión USA.", got, want_crc);
+        snprintf(why, why_n, TR(S_WRONG_ROM), got, want_crc);
         return 1;
     }
     return 0;
@@ -356,12 +432,12 @@ static int prepare_and_play(const char *rom_path, const char *toml, int stats) {
         closedir(d);
     }
 
-    draw("Preparando el juego (1 de 2)...\nSolo la primera vez de cada arranque; unos segundos.", UI_TEXT, NULL, NULL, -1, -1);
+    draw(TR(S_PREP1), UI_TEXT, NULL, NULL, -1, -1);
     t0 = now_ms();
     gen = snes_gen_generate((const uint8_t *)rom, rom_len, toml, gnames, gtexts, n_game);
     t1 = now_ms();
     if (snes_gen_error(gen)) {
-        snprintf(status, sizeof status, "Esta ROM no sirve: %.200s", snes_gen_error(gen));
+        snprintf(status, sizeof status, TR(S_BAD_ROM), snes_gen_error(gen));
         fprintf(stderr, "%s\n", status);
         draw(status, UI_WARN, NULL, NULL, -1, -1);
         SDL_Delay(4000);
@@ -376,7 +452,7 @@ static int prepare_and_play(const char *rom_path, const char *toml, int stats) {
     free(rom);
     t2 = now_ms();
 
-    draw("Preparando el juego (2 de 2)...", UI_TEXT, NULL, NULL, -1, -1);
+    draw(TR(S_PREP2), UI_TEXT, NULL, NULL, -1, -1);
     s = tcc_new();
     tcc_set_error_func(s, NULL, on_tcc_error);
     tcc_set_options(s, "-nostdinc -nostdlib");
@@ -403,7 +479,7 @@ static int prepare_and_play(const char *rom_path, const char *toml, int stats) {
                 snprintf(f, sizeof f, "%s/%s", dirs[k], e->d_name);
                 if (tcc_add_file(s, f) < 0) {
                     closedir(d);
-                    draw("El C del juego no compila (detalles en la terminal).", UI_WARN, NULL, NULL, -1, -1);
+                    draw(TR(S_NO_COMPILE), UI_WARN, NULL, NULL, -1, -1);
                     SDL_Delay(4000);
                     return 1;
                 }
@@ -412,7 +488,7 @@ static int prepare_and_play(const char *rom_path, const char *toml, int stats) {
         }
     }
     if (tcc_relocate(s) < 0) {
-        draw("No se pudo enlazar el juego.", UI_WARN, NULL, NULL, -1, -1);
+        draw(TR(S_NO_LINK), UI_WARN, NULL, NULL, -1, -1);
         SDL_Delay(4000);
         return 1;
     }
@@ -456,7 +532,7 @@ int main(int argc, char **argv) {
     const char *xdg;
     ssize_t k;
     int stats = 0, autoplay = 0, i, mx = -1, my = -1, running = 1, have = 0, no_dialog = 0, mode = 0;
-    char new_tag[64] = "", new_page[512] = "";
+    char new_tag[64] = "", new_page[512] = "", last_bad[4096] = "";
     char *crc;
     SDL_Event ev;
 
@@ -471,6 +547,12 @@ int main(int argc, char **argv) {
     else snprintf(data_dir, sizeof data_dir, "%s/.local/share/alttp-recomp", getenv("HOME") ? getenv("HOME") : ".");
     make_parents(data_dir);
     mkdir(data_dir, 0700);
+    snprintf(lang_file, sizeof lang_file, "%s/lang.txt", data_dir);
+    lang = env_lang();
+    {
+        char *saved = read_file(lang_file, NULL); /* la elección guardada gana al entorno */
+        if (saved) { if (!strncmp(saved, "es", 2)) lang = 1; else if (!strncmp(saved, "en", 2)) lang = 0; free(saved); }
+    }
 
     {
         SnesUpd *v;
@@ -502,17 +584,17 @@ int main(int argc, char **argv) {
     SDL_RenderSetLogicalSize(ren, WIN_W, WIN_H);
     tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING, WIN_W, WIN_H);
 
-    if (rom[0] && check_rom(rom, msg, sizeof msg)) rom[0] = 0;       /* la de la línea de órdenes, si sirve */
+    if (rom[0] && check_rom(rom, msg, sizeof msg)) { snprintf(last_bad, sizeof last_bad, "%s", rom); rom[0] = 0; } /* la de la línea de órdenes, si sirve */
     else if (!rom[0] && remembered_rom(rom, sizeof rom)) {
-        if (check_rom(rom, msg, sizeof msg)) rom[0] = 0;
+        if (check_rom(rom, msg, sizeof msg)) { snprintf(last_bad, sizeof last_bad, "%s", rom); rom[0] = 0; }
     }
     have = rom[0] != 0;
     if (autoplay && have) running = 0;
     else if (upd_ok && upd_on) start_job(1, 0); /* la comprobación de la casilla, una vez al día como mucho */
 
     while (running) {
-        const char *main_label = have ? "JUGAR" : "ELEGIR ROM";
-        const char *other_label = have ? "CAMBIAR ROM" : NULL;
+        const char *main_label = TR(have ? S_PLAY : S_CHOOSE);
+        const char *other_label = have ? TR(S_CHANGE) : NULL;
         char shown[640];
         if (job_done) { /* terminó el hilo de red */
             SnesUpd *r = job_res;
@@ -520,15 +602,15 @@ int main(int argc, char **argv) {
             job = 0; job_done = 0; job_res = NULL;
             if (was == 3) {
                 if (snes_upd_kind(r) == 0) {
-                    snprintf(shown, sizeof shown, "Actualizado a la versión %s.\nReiniciando...", snes_upd_a(r));
+                    snprintf(shown, sizeof shown, TR(S_UPDATED), snes_upd_a(r));
                     g_third = NULL; g_footer = 0;
                     draw(shown, UI_GOOD, NULL, NULL, -1, -1);
                     SDL_Delay(1500);
                     execv(exe_path, argv); /* el ejecutable nuevo */
-                    snprintf(upd_status, sizeof upd_status, "Actualizado: vuelve a abrir el juego");
+                    snprintf(upd_status, sizeof upd_status, "%s", TR(S_UPDATED_STATUS));
                 } else {
-                    snprintf(msg, sizeof msg, "No se pudo actualizar:\n%.150s", snes_upd_a(r));
-                    snprintf(upd_status, sizeof upd_status, "No se pudo actualizar");
+                    snprintf(msg, sizeof msg, TR(S_UPD_FAIL), snes_upd_a(r));
+                    snprintf(upd_status, sizeof upd_status, "%s", TR(S_UPD_FAIL_STATUS));
                 }
                 mode = 0;
             } else if (snes_upd_kind(r) == 1) {
@@ -536,34 +618,36 @@ int main(int argc, char **argv) {
                 snprintf(new_page, sizeof new_page, "%s", snes_upd_b(r));
                 mode = 1;
             } else if (was == 2) {
-                if (snes_upd_kind(r) == 3) snprintf(upd_status, sizeof upd_status, "No se pudo comprobar (¿hay Internet?)");
-                else snprintf(upd_status, sizeof upd_status, snes_upd_kind(r) == 2 ? "Esa versión nueva la omitiste" : "Estás al día");
+                if (snes_upd_kind(r) == 3) snprintf(upd_status, sizeof upd_status, "%s", TR(S_NO_CHECK));
+                else snprintf(upd_status, sizeof upd_status, "%s", TR(snes_upd_kind(r) == 2 ? S_SKIPPED : S_UPTODATE));
             }
             snes_upd_free(r);
         }
         g_third = NULL; g_footer = 1;
         if (mode == 1) { /* hay una versión nueva */
-            snprintf(shown, sizeof shown, "Hay una versión nueva: %s (tienes la %s).\nSe descarga, se comprueba y se reemplazan los archivos;\nlas partidas se conservan.", new_tag, upd_version);
-            main_label = "ACTUALIZAR"; other_label = "AHORA NO"; g_third = "OMITIR ESTA VERSION"; g_footer = 0;
+            snprintf(shown, sizeof shown, TR(S_NEWVER), new_tag, upd_version);
+            main_label = TR(S_UPDATE); other_label = TR(S_NOT_NOW); g_third = TR(S_SKIP); g_footer = 0;
             draw(shown, UI_TEXT, main_label, other_label, mx, my);
         } else if (job == 3) {
             g_footer = 0;
-            draw("Descargando e instalando la versión nueva...\nNo cierres la ventana.", UI_TEXT, NULL, NULL, -1, -1);
+            draw(TR(S_INSTALLING), UI_TEXT, NULL, NULL, -1, -1);
         } else {
             if (have) snprintf(shown, sizeof shown, "ROM: %.90s", rom);
             else if (msg[0]) snprintf(shown, sizeof shown, "%s", msg);
-            else snprintf(shown, sizeof shown, "Elige tu copia de la ROM (USA, .sfc o .smc).\nSe queda donde está y no se envía a ningún sitio.\nTambién puedes arrastrar el archivo a esta ventana.");
-            if (no_dialog) snprintf(shown, sizeof shown, "No hay un selector de archivos (zenity o kdialog).\nArrastra la ROM a esta ventana, o ejecuta:\n./alttp-recomp ruta/a/alttp_usa.sfc");
+            else snprintf(shown, sizeof shown, "%s", TR(S_PICK_MSG));
+            if (no_dialog) snprintf(shown, sizeof shown, "%s", TR(S_NO_DIALOG));
             draw(shown, (!have && msg[0]) || no_dialog ? UI_WARN : UI_TEXT, main_label, other_label, mx, my);
         }
         if (!SDL_WaitEventTimeout(&ev, 200)) continue;
         do {
             const char *chosen = NULL;
             int act = 0; /* 1 = principal, 2 = otro */
+            int toggle_lang = 0;
             switch (ev.type) {
             case SDL_QUIT: return 0;
             case SDL_KEYDOWN:
                 if (ev.key.keysym.sym == SDLK_ESCAPE) return 0;
+                if (ev.key.keysym.sym == SDLK_l && job != 3) toggle_lang = 1;
                 if (job == 3 || mode == 1) break;
                 if (ev.key.keysym.sym == SDLK_RETURN || ev.key.keysym.sym == SDLK_KP_ENTER) act = 1;
                 break;
@@ -572,6 +656,7 @@ int main(int argc, char **argv) {
                 if (ev.button.button == SDL_BUTTON_LEFT) {
                     /* con SDL_RenderSetLogicalSize las coordenadas ya vienen en el espacio lógico */
                     if (job == 3) break;
+                    if (inside(btn_lang, ev.button.x, ev.button.y)) { toggle_lang = 1; break; }
                     if (mode == 1) {
                         if (inside(btn_main, ev.button.x, ev.button.y)) { mode = 0; start_job(3, 0); }
                         else if (inside(btn_other, ev.button.x, ev.button.y)) mode = 0;
@@ -582,7 +667,7 @@ int main(int argc, char **argv) {
                         upd_on = !upd_on;
                         snes_upd_set_enabled(data_dir, upd_on);
                         upd_status[0] = 0;
-                        if (upd_on && !job) { snprintf(upd_status, sizeof upd_status, "Buscando..."); start_job(2, 1); }
+                        if (upd_on && !job) { snprintf(upd_status, sizeof upd_status, "%s", TR(S_SEARCHING)); start_job(2, 1); }
                         break;
                     }
                     if (inside(btn_main, ev.button.x, ev.button.y)) act = 1;
@@ -590,6 +675,12 @@ int main(int argc, char **argv) {
                 }
                 break;
             case SDL_DROPFILE: chosen = ev.drop.file; break;
+            }
+            if (toggle_lang) { /* cambia de idioma, lo guarda y reescribe lo que ya estaba escrito en el otro */
+                lang = !lang;
+                write_text(lang_file, lang ? "es\n" : "en\n");
+                upd_status[0] = 0;
+                if (!have && msg[0] && last_bad[0]) { msg[0] = 0; check_rom(last_bad, msg, sizeof msg); }
             }
             if (act == 1 && have) { running = 0; }
             else if (act == 1 || act == 2) {
@@ -599,7 +690,7 @@ int main(int argc, char **argv) {
             }
             if (chosen) {
                 msg[0] = 0;
-                if (check_rom(chosen, msg, sizeof msg)) have = 0;
+                if (check_rom(chosen, msg, sizeof msg)) { have = 0; snprintf(last_bad, sizeof last_bad, "%s", chosen); }
                 else { snprintf(rom, sizeof rom, "%s", chosen); have = 1; remember_rom(rom); no_dialog = 0; }
                 if (ev.type == SDL_DROPFILE) SDL_free(ev.drop.file);
             }
