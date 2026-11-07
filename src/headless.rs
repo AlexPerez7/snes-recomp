@@ -3024,8 +3024,8 @@ volume = 50
     let Some(r) = run_menu("menu-restore-image", &["--menu-keys", keys], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"filter = sharp") && l.contains(&"scanlines = 0") && l.contains(&"volume = 50"), "{}", r.out);
-    // Audio: Restore is the third row of the second tab
-    let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
+    // Audio: Restore is the fifth row of the second tab (volume, music, effects, device)
+    let Some(r) = run_menu("menu-restore-audio", &["--menu-keys", "F1,W,Down,Down,Down,Down,Return,Escape"], &[("config.ini", ini)]) else { return };
     let l = config_lines(&r);
     assert!(l.contains(&"volume = 100") && l.contains(&"filter = nearest") && l.contains(&"scanlines = 40"), "{}", r.out);
 }
@@ -3200,7 +3200,8 @@ fn the_documented_options_are_the_ones_of_the_default_config() {
         // the key map is documented by its pattern (`p1.key.A`, `p2.pad.B`); the options one by one
         let documented = match key.split('.').collect::<Vec<_>>().as_slice() {
             [p, kind @ ("key" | "pad"), _] if p.starts_with('p') => readme.contains(&format!("`{p}.{kind}.")) || readme.contains("`p1.key.A`, `p2.pad.B`"),
-            _ => readme.contains(&format!("| `{key}` |")),
+            // a table row, alone or grouped with others (`music_volume`, `sfx_volume`)
+            _ => readme.lines().any(|l| l.starts_with("| ") && l.split('|').nth(1).is_some_and(|c| c.contains(&format!("`{key}`")))),
         };
         assert!(documented, "the option `{key}` is not in the README table");
         if !key.contains('.') && key != "audio_device" {

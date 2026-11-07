@@ -7,9 +7,14 @@ use std::process::Command;
 pub use crate::toolchain::{find, Compiler};
 use crate::toolchain::msvc_env;
 
-/// The SDL2 development package for Visual C++ (the folder with `include` and `lib`): `SDL2_DIR`, or the first
-/// `out/sdl2/SDL2-*` of the project. `None` skips the tests that need SDL2.
+/// The SDL2 development package, `None` to skip the tests that need SDL2. With Visual C++ it is the folder with `include` and
+/// `lib`: `SDL2_DIR`, or the first `out/sdl2/SDL2-*` of the project. Elsewhere SDL2 comes from `pkg-config` (the compiler gets
+/// its flags from there) and this is its prefix, only to say that it exists.
 pub fn sdl2_dir() -> Option<std::path::PathBuf> {
+    if cfg!(not(windows)) {
+        let out = Command::new("pkg-config").args(["--variable=prefix", "sdl2"]).output().ok().filter(|o| o.status.success())?;
+        return Some(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()));
+    }
     if let Ok(d) = std::env::var("SDL2_DIR") {
         let p = std::path::PathBuf::from(d);
         return p.join("include").join("SDL.h").exists().then_some(p);
@@ -98,7 +103,7 @@ impl Compiler {
         }
         let sources: Vec<&str> = files.iter().map(|f| f.0).filter(|f| f.ends_with(".c")).collect();
         let result = match self {
-            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args, runs),
+            Compiler::Gnu(cc) => self.run_gnu(cc, &dir, &sources, defines, args, sdl.is_some(), runs),
             Compiler::Msvc(vcvars) => self.run_msvc(vcvars, &dir, &sources, defines, args, sdl, runs),
             Compiler::Tcc(_) => Err("TinyCC is only used by snes-port".to_string()),
         };
@@ -106,19 +111,28 @@ impl Compiler {
         result
     }
 
-    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str], runs: usize) -> Result<String, String> {
+    fn run_gnu(&self, cc: &str, dir: &Path, sources: &[&str], defines: &[&str], args: &[&str], sdl: bool, runs: usize) -> Result<String, String> {
         let mut cmd = Command::new(cc);
         cmd.current_dir(dir).args(["-std=c11", "-Wall", "-O1", "-o", "prog"]);
         for d in defines {
             cmd.arg(format!("-D{d}"));
         }
-        let build = cmd.args(sources).arg("-lm").output().map_err(|e| e.to_string())?;
+        cmd.args(sources);
+        if sdl {
+            let flags = Command::new("pkg-config").args(["--cflags", "--libs", "sdl2"]).output().map_err(|e| e.to_string())?;
+            if !flags.status.success() { return Err("pkg-config does not know sdl2".to_string()); }
+            cmd.args(String::from_utf8_lossy(&flags.stdout).split_whitespace());
+        }
+        let build = cmd.arg("-lm").output().map_err(|e| e.to_string())?;
         if !build.status.success() {
             return Err(String::from_utf8_lossy(&build.stderr).into_owned());
         }
         let mut all = String::new();
         for _ in 0..runs {
-            let run = Command::new(dir.join("prog")).current_dir(dir).args(args).output().map_err(|e| e.to_string())?;
+            let mut prog = Command::new(dir.join("prog"));
+            prog.current_dir(dir).args(args);
+            if sdl { prog.env("SDL_VIDEODRIVER", "dummy").env("SDL_AUDIODRIVER", "dummy"); }
+            let run = prog.output().map_err(|e| e.to_string())?;
             all.push_str(&finish(run)?);
         }
         Ok(all)
