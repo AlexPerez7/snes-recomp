@@ -684,7 +684,7 @@ static int image_row_of(int opt) {
 static int menu_count(int tab) {
     switch (tab) {
     case TAB_IMAGE: return image_row_count() + 1;
-    case TAB_AUDIO: return 3;
+    case TAB_AUDIO: return 5;
     case TAB_CONTROLS: return 13;
     case TAB_TOUCH: return 5;
     default: return 1 + GOPTS + 4; /* the fast forward speed, the options of the game, then Resume, Save, Restore and Quit */
@@ -796,6 +796,8 @@ static void apply_option(int opt) {
     if (opt == O_VSYNC && gl_on) SDL_GL_SetSwapInterval(cfg.eff.v[O_VSYNC] ? 1 : 0);
     if (opt == O_SHADER) apply_shader();
     if (opt == O_WIDE) ppu_set_wide(cfg.eff.v[O_WIDE]);
+    if (opt == O_MUSIC_VOLUME) audio_music_vol = cfg.eff.v[O_MUSIC_VOLUME];
+    if (opt == O_SFX_VOLUME) audio_sfx_vol = cfg.eff.v[O_SFX_VOLUME];
 }
 
 static void opt_change(int opt, int dir) {
@@ -820,6 +822,8 @@ static void restore_image(void) {
 
 static void restore_audio(void) {
     restore_opt(O_VOLUME);
+    restore_opt(O_MUSIC_VOLUME);
+    restore_opt(O_SFX_VOLUME);
     set_audio_device("");
     snprintf(menu_msg, sizeof menu_msg, tr("Audio options restored"));
 }
@@ -1123,7 +1127,9 @@ static void menu_change(int dir) {
         break;
     case TAB_AUDIO:
         if (s == 0) { if (dir) opt_change(O_VOLUME, dir); }
-        else if (s == 1) menu_audio_device(dir ? dir : 1);
+        else if (s == 1) { if (dir) opt_change(O_MUSIC_VOLUME, dir); }
+        else if (s == 2) { if (dir) opt_change(O_SFX_VOLUME, dir); }
+        else if (s == 3) menu_audio_device(dir ? dir : 1);
         else if (dir == 0) restore_audio();
         break;
     case TAB_CONTROLS:
@@ -1387,7 +1393,9 @@ static void menu_draw(const uint8_t *fb) {
             break;
         case TAB_AUDIO:
             if (i == 0) { snprintf(val, sizeof val, "%d", cfg.eff.v[O_VOLUME]); menu_row(i, on, "Volume", 2, val, cfg.eff.v[O_VOLUME], 0, 0); }
-            else if (i == 1) menu_row(i, on, "Output device", 1, cfg.eff.audio_device[0] ? cfg.eff.audio_device : "Default", 0, 0, 0);
+            else if (i == 1) { snprintf(val, sizeof val, "%d", cfg.eff.v[O_MUSIC_VOLUME]); menu_row(i, on, "Music volume", 2, val, cfg.eff.v[O_MUSIC_VOLUME], 0, 0); }
+            else if (i == 2) { snprintf(val, sizeof val, "%d", cfg.eff.v[O_SFX_VOLUME]); menu_row(i, on, "Effects volume", 2, val, cfg.eff.v[O_SFX_VOLUME], 0, 0); }
+            else if (i == 3) menu_row(i, on, "Output device", 1, cfg.eff.audio_device[0] ? cfg.eff.audio_device : "Default", 0, 0, 0);
             else menu_row(i, on, "Restore defaults", 0, "", 0, 0, 0);
             break;
         case TAB_CONTROLS:
@@ -2051,6 +2059,8 @@ int main(int argc, char **argv) {
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
     ppu_set_wide(cfg.eff.v[O_WIDE]);
+    audio_music_vol = cfg.eff.v[O_MUSIC_VOLUME];
+    audio_sfx_vol = cfg.eff.v[O_SFX_VOLUME];
     saves_dir_prepare();
     srm_load(path);
     play_state_init(path);

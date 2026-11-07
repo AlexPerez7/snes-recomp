@@ -11,7 +11,7 @@
 
 /* ---- the options ---- */
 
-enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_FFSPEED, O_SHADER, O_CRT_MASK, O_CRT_CURVE, O_CRT_BLOOM, O_COUNT };
+enum { O_FULLSCREEN, O_VSYNC, O_ASPECT, O_SCALE, O_SCALING, O_FILTER, O_OVERSCAN, O_SCANLINES, O_GRID, O_FPS, O_VOLUME, O_WIDE, O_FFSPEED, O_SHADER, O_CRT_MASK, O_CRT_CURVE, O_CRT_BLOOM, O_MUSIC_VOLUME, O_SFX_VOLUME, O_COUNT };
 enum { ASPECT_43, ASPECT_87, ASPECT_FREE };
 enum { SCALING_INTEGER, SCALING_FIT };
 enum { FILTER_NEAREST, FILTER_BILINEAR, FILTER_SHARP };
@@ -39,6 +39,8 @@ static const OptDef opt_defs[O_COUNT] = {
     {"crt_mask", 30, 0, 100, NULL, 10},  /* strength of the phosphor mask of the crt shader */
     {"crt_curve", 15, 0, 100, NULL, 5},  /* curvature of the tube */
     {"crt_bloom", 20, 0, 100, NULL, 10}, /* glow around the bright pixels */
+    {"music_volume", 100, 0, 100, NULL, 5}, /* volume of the music (needs `[audio] sfx_voice_mask` in the profile) */
+    {"sfx_volume", 100, 0, 100, NULL, 5},   /* volume of the sound effects */
 };
 
 /* Whether the picture is presented with the shader: the option asks for it and OpenGL 3.3 could be set up. When it

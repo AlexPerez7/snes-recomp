@@ -44,3 +44,15 @@ Con `--wav FICHERO` el ejecutable SHALL escribir la salida del audio de la ejecu
 #### Scenario: Música del título
 - **WHEN** se ejecutan 1200 fotogramas con `--no-window --wav w.wav`
 - **THEN** el fichero contiene audio no silencioso de unos 20 segundos
+
+### Requirement: Volumen separado de música y efectos
+El perfil de un juego MAY declarar en `[audio]` la clave `sfx_voice_mask` (dirección de 16 bits de la RAM del SPC700): un byte con un bit por voz del DSP que el controlador del juego marca mientras la voz suena un efecto. El DSP SHALL clasificar cada voz al darle KON según ese byte y aplicar a su salida, antes de la mezcla y del envío al eco, `music_volume` o `sfx_volume` (0 a 100, 100 por defecto); sin la clave, todas las voces cuentan como música. Con ambos a 100 la salida MUST ser idéntica, muestra a muestra, a la de antes de existir las opciones. El menú (pestaña Audio) y el ejecutable sin vídeo (`--music-volume N`, `--sfx-volume N`) SHALL permitir cambiarlos. El estado guardado no incluye la clasificación, que se recalcula en el siguiente KON.
+
+#### Scenario: Música apagada
+- **WHEN** se ejecuta una partida en la que suenan música y lluvia con `--music-volume 0`
+- **THEN** el WAV conserva los efectos pero no la música, y su nivel es menor que con 100 y mayor que 0
+
+#### Scenario: Ambos apagados
+- **WHEN** se ejecuta con `--music-volume 0 --sfx-volume 0`
+- **THEN** el WAV es silencio
+

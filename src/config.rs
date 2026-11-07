@@ -58,6 +58,8 @@
 //! # kind = "guard"       # at any instruction of a function: `int my_guard(Cpu *c)`; if it returns non-zero the function
 //! #                      # leaves with `ret`, or goes on at `goto = "BB:AAAA"` (an address of the same function)
 //!
+//! [audio]
+//! sfx_voice_mask = 0x1A     # SPC700 RAM address of the byte with a bit per DSP voice that plays sound effects (music and effects volume)
 //! [resume]                 # where the runtime can save and load states: a block of the main loop, with the 65816 stack at its base
 //! addr = "00:8034"         # start of a block of the graph; the generator calls rt_resume(c) there
 //!
@@ -103,6 +105,13 @@ struct RawConfig {
     #[serde(default)]
     option: Vec<RawOption>,
     resume: Option<RawResume>,
+    audio: Option<RawAudio>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAudio {
+    sfx_voice_mask: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -299,6 +308,8 @@ pub struct Config {
     pub options: Vec<GameOption>,
     /// The block of the main loop where the runtime may save and load states (`[resume]`).
     pub resume: Option<u32>,
+    /// Where in the SPC700 RAM the driver keeps the mask of the voices that play sound effects (`[audio] sfx_voice_mask`), to tell music from effects.
+    pub audio_sfx_mask: Option<u16>,
 }
 
 fn width(v: Option<u8>, what: &str) -> Result<bool, String> {
@@ -424,6 +435,12 @@ impl Config {
             cfg.hooks.push(Hook { addr, kind: h.kind, call: h.call, ret: h.ret, goto });
         }
 
+        if let Some(a) = raw.audio {
+            if let Some(m) = a.sfx_voice_mask {
+                cfg.audio_sfx_mask = Some(u16::try_from(m).map_err(|_| format!("[audio]: sfx_voice_mask must be an address of the SPC700 RAM (0 to 0xFFFF), got {m}"))?);
+            }
+        }
+
         if let Some(r) = raw.resume {
             cfg.resume = Some(parse_addr(&r.addr)?);
         }
@@ -537,6 +554,14 @@ addr=\"00:8781\"").is_err());
         let cfg = Config::parse(&game.profile.config).unwrap();
         assert!(!cfg.entries.is_empty());
         assert_eq!(cfg.game.as_ref().map(|g| g.crc32), Some(game.profile.crc32));
+    }
+
+    #[test]
+    fn parses_audio() {
+        assert_eq!(Config::parse("").unwrap().audio_sfx_mask, None);
+        assert_eq!(Config::parse("[audio]\nsfx_voice_mask = 0x1A").unwrap().audio_sfx_mask, Some(0x1A));
+        assert!(Config::parse("[audio]\nsfx_voice_mask = 70000").is_err(), "beyond the 64 KiB of the SPC700");
+        assert!(Config::parse("[audio]\nvolume = 3").is_err(), "unknown key");
     }
 
     #[test]

@@ -337,6 +337,8 @@ pub struct Emitter<'a> {
     options: Vec<GameOption>,
     /// The block where the runtime may save and load states: it starts with a call to rt_resume.
     resume: Option<u32>,
+    /// SPC700 RAM address of the mask of the voices of the sound effects (`[audio]`), handed to the runtime by snes_rt_module_init.
+    audio_sfx_mask: Option<u16>,
 }
 
 /// A function body under construction: the blocks it owns and what it refers to.
@@ -370,7 +372,13 @@ impl Variants {
 
 impl<'a> Emitter<'a> {
     pub fn new(d: &'a Discovery, g: &'a Graph) -> Self {
-        Emitter { d, g, hooks: BTreeMap::new(), guards: BTreeMap::new(), options: Vec::new(), resume: None }
+        Emitter { d, g, hooks: BTreeMap::new(), guards: BTreeMap::new(), options: Vec::new(), resume: None, audio_sfx_mask: None }
+    }
+
+    /// Where the driver of the game keeps the mask of the voices of the sound effects (`[audio] sfx_voice_mask`).
+    pub fn with_audio_sfx_mask(mut self, addr: Option<u16>) -> Self {
+        self.audio_sfx_mask = addr;
+        self
     }
 
     /// Marks the block at `addr` as the resume point of the profile (`[resume]`): it must be the start of a block of the graph.
@@ -878,8 +886,9 @@ impl<'a> Emitter<'a> {
         }
         entry.push_str("    default: return 0;\n    }\n}\n");
         entry.push_str(&self.options_c());
+        entry.push_str(&format!("\n/* Where the driver keeps the voices of the sound effects (-1: nowhere); read directly when linked in one piece. */\nconst int snes_game_sfx_voice_mask = {};\n", self.audio_sfx_mask.map_or(-1, i32::from)));
         entry.push_str("\n/* Registers snes_call_entry and the options with the runtime (needed when it is a library of its own). */\n");
-        entry.push_str("void snes_rt_module_init(void) {\n    snes_rt_register_entry(snes_call_entry);\n    snes_rt_register_options(snes_game_opts, snes_game_opt_count);\n}\n");
+        entry.push_str(&format!("void snes_rt_module_init(void) {{\n    snes_rt_register_entry(snes_call_entry);\n    snes_rt_register_options(snes_game_opts, snes_game_opt_count);\n    snes_rt_register_audio({});\n}}\n", self.audio_sfx_mask.map_or(-1, i32::from)));
         FullOutput { header, entry, banks, functions: self.g.functions.len(), unsupported }
     }
 }
@@ -1224,7 +1233,7 @@ sep xf=1 x=0034 p=10
         let r: Vec<_> = roots.iter().map(|&a| (a, Flags::RESET)).collect();
         let d = crate::discover::discover(&rom, &cfg, &r);
         let g = Graph::build(&d, roots);
-        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).generate_all()
+        Emitter::new(&d, &g).with_hooks(&cfg.hooks).unwrap().with_options(&cfg.options).with_audio_sfx_mask(cfg.audio_sfx_mask).generate_all()
     }
 
     /// Roots 00:8000 (widths in conflict, so it cannot be translated), 00:9000 and 01:8000.
@@ -1301,6 +1310,8 @@ sep xf=1 x=0034 p=10
                 || l == "void snes_rt_module_init(void) {"
                 || l == "    snes_rt_register_entry(snes_call_entry);"
                 || l == "    snes_rt_register_options(snes_game_opts, snes_game_opt_count);"
+                || l.starts_with("    snes_rt_register_audio(")
+                || l.starts_with("const int snes_game_sfx_voice_mask = ")
                 || l.trim_start().starts_with("case 0x00")
                 || ["    switch (addr & 0xFFFFFF) {", "    default: return 0;", "    }", "}"].contains(&l);
             assert!(known, "unexpected line: {l}");
@@ -1842,6 +1853,15 @@ int main(void) {{
         assert!(gen(&rom, &both, &[0x8000], 0x8000, 0).is_err(), "g would return int and void");
         let ok = hook_cfg("HOOK\naddr=\"00:8002\"\nkind=\"guard\"\ncall=\"g\"\nret=\"rts\"");
         assert!(gen(&rom, &ok, &[0x8000], 0x8000, 0).unwrap().contains("int g(Cpu *c);"));
+    }
+
+    #[test]
+    fn the_module_tells_the_runtime_where_the_driver_keeps_its_sound_effect_voices() {
+        let rom = [(0x8000, &[0xA9, 0x42, 0x85, 0x10, 0x60][..])];
+        let with = gen_all(&rom, "[audio]\nsfx_voice_mask = 0x1A", &[0x8000]);
+        assert!(with.entry.contains("    snes_rt_register_audio(26);"), "{}", with.entry);
+        let without = gen_all(&rom, "", &[0x8000]);
+        assert!(without.entry.contains("    snes_rt_register_audio(-1);"), "{}", without.entry);
     }
 
     #[test]
