@@ -321,6 +321,11 @@ static void draw(const char *msg, uint32_t msg_color, const char *main_label, co
         text_right(&cv, WIN_W - 28, chk_rect.y + 5, v, UI_DIM);
         if (upd_status[0]) text_right(&cv, WIN_W - 70, chk_rect.y + 5, upd_status, UI_GOLD);
     }
+    { /* SNES_PORT_SHOT=ruta: vuelca este fotograma (PPM) para hacer capturas y pruebas sin pantalla (SDL_VIDEODRIVER=dummy) */
+        const char *shot = getenv("SNES_PORT_SHOT");
+        FILE *f = shot && *shot ? fopen(shot, "wb") : NULL;
+        if (f) { fprintf(f, "P6\n%d %d\n255\n", WIN_W, WIN_H); fwrite(pixels, 1, sizeof pixels, f); fclose(f); }
+    }
     SDL_UpdateTexture(tex, NULL, pixels, WIN_W * 3);
     SDL_RenderClear(ren);
     SDL_RenderCopy(ren, tex, NULL, NULL);
