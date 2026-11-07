@@ -236,6 +236,75 @@ fn a_state_saved_in_the_main_loop_comes_back_exactly_and_the_rewind_goes_back() 
     assert!(!w.out.contains("does not give back"), "{}", w.out);
 }
 
+/// The same counter ROM with one more byte of data, so its CRC32 (and nothing it runs) differs.
+const COUNTER_ROM_B: [(u32, &[u8]); 2] = [(0x8000, &[0xA9, 0x00, 0x85, 0x10, 0xE6, 0x10, 0x4C, 0x04, 0x80]), (0xA000, &[0x42])];
+
+/// A folder of its own for the files of one test of states with the headless frontend (the run itself works in a folder that is
+/// deleted afterwards, and these tests need a state file to outlive a run).
+fn states_dir(name: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("snes-recomp-states-{}-{}", std::process::id(), name));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// Runs the counter ROM (`rom`) with the headless frontend for `frames` frames, with `extra` arguments, and gives the run and the
+/// WRAM it left in `dump`.
+fn run_headless_states(name: &str, rom: &[(u32, &[u8])], dump: &std::path::Path, frames: &str, extra: &[&str]) -> Option<(Run, Vec<u8>)> {
+    std::fs::create_dir_all(dump).unwrap();
+    let dump_s = dump.to_str().unwrap().to_string();
+    let mut args = vec!["rom.sfc", "--frames", frames, "--frame-blocks", "50", "--dump", dump_s.as_str()];
+    args.extend(extra);
+    let r = run_hooked_with(name, false, rom, &[0x8000], RESUME_CFG, "", &args, &[])?;
+    let wram = std::fs::read(dump.join("wram.bin")).unwrap_or_else(|e| panic!("no wram.bin ({e}):\n{}", r.out));
+    Some((r, wram))
+}
+
+#[test]
+fn the_headless_frontend_gives_the_same_memory_after_save_plus_n_frames_and_after_load_plus_n_frames() {
+    let d = states_dir("headless-determinism");
+    let st = d.join("a.sst");
+    let st = st.to_str().unwrap();
+    // save at frame 2 and stop at 6
+    let Some((a, wa)) = run_headless_states("hl-states-a", &COUNTER_ROM, &d.join("da"), "6", &["--state-save", &format!("{st}@2")]) else { return };
+    assert!(a.out.contains("state saved to"), "{}", a.out);
+    // load that state at frame 6 of a run that goes on to 10: four frames after the load, as the first run was four after the save
+    let Some((b, wb)) = run_headless_states("hl-states-b", &COUNTER_ROM, &d.join("db"), "10", &["--state-load", &format!("{st}@6")]) else { return };
+    assert!(b.out.contains("state loaded from"), "{}", b.out);
+    assert_eq!(wa, wb, "the memory after save + 4 frames and after load + 4 frames");
+    // without the load the memory is that of ten frames
+    let Some((_, wc)) = run_headless_states("hl-states-c", &COUNTER_ROM, &d.join("dc"), "10", &[]) else { return };
+    assert_ne!(wb, wc, "the load must have changed the memory");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_state_of_another_rom_or_not_a_state_is_refused_without_touching_the_game() {
+    let d = states_dir("headless-foreign");
+    let st = d.join("a.sst");
+    let st_s = st.to_str().unwrap();
+    // a state of the counter ROM...
+    let Some((a, _)) = run_headless_states("hl-foreign-save", &COUNTER_ROM, &d.join("da"), "4", &["--state-save", &format!("{st_s}@2")]) else { return };
+    assert!(a.out.contains("state saved to"), "{}", a.out);
+    // ...refused by another ROM (same code, another CRC32): the memory is that of a run that never tried to load it
+    let load = format!("{st_s}@2");
+    let Some((b, wb)) = run_headless_states("hl-foreign-load", &COUNTER_ROM_B, &d.join("db"), "6", &["--state-load", &load]) else { return };
+    assert!(b.out.contains("state load failed") && b.out.contains("state of another game"), "{}", b.out);
+    let Some((_, wc)) = run_headless_states("hl-foreign-none", &COUNTER_ROM_B, &d.join("dc"), "6", &[]) else { return };
+    assert_eq!(wb, wc, "a refused state must not change the game");
+    // a file that is not a state (here, bytes of another length) is refused the same way
+    std::fs::write(&st, b"not a state").unwrap();
+    let Some((e, we)) = run_headless_states("hl-foreign-junk", &COUNTER_ROM, &d.join("de"), "6", &["--state-load", &load]) else { return };
+    assert!(e.out.contains("state load failed") && e.out.contains("not a state of this version"), "{}", e.out);
+    let Some((_, wf)) = run_headless_states("hl-foreign-junk-none", &COUNTER_ROM, &d.join("df"), "6", &[]) else { return };
+    assert_eq!(we, wf, "a refused state must not change the game");
+    // and a state that does not exist at all is not a crash
+    let _ = std::fs::remove_file(&st);
+    let Some((g, _)) = run_headless_states("hl-foreign-missing", &COUNTER_ROM, &d.join("dg"), "6", &["--state-load", &load]) else { return };
+    assert!(g.out.contains("state load failed"), "{}", g.out);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// LDA #$05 ; STA $10 ; JSR $8100 ; BRA to itself    and at 00:8100 an RTS.
 const HOOKED_ROM: [(u32, &[u8]); 2] = [(0x8000, &[0xA9, 0x05, 0x85, 0x10, 0x20, 0x00, 0x81, 0x80, 0xFE]), (0x8100, &[0x60])];
 const HOOK_CFG: &str = "[[hook]]\naddr=\"00:8100\"\nkind=\"before\"\ncall=\"game_hook\"";
