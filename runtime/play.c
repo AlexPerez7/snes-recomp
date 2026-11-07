@@ -22,12 +22,13 @@
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
  * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
  * F5 = save a state, F7 = load it, F3/F4 = previous/next slot (1 to 9), Backspace held = rewind (games with a [resume] point; see play_state.h),
- * With the touch controls (Android, or --touch) the SAVE and LOAD plates do what F5 and F7 do, SLOT goes to the next slot (F4) and REWIND, held,
- * does what Backspace does; they are only there for a game with a resume point.
+ * With the touch controls (Android, or --touch) the SAVE and LOAD plates do what F5 and F7 do, SLOT opens the slot picker (F6: the nine slots with a
+ * picture and the date of each; the arrows or the pad and Enter or A choose, Esc or B close, or tap a slot) and REWIND, held, does what Backspace
+ * does; they are only there for a game with a resume point.
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
- * --menu-shot FILE.png and --menu-page N (the menu drawn over the last picture) and --print-config.
+ * --menu-shot FILE.png and --menu-page N (the menu drawn over the last picture), --slot-shot FILE.png (the same with the slot picker) and --print-config.
  * The ROM is read from the file at run time and is never part of the generated sources.
  */
 #define SDL_MAIN_HANDLED
@@ -847,6 +848,11 @@ static void menu_open_now(void);
 static void menu_close(void);
 static void st_request(int kind); /* play_state.h */
 static void st_change_slot(int d);
+static int slot_open; /* the slot picker is on screen (play_state.h) */
+static void slot_open_now(void);
+static void slot_close(void);
+static void slot_pad(SDL_GameControllerButton b);
+static int slot_tap(int px, int py, int w, int h);
 
 static TouchCfg tcfg;
 static char touch_path[1100];
@@ -1009,6 +1015,7 @@ static void touch_finger(const SDL_Event *e) {
     if (slot < 0) return;
     fingers[slot].x = e->tfinger.x; fingers[slot].y = e->tfinger.y;
     touch_win(&w, &h);
+    if (slot_open && e->type == SDL_FINGERDOWN && slot_tap((int)(e->tfinger.x * w), (int)(e->tfinger.y * h), w, h)) { fingers[slot].active = 0; return; }
     if (e->type == SDL_FINGERDOWN && !touch_edit) {
         TFinger one[TOUCH_FINGERS];
         TState st;
@@ -1073,11 +1080,14 @@ static void touch_poll(void) {
             if (++touch_rep > 14 && touch_rep % 5 == 0)
                 for (i = 0; i < 4; i++) if (now & nav[i].bit) menu_pad(nav[i].b);
         } else if (fresh & 0xF0000u) touch_rep = 0;
+    } else if (slot_open) { /* the slot picker: the pad moves, A chooses, B or the SLOT plate again closes it */
+        for (i = 0; i < 8; i++) if (fresh & nav[i].bit) slot_pad(nav[i].b);
+        if (fresh & (1u << T_SLOT | 1u << T_MENU)) slot_close();
     } else if (fresh & (1u << T_MENU)) { menu_open_now(); menu_by_pad = 1; }
     else {
         if (fresh & (1u << T_SAVE)) st_request(1);
         if (fresh & (1u << T_LOAD)) st_request(2);
-        if (fresh & (1u << T_SLOT)) st_change_slot(1);
+        if (fresh & (1u << T_SLOT)) slot_open_now();
     }
     touch_prev = now;
 }
@@ -1085,7 +1095,7 @@ static void touch_poll(void) {
 /* The buttons of the pad that the fingers hold, for the game. */
 static uint16_t touch_pad(void) {
     uint16_t m = 0;
-    if (!touch_on || menu_open || touch_edit) return 0;
+    if (!touch_on || menu_open || slot_open || touch_edit) return 0;
     if (touch_cur.dirs & TD_UP) m |= PAD_UP;
     if (touch_cur.dirs & TD_DOWN) m |= PAD_DOWN;
     if (touch_cur.dirs & TD_LEFT) m |= PAD_LEFT;
@@ -1460,11 +1470,11 @@ static void fps_tick(void) {
 
 /* The menu over the picture, into fb_show. The menu is a 256x224 canvas (fb_menu) over the 256 central columns, the picture
  * of the console; the extra columns of a wider picture are darkened like the rest of the backdrop. */
-static void menu_compose(void) {
+static void overlay_compose(void (*draw)(const uint8_t *)) {
     static uint8_t mid[SCREEN_H * SCREEN_W * 3];
     int w = fb_front_w, e = (w - SCREEN_W) / 2, x, y;
     for (y = 0; y < SCREEN_H; y++) memcpy(mid + (size_t)y * SCREEN_W * 3, fb_front + ((size_t)y * w + e) * 3, SCREEN_W * 3);
-    menu_draw(mid);
+    draw(mid);
     for (y = 0; y < SCREEN_H; y++) {
         const uint8_t *src = fb_front + (size_t)y * w * 3;
         uint8_t *dst = fb_show + (size_t)y * w * 3;
@@ -1476,6 +1486,8 @@ static void menu_compose(void) {
     }
 }
 
+static void menu_compose(void) { overlay_compose(menu_draw); }
+
 #include "play_state.h"
 
 /* What the window shows while the game runs: the picture, with the counter in the corner when `fps` is on (and then
@@ -1483,6 +1495,7 @@ static void menu_compose(void) {
 static const uint8_t *shown_frame(void) {
     char t[24];
     show_w = fb_front_w;
+    if (slot_open) { overlay_compose(slot_draw); return fb_show; }
     if (menu_open) { menu_compose(); return fb_show; }
     if (!cfg.eff.v[O_FPS] && st_toast_left <= 0) return fb_front;
     memcpy(fb_show, fb_front, (size_t)SCREEN_H * show_w * 3);
@@ -1507,7 +1520,9 @@ static void menu_open_now(void) {
 
 /* Any key: Esc or F1 opens the menu; with the menu open, the keys drive it (Esc and F1 close it). */
 static void ui_key(SDL_Scancode sc) {
+    if (slot_open) { slot_key(sc); return; }
     if (menu_open) { menu_key(sc); return; }
+    if (sc == SDL_SCANCODE_F6) { slot_open_now(); return; }
     if (sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) menu_open_now();
 }
 
@@ -1530,17 +1545,19 @@ static void handle_events(void) {
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) { if (touch_on) touch_finger(&e); continue; }
         if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; touch_visible = 0; }
         if (e.type == SDL_KEYDOWN) last_input_pad = 0;
-        if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
+        if (e.type == SDL_CONTROLLERBUTTONDOWN && slot_open) slot_pad((SDL_GameControllerButton)e.cbutton.button);
+        else if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             SDL_Scancode sc = e.key.keysym.scancode;
             if (sc == SDL_SCANCODE_AC_BACK) sc = SDL_SCANCODE_ESCAPE; /* the Back button of Android */
-            if (menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
+            if (slot_open || menu_open || sc == SDL_SCANCODE_F1 || sc == SDL_SCANCODE_ESCAPE) { ui_key(sc); continue; }
             switch (sc) {
             case SDL_SCANCODE_P: paused = !paused; break;
             case SDL_SCANCODE_F2: ff_toggle = !ff_toggle; break;
             case SDL_SCANCODE_F10: save_picture(); break;
             case SDL_SCANCODE_F5: st_request(1); break;
             case SDL_SCANCODE_F7: st_request(2); break;
+            case SDL_SCANCODE_F6: slot_open_now(); break;
             case SDL_SCANCODE_F3: st_change_slot(-1); break;
             case SDL_SCANCODE_F4: st_change_slot(1); break;
             case SDL_SCANCODE_F11:
@@ -1834,7 +1851,7 @@ static void flush_audio(void) {
     queued = SDL_GetQueuedAudioSize(adev);
     st_queued_sum += queued;
     if (queued == 0) st_underruns++;
-    if (fast || paused || menu_open || st_rewound) SDL_ClearQueuedAudio(adev);
+    if (fast || paused || menu_open || slot_open || st_rewound) SDL_ClearQueuedAudio(adev);
     else if (queued < AUD_MAX_FRAMES * 533 * 4) {
         if (queued == 0) audio_silence(AUD_REFILL);
         SDL_QueueAudio(adev, afr, (Uint32)nafr * 4);
@@ -1879,6 +1896,7 @@ static SDL_Scancode menu_script[64];
 static int menu_script_n, menu_script_i;
 static const char *menu_shot_path;
 static int menu_shot_page;
+static int menu_shot_slot; /* --slot-shot: the slot picker instead of the menu */
 
 static void play_frame(void) {
     if (opt_stats) st_frame_t0 = SDL_GetPerformanceCounter();
@@ -1887,15 +1905,15 @@ static void play_frame(void) {
     {
         int rew = play_state_script();
         if (!opt_no_window && SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]) rew = 1;
-        if (touch_on && !menu_open && !touch_edit && touch_cur.ctl & 1u << T_REWIND) rew = 1;
-        play_state_tick(rew, !opt_no_window && (paused || menu_open || touch_edit));
+        if (touch_on && !menu_open && !slot_open && !touch_edit && touch_cur.ctl & 1u << T_REWIND) rew = 1;
+        play_state_tick(rew, !opt_no_window && (paused || menu_open || slot_open || touch_edit));
         if (st_toast_left > 0) st_toast_left--;
     }
     if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
     if (menu_shot_path && frames + 1 >= max_frames) {
-        menu_open = 1;
-        menu_tab = menu_shot_page;
-        menu_compose();
+        if (menu_shot_slot && !slot_open) slot_open_now();
+        if (slot_open) overlay_compose(slot_draw);
+        else { menu_open = 1; menu_tab = menu_shot_page; menu_compose(); }
         if (!write_png(menu_shot_path, fb_menu, SCREEN_W, SCREEN_H)) fprintf(stderr, "error: cannot write %s\n", menu_shot_path);
         else {
             uint32_t h = 2166136261u; /* FNV-1a of the picture, so the tests can tell two captures apart */
@@ -1918,8 +1936,8 @@ static void play_frame(void) {
     handle_events();
     fast = ff_toggle || SDL_GetKeyboardState(NULL)[SDL_SCANCODE_TAB] != 0;
     flush_audio();
-    if (paused || menu_open || touch_edit) {
-        while (paused || menu_open || touch_edit) {
+    if (paused || menu_open || slot_open || touch_edit) {
+        while (paused || menu_open || slot_open || touch_edit) {
             SDL_Delay(20);
             handle_events();
             present(shown_frame());
@@ -2034,6 +2052,7 @@ int main(int argc, char **argv) {
             cli_set[o] = 1; cli_val[o] = v;
         }
         else if (!strcmp(argv[i], "--menu-shot") && i + 1 < argc) menu_shot_path = argv[++i];
+        else if (!strcmp(argv[i], "--slot-shot") && i + 1 < argc) { menu_shot_path = argv[++i]; menu_shot_slot = 1; }
         else if (!strcmp(argv[i], "--menu-page") && i + 1 < argc) { menu_shot_page = atoi(argv[++i]); if (menu_shot_page < 0 || menu_shot_page >= tab_count()) { bad = 1; break; } }
         else if (!strcmp(argv[i], "--menu-keys") && i + 1 < argc) {
             char *tok, list[1024];

@@ -17,7 +17,10 @@
 #define ST_GIVE_UP_FRAMES 90 /* a request that has not found a safe point by then is dropped, with the reason */
 #define ST_TOAST_FRAMES 120
 
+#include <time.h>
+
 static char st_rom_path[1100];
+static void st_thumb_write(int slot);
 static int st_slot = 1;
 static int st_pending;  /* 0 none, 1 save in flight, 2 load in flight, 3 capture for rewind in flight, 4 rewind load in flight */
 static uint32_t st_since;
@@ -240,6 +243,7 @@ static void play_state_tick(int want_rewind, int idle) {
             if (kind == 1) {
                 char path[1110];
                 if (st_path(st_slot, path, sizeof path) && st_write_file(path, state_data, state_len)) {
+                    st_thumb_write(st_slot);
                     snprintf(t, sizeof t, tr("State saved (slot %d)"), st_slot);
                     st_say(t);
                 } else st_say(tr("Cannot write the state"));
@@ -293,6 +297,175 @@ static void st_change_slot(int d) {
     st_slot = (st_slot - 1 + d + ST_SLOTS) % ST_SLOTS + 1;
     snprintf(t, sizeof t, tr("Slot %d"), st_slot);
     st_say(t);
+}
+
+/* ---- The slot picker (SLOT on the touch screen, F6): the nine slots with a small picture and the date of each ---- */
+
+#define SLOT_TW 48
+#define SLOT_TH 42
+#define SLOT_HEAD 6 /* the thumbnail file: width, height, then the time of the save, four bytes, then RGB */
+
+static int slot_cur = 1;
+static unsigned char slot_has[ST_SLOTS + 1], slot_pic[ST_SLOTS + 1];
+static uint32_t slot_when[ST_SLOTS + 1];
+static uint8_t slot_img[ST_SLOTS + 1][SLOT_TW * SLOT_TH * 3];
+
+static int st_thumb_path(int slot, char *out, size_t n) {
+    char ext[16];
+    snprintf(ext, sizeof ext, ".s%d.thumb", slot);
+    return st_rom_path[0] && save_path(st_rom_path, ext, out, n);
+}
+
+/* The picture that goes with a state just saved: the game frame shrunk to SLOT_TW by SLOT_TH (each pixel the average of its block). */
+static void st_thumb_write(int slot) {
+    uint8_t buf[SLOT_HEAD + SLOT_TW * SLOT_TH * 3];
+    char path[1110];
+    uint32_t now = (uint32_t)time(NULL);
+    int tx, ty, c, e = (fb_front_w - SCREEN_W) / 2;
+    buf[0] = SLOT_TW; buf[1] = SLOT_TH;
+    buf[2] = (uint8_t)now; buf[3] = (uint8_t)(now >> 8); buf[4] = (uint8_t)(now >> 16); buf[5] = (uint8_t)(now >> 24);
+    for (ty = 0; ty < SLOT_TH; ty++)
+        for (tx = 0; tx < SLOT_TW; tx++) {
+            int x0 = tx * SCREEN_W / SLOT_TW, x1 = (tx + 1) * SCREEN_W / SLOT_TW, y0 = ty * SCREEN_H / SLOT_TH, y1 = (ty + 1) * SCREEN_H / SLOT_TH, x, y;
+            for (c = 0; c < 3; c++) {
+                unsigned sum = 0, n = 0;
+                for (y = y0; y < y1; y++) for (x = x0; x < x1; x++) { sum += fb_front[((size_t)y * fb_front_w + e + x) * 3 + c]; n++; }
+                buf[SLOT_HEAD + ((size_t)ty * SLOT_TW + tx) * 3 + c] = (uint8_t)(n ? sum / n : 0);
+            }
+        }
+    if (st_thumb_path(slot, path, sizeof path)) st_write_file(path, buf, sizeof buf);
+}
+
+/* Reads from disk what the picker shows for each slot: whether there is a state and, if its picture is there, the picture and the date. */
+static void slot_refresh(void) {
+    int s;
+    for (s = 1; s <= ST_SLOTS; s++) {
+        char path[1110];
+        FILE *f = NULL;
+        uint8_t head[SLOT_HEAD];
+        slot_has[s] = slot_pic[s] = 0;
+        if (st_path(s, path, sizeof path) && (f = fopen(path, "rb"))) { slot_has[s] = 1; fclose(f); }
+        else if (saves_dir[0]) { /* a state from before `saves` */
+            char ext[16];
+            snprintf(ext, sizeof ext, ".s%d.sst", s);
+            if (sibling_path(st_rom_path, ext, path, sizeof path) && (f = fopen(path, "rb"))) { slot_has[s] = 1; fclose(f); }
+        }
+        if (st_thumb_path(s, path, sizeof path) && (f = fopen(path, "rb"))) {
+            if (fread(head, 1, SLOT_HEAD, f) == SLOT_HEAD && head[0] == SLOT_TW && head[1] == SLOT_TH &&
+                fread(slot_img[s], 1, SLOT_TW * SLOT_TH * 3, f) == (size_t)SLOT_TW * SLOT_TH * 3) {
+                slot_when[s] = (uint32_t)head[2] | (uint32_t)head[3] << 8 | (uint32_t)head[4] << 16 | (uint32_t)head[5] << 24;
+                slot_pic[s] = 1;
+            }
+            fclose(f);
+        }
+    }
+}
+
+static void slot_open_now(void) {
+    if (!state_seen) { st_say(tr("Save states are not available in this game")); return; }
+    slot_refresh();
+    slot_cur = st_slot;
+    slot_open = 1;
+}
+
+static void slot_close(void) { slot_open = 0; }
+
+static void slot_choose(int s) {
+    char t[32];
+    st_slot = s;
+    slot_open = 0;
+    snprintf(t, sizeof t, tr("Slot %d"), s);
+    st_say(t);
+}
+
+/* The grid: three columns of three, in the 256 by 224 of the game picture. */
+#define SL_X0 16
+#define SL_Y0 38
+#define SL_CW 72
+#define SL_CH 54
+#define SL_GX 4
+#define SL_GY 3
+
+static int slot_cell_at(int x, int y) {
+    int i;
+    for (i = 0; i < ST_SLOTS; i++) {
+        int cx = SL_X0 + i % 3 * (SL_CW + SL_GX), cy = SL_Y0 + i / 3 * (SL_CH + SL_GY);
+        if (x >= cx && x < cx + SL_CW && y >= cy && y < cy + SL_CH) return i + 1;
+    }
+    return 0;
+}
+
+static void slot_draw(const uint8_t *fb) {
+    int i, x, y;
+    ui_backdrop(&cv, fb);
+    ui_panel(&cv, 8, 8, 240, 208);
+    text_draw2x(&cv, 8 + (240 - text_w2x(tr("SAVE STATES"))) / 2, 14, tr("SAVE STATES"), UI_GOLD, UI_SHADOW);
+    ui_rule(&cv, 18, 31, 220);
+    for (i = 0; i < ST_SLOTS; i++) {
+        int s = i + 1, on = s == slot_cur, cx = SL_X0 + i % 3 * (SL_CW + SL_GX), cy = SL_Y0 + i / 3 * (SL_CH + SL_GY);
+        int tx = cx + (SL_CW - SLOT_TW) / 2, ty = cy + 2;
+        char num[8], when[24];
+        cv_rect(&cv, cx, cy, SL_CW, SL_CH, on ? UI_GOLD : 0x3A4A98u);
+        cv_rect(&cv, cx + 2, cy + 2, SL_CW - 4, SL_CH - 4, on ? 0x1C2C78u : 0x0A1038u);
+        if (slot_pic[s]) {
+            for (y = 0; y < SLOT_TH; y++) for (x = 0; x < SLOT_TW; x++) {
+                const uint8_t *p = slot_img[s] + ((size_t)y * SLOT_TW + x) * 3;
+                cv_put(&cv, tx + x, ty + y, (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2]);
+            }
+        } else {
+            cv_rect(&cv, tx, ty, SLOT_TW, SLOT_TH, 0x060A20u);
+            text_center(&cv, tx, SLOT_TW, ty + SLOT_TH / 2 - 4, slot_has[s] ? "?" : tr("EMPTY"), UI_DIM);
+        }
+        snprintf(num, sizeof num, "%d", s);
+        text_draw(&cv, tx + 2, ty + 1, num, UI_GOLD, 1);
+        if (slot_pic[s]) {
+            time_t t = (time_t)slot_when[s];
+            struct tm *lt = localtime(&t);
+            if (lt && strftime(when, sizeof when, "%d-%m %H:%M", lt)) text_center(&cv, cx, SL_CW, cy + 44, when, on ? UI_TEXT : UI_DIM);
+        }
+    }
+}
+
+static void slot_key(SDL_Scancode sc) {
+    int c = slot_cur - 1;
+    switch (sc) {
+    case SDL_SCANCODE_LEFT: c = c % 3 ? c - 1 : c + 2; break;
+    case SDL_SCANCODE_RIGHT: c = c % 3 == 2 ? c - 2 : c + 1; break;
+    case SDL_SCANCODE_UP: c = (c + 6) % 9; break;
+    case SDL_SCANCODE_DOWN: c = (c + 3) % 9; break;
+    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: case SDL_SCANCODE_SPACE: slot_choose(slot_cur); return;
+    case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F6: slot_close(); return;
+    default: return;
+    }
+    slot_cur = c + 1;
+}
+
+static void slot_pad(SDL_GameControllerButton b) {
+    switch (b) {
+    case SDL_CONTROLLER_BUTTON_DPAD_UP: slot_key(SDL_SCANCODE_UP); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: slot_key(SDL_SCANCODE_DOWN); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT: slot_key(SDL_SCANCODE_LEFT); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: slot_key(SDL_SCANCODE_RIGHT); break;
+    case SDL_CONTROLLER_BUTTON_A: slot_key(SDL_SCANCODE_RETURN); break;
+    case SDL_CONTROLLER_BUTTON_B: slot_key(SDL_SCANCODE_ESCAPE); break;
+    default: break;
+    }
+}
+
+/* A finger down at (px, py) of a window w by h while the picker is open: on a slot it chooses it, outside the picture it closes the picker.
+ * 0 when the finger is on one of the touch controls (the caller goes on with it), 1 when it was dealt with here. */
+static int slot_tap(int px, int py, int w, int h) {
+    int lines = view_lines(), e = (show_w - SCREEN_W) / 2, cx, cy, s;
+    Rect r;
+    if (touch_hit(&tcfg, touch_layout(&tcfg, w, h), w, h, px, py) >= 0) return 0;
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, show_w);
+    touch_place(&r, w, h);
+    if (px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) { slot_close(); return 1; }
+    cx = (int)((long)(px - r.x) * show_w / r.w) - e;
+    cy = (int)((long)(py - r.y) * lines / r.h) + cfg.eff.v[O_OVERSCAN];
+    s = slot_cell_at(cx, cy);
+    if (s) slot_choose(s);
+    return 1;
 }
 
 /* ---- Scripts for the tests without a window: --state-script save@120,load@300,slot+@50,rewind@200-230 ---- */

@@ -305,6 +305,35 @@ fn a_state_of_another_rom_or_not_a_state_is_refused_without_touching_the_game() 
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// The slot picker (F6 here, SLOT on the touch screen): choosing a slot with the keys makes it the one that saving uses, Esc closes it
+/// without choosing, and what it draws changes with the cursor and with a state that has a picture.
+#[test]
+fn the_slot_picker_chooses_the_slot_and_shows_the_saved_states() {
+    let run = |name: &str, extra: &[&str]| {
+        let mut args = vec!["rom.sfc", "--no-window", "--frame-blocks", "50", "--frames", "30"];
+        args.extend(extra);
+        run_hooked_with(name, true, &COUNTER_ROM, &[0x8000], RESUME_CFG, "", &args, &[])
+    };
+    // frame 2 saves in slot 1; from frame 3 the keys: F6 opens, Right goes to slot 2, Return chooses it; frame 10 saves again
+    let Some(r) = run("slotpick-choose", &["--state-script", "save@2,save@10", "--menu-keys", "F6,Right,Return"]) else { return };
+    assert!(r.out.contains("State saved (slot 1)") && r.out.contains("Slot 2") && r.out.contains("State saved (slot 2)"), "{}", r.out);
+    // Esc closes it without choosing: the second save is in slot 1 again
+    let Some(r) = run("slotpick-escape", &["--state-script", "save@2,save@10", "--menu-keys", "F6,Right,Escape"]) else { return };
+    assert!(r.out.matches("State saved (slot 1)").count() == 2 && !r.out.contains("slot 2"), "{}", r.out);
+    // the picture of the picker: with the cursor on slot 1 or on slot 2 it is not the same, and with a saved state (a picture in slot 1) either
+    // differs from the picker of a game that has saved nothing
+    let shot = |name: &str, keys: &str, save: bool| {
+        let mut extra = vec!["--menu-keys", keys, "--menu-shot", "slot.png"];
+        if save { extra.extend(["--state-script", "save@2"]); }
+        run(name, &extra).map(|r| r.out.lines().find_map(|l| l.strip_prefix("menu-shot: ")).unwrap_or_else(|| panic!("no menu-shot: {}", r.out)).to_string())
+    };
+    let Some(a) = shot("slotpick-shot-a", "F6", true) else { return };
+    let Some(b) = shot("slotpick-shot-b", "F6,Right", true) else { return };
+    let Some(c) = shot("slotpick-shot-c", "F6", false) else { return };
+    assert!(a != b, "the cursor must show");
+    assert!(a != c, "a saved state must show its picture");
+}
+
 /// A 16-bit counter in $10/$11 that moves in a subroutine (00:8100, hooked) called from the main loop (resume point 00:8006): the C of
 /// the game prints it on every call, so a run tells where the memory was at each moment.
 const COUNTER16_ROM: [(u32, &[u8]); 2] = [(0x8000, &[0xA9, 0x00, 0x85, 0x10, 0x85, 0x11, 0x20, 0x00, 0x81, 0x80, 0xFB]), (0x8100, &[0xE6, 0x10, 0xD0, 0x02, 0xE6, 0x11, 0x60])];
@@ -3671,6 +3700,8 @@ int main(void) {
             {"notice", PW - 24, {"Image options restored", "Audio options restored", "Everything restored to the defaults", "Press a key or a controller button", "Saved game written", "Enter restores everything, Esc cancels", "Enter quits the game, Esc cancels", "Used by P%d %s: Enter replaces, Esc cancels"}},
             {"help", PW - 20, {"L/R: tabs   A: select   B: close", "Press the key or button   Esc: cancel", "Q/W: tabs   Enter: select   Esc: close"}},
             {"title", 120, {"OPTIONS"}},
+            {"title of the slot picker (drawn twice as large)", 110, {"SAVE STATES"}},
+            {"empty cell of the slot picker (a picture is 48 wide)", 44, {"EMPTY"}},
             {"button of the Controls tab", 66, {"Up", "Down", "Left", "Right"}},
             {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
             {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "an interrupt is running", "the game is switching execution contexts", "another execution context is running", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},

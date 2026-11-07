@@ -38,6 +38,7 @@ static const I18n i18n_table[] = {
     {"Enter quits the game, Esc cancels", "Intro cierra el juego, Esc cancela"},
     /* save states */
     {"State saved (slot %d)", "Estado guardado (ranura %d)"}, {"State loaded (slot %d)", "Estado cargado (ranura %d)"},
+    {"SAVE STATES", "ESTADOS"}, {"EMPTY", "VACIA"},
     {"Slot %d", "Ranura %d"}, {"Slot %d is empty", "La ranura %d está vacía"}, {"Cannot save", "No se puede guardar"},
     {"Cannot load", "No se puede cargar"}, {"Cannot read the state", "No se puede leer el estado"},
     {"Cannot write the state", "No se puede escribir el estado"},
