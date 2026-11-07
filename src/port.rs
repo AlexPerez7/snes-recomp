@@ -485,7 +485,7 @@ pub fn find_rom_bytes(rom: &[u8], dir: &Path) -> Option<PathBuf> {
 /// `snes-recomp scan`: fails, naming the file, when anything under `dir` holds bytes of the ROM (before publishing).
 pub fn scan(rom: &[u8], dir: &Path) -> Result<(), String> {
     if let Some(f) = find_state_file(dir) {
-        return Err(format!("{}: a save state (.sst) holds the memory of the game and is never published", f.display()));
+        return Err(format!("{}: a save state (.sst) holds the memory of the game and its thumbnail (.thumb) a picture of it: neither is ever published", f.display()));
     }
     match find_rom_bytes_at(rom, dir) {
         Some((file, at, r)) => Err(format!("{}: bytes of the ROM (file offset {at}, ROM offset {r:#X})", file.display())),
@@ -493,7 +493,7 @@ pub fn scan(rom: &[u8], dir: &Path) -> Result<(), String> {
     }
 }
 
-/// The first save state (`*.sst`) under `dir`.
+/// The first save state (`*.sst`) or thumbnail of one (`*.thumb`, a shrunk picture of the game) under `dir`.
 fn find_state_file(dir: &Path) -> Option<PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -502,7 +502,7 @@ fn find_state_file(dir: &Path) -> Option<PathBuf> {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "sst") {
+            } else if p.extension().is_some_and(|x| x == "sst" || x == "thumb") {
                 return Some(p);
             }
         }
@@ -986,6 +986,10 @@ mod tests {
         std::fs::write(dir.join("game.s1.sst"), b"not a byte of the ROM").unwrap();
         let e = scan(&rom, &dir).unwrap_err();
         assert!(e.contains("game.s1.sst") && e.contains("save state"), "{e}");
+        std::fs::remove_file(dir.join("game.s1.sst")).unwrap();
+        std::fs::write(dir.join("game.s1.thumb"), b"not a byte of the ROM").unwrap();
+        let e = scan(&rom, &dir).unwrap_err();
+        assert!(e.contains("game.s1.thumb") && e.contains("thumbnail"), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

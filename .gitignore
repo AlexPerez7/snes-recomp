@@ -4,6 +4,7 @@
 *.smc
 *.srm
 *.sst
+*.thumb
 /roms/
 /out/
 *.log

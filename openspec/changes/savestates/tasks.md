@@ -17,7 +17,10 @@
 - [x] 3.1 Teclas de guardar y cargar (F5/F7, ranura con F3/F4), ranuras `<rom>.sN.sst` junto a la ROM, aviso en pantalla
 - [x] 3.2 Rebobinado: anillo de 150 estados con diferencias XOR y tecla Retroceso
 - [x] 3.3 Sin `[resume]` el aviso dice que el juego no admite estados; las filas del menú quedan fuera de este cambio (teclas fijas)
-- [x] 3.4 `.sst` en `.gitignore`, en `scan` y en la comprobación de `release.ps1`
+- [x] 3.4 `.sst` y `.thumb` en `.gitignore`, en `scan` y en la comprobación de `release.ps1`
+
+- [x] 3.5 Selector de ranuras (F6, y la placa SLOT en la pantalla táctil): las nueve ranuras con miniatura (`.sN.thumb`, 48 por 42, escrita al guardar) y fecha; se elige con flechas o cruceta y Intro o A, tocando una ranura, y se cierra con Esc, B, tocando fuera o con SLOT otra vez; el juego queda en pausa. Prueba `the_slot_picker_chooses_the_slot_and_shows_the_saved_states`; visto con ALttP real (`--slot-shot`) y probado a mano en un Galaxy S25 Ultra
+- [x] 3.6 Placas táctiles SAVE, LOAD, SLOT y REWIND (solo con `[resume]`), sin solapes en ocho tamaños de pantalla (prueba en `play_touch`), y `touch.ini` solo guarda las posiciones que se movieron (así un cambio de los valores por defecto llega a quien ya tiene el fichero). Probadas a mano en un Galaxy S25 Ultra
 
 ## 4. Pruebas
 

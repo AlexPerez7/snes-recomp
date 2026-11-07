@@ -47,7 +47,7 @@ ROM ──► carga y cabecera ──► descubrimiento de código ──► gra
 | Frontal interactivo (SDL2) | hecho: ventana, pantalla completa, teclado y mandos, audio, `.srm` |
 | Constructor de port desde la ROM del usuario (`snes-port`) | hecho: caché por CRC32; MSVC/gcc/clang, o el TinyCC del paquete, o TinyCC descargado con consentimiento; ventana de lanzamiento (doble clic) con la última ROM recordada |
 | Opciones de port (menú F1, `config.ini`, filtros) | hecho |
-| Estados guardados y rebobinado (`[resume]` del perfil) | hecho: F5/F7, 9 ranuras `.sst`, Retroceso; cambio `savestates` con pruebas por cerrar (ver `openspec/changes/savestates/tasks.md`) |
+| Estados guardados y rebobinado (`[resume]` del perfil) | hecho: F5/F7, 9 ranuras `.sst` con miniatura y fecha, selector de ranuras (F6), Retroceso y, en Android, placas SAVE/LOAD/SLOT/REWIND; cambio `savestates` con pruebas por cerrar (ver `openspec/changes/savestates/tasks.md`) |
 | Perfiles de juego (entradas, tablas, ganchos y C propio) | hecho: viven en el repositorio de cada juego |
 | Runtime como biblioteca y generador en memoria (base del port a Android) | hecho: el runtime se compila sin nada del juego y el C del juego se le une al arrancar; el generador es una biblioteca con interfaz C. Prueba de factibilidad en Android en curso (cambio `android-feasibility-spike`, `spikes/android`) |
 | Pantalla ancha (`wide`, hasta 96 px por lado) | hecho en el motor, con API para el C del juego; el relleno específico de ALttP (franjas negras donde no hay mapa) está en curso en el cambio `alttp-wide-fill` y la precarga real del exterior queda como trabajo futuro |
@@ -60,7 +60,7 @@ Limitaciones conocidas: la interpolación del DSP usa un núcleo en forma de cam
 
 - Rust estable (`cargo`).
 - Un compilador de C: `gcc`, `clang` o Visual Studio Build Tools (en Windows, desde "x64 Native Tools" o tras `vcvars64.bat`).
-- Para el frontal interactivo: el paquete de desarrollo de SDL2 para Visual C++ (`SDL2-devel-x.y.z-VC.zip`), descomprimido en `out/sdl2` o apuntado por `SDL2_DIR`.
+- Para el frontal interactivo: el paquete de desarrollo de SDL2 para Visual C++ (`SDL2-devel-x.y.z-VC.zip`), descomprimido en `out/sdl2` o apuntado por `SDL2_DIR`. En Linux, los tests lo toman de `pkg-config sdl2` (`libsdl2-dev`); sin él, los tests del frontal interactivo se omiten y lo dicen.
 - Tu ROM en `roms/` (ignorada por git), por ejemplo `roms/alttp_usa.sfc`.
 - El **perfil del juego**, que sale del repositorio de ese juego (para ALttP, `alttp-recomp`): su carpeta `games/` va junto a `snes-port.exe` o en el directorio desde el que lo ejecutas, o se pasa con `--game <perfil.toml>`. Sin perfil, `snes-port` dice dónde busca y no construye nada.
 
@@ -125,7 +125,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | Tab (mantener) / F2 (activar y desactivar) | avance rápido, a la velocidad de **Game → Fast forward** (2x, 3x, 4x, 8x o máx.; por defecto 2x; clave `ffspeed`); sin sonido mientras dura |
 | F10 | captura PNG |
 | F5 / F7 | guardar / cargar el estado de la ranura actual |
-| F6 | selector de ranuras: las nueve con una miniatura y la fecha de cada una; flechas e Intro eligen, Esc cierra |
+| F6 | selector de ranuras: las nueve con una miniatura y la fecha de cada una; flechas e Intro eligen, Esc cierra (en pantalla táctil, la placa **SLOT**: se elige tocando una ranura, con la cruceta y A, y se cierra con B o tocando fuera) |
 | F3 / F4 | ranura anterior / siguiente (1 a 9) |
 | Retroceso (mantener) | rebobinar unos 10 s, sin sonido (en pantalla táctil: **SAVE**, **LOAD**, **SLOT** (abre el selector de ranuras) y, mantenido, **REWIND**, solo en juegos con `[resume]`) |
 
@@ -158,7 +158,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | `p1.key.A`, `p2.pad.B`… | nombres de tecla o de botón de SDL separados por comas | asignación por jugador (`key` teclado, `pad` mando) y botón (`B Y SELECT START UP DOWN LEFT RIGHT A X L R`) |
 
 - Para ver el resultado de las opciones de imagen sin ventana: `snes_play <rom> --no-window --frames 700 --opt filter=sharp --present-shot out\p.png --present-size 640x560`. Con efectos desactivados y el tamaño de la propia imagen, la salida es idéntica al búfer byte a byte (lo dice por consola).
-- **Estados guardados y rebobinado.** Solo en juegos cuyo perfil declara `[resume]` (un bloque del bucle principal, con la pila del 65816 en su base; ver `openspec/specs/savestates`). El estado de la ranura N va en `<rom>.sN.sst`, junto a la ROM, y lleva la memoria del juego: **no se publica** (`.gitignore`, `scan` y `release.ps1` lo rechazan). La petición espera al siguiente paso por ese punto y, si en 1,5 s no hay uno seguro (en la intro de ALttP, que cambia de pila entre NMI e IRQ, no lo hay), avisa con el motivo. El rebobinado guarda un estado cada 4 fotogramas (unos 10 s) y, tras el último, solo las diferencias con los anteriores. Para pruebas sin ventana: `--state-script save@N,load@N,slot+@N,rewind@A-B` y `--hash-wram`; con el frontal sin vídeo, `--state-save FILE@N` y `--state-load FILE@N`.
+- **Estados guardados y rebobinado.** Solo en juegos cuyo perfil declara `[resume]` (un bloque del bucle principal, con la pila del 65816 en su base; ver `openspec/specs/savestates`). El estado de la ranura N va en `<rom>.sN.sst`, junto a la ROM, y lleva la memoria del juego; al guardar se escribe también `<rom>.sN.thumb` (48 por 42, la hora del guardado y la imagen: la usa el selector de ranuras). Ni uno ni otro se publican (`.gitignore`, `scan` y `release.ps1` rechazan `*.sst` y `*.thumb`). La petición espera al siguiente paso por ese punto y, si en 1,5 s no hay uno seguro (en la intro de ALttP, que cambia de pila entre NMI e IRQ, no lo hay), avisa con el motivo. El rebobinado guarda un estado cada 4 fotogramas (unos 10 s) y, tras el último, solo las diferencias con los anteriores. Para pruebas sin ventana: `--state-script save@N,load@N,slot+@N,rewind@A-B` y `--hash-wram`; con el frontal sin vídeo, `--state-save FILE@N` y `--state-load FILE@N`; `--slot-shot FILE.png` dibuja el selector de ranuras sobre el último fotograma.
 - La SRAM se guarda en `saves\<rom>.srm` (cada segundo si cambió y al salir) y se recarga al arrancar. `saves\` está junto a `snes-port.exe` (o, si ahí no se puede escribir, en `%APPDATA%\snes-port\saves`) y `snes-port` la pasa al juego con `--saves-dir`; sin esa opción las partidas quedan junto a la ROM. Una partida o un estado que ya estuviera junto a la ROM se importa solo la primera vez.
 - `--stats` muestra ritmo, cola de audio y parones.
 

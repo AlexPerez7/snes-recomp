@@ -78,7 +78,7 @@ Descargado de $url (SHA-256 $sha).
 
 # la guarda: nada de ROMs, partidas guardadas ni C generado
 $bad = Get-ChildItem $stage -Recurse -File | Where-Object {
-    $_.Extension -in ".sfc", ".smc", ".srm", ".sst", ".fig", ".swc" -or
+    $_.Extension -in ".sfc", ".smc", ".srm", ".sst", ".thumb", ".fig", ".swc" -or
     $_.Name -like "rom_*.c" -or $_.Name -in "snes_entry.c", "snes_funcs.h", "snes_headless.c", "snes_play.c"
 }
 if ($bad) {
