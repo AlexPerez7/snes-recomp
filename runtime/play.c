@@ -22,6 +22,8 @@
  * Keys (defaults): arrows = d-pad, X = B, Z = Y, S = A, A = X, Q = L, W = R, Enter = START, Right Shift = SELECT,
  * F1 = menu, F11 = full screen, P = pause, Tab (held) or F2 (toggle) = fast forward at the speed of the menu, F10 = save the picture as snes_NNN.png,
  * F5 = save a state, F7 = load it, F3/F4 = previous/next slot (1 to 9), Backspace held = rewind (games with a [resume] point; see play_state.h),
+ * With the touch controls (Android, or --touch) the SAVE and LOAD plates do what F5 and F7 do and REWIND, held, what Backspace does; they
+ * are only there for a game with a resume point.
  * Escape = quit. Controllers: the first one connected is player 1, the second player 2.
  * --no-window runs without opening a window (for tests): it needs no display, but still SDL2.dll. For tests of the
  * menu there are also --menu-keys NAME,NAME,... (SDL key names pressed one per frame from frame 3, as if typed),
@@ -843,6 +845,7 @@ static void restore_all(void) {
 static void menu_pad(SDL_GameControllerButton b);
 static void menu_open_now(void);
 static void menu_close(void);
+static void st_request(int kind); /* play_state.h */
 
 static TouchCfg tcfg;
 static char touch_path[1100];
@@ -956,10 +959,15 @@ static void touch_draw(void) {
     l = touch_layout(&tcfg, w, h);
     alpha = (Uint8)(tcfg.opacity * 255 / 100);
     for (id = 0; id < T_COUNT; id++) {
-        TRect r = touch_rect(&tcfg, l, id, w, h);
-        SDL_Rect dst = {r.cx - r.w / 2, r.cy - r.h / 2, r.w, r.h};
-        int down = id != T_DPAD && (touch_cur.ctl >> id & 1u);
-        SDL_Texture *t = touch_tex[id][down];
+        TRect r;
+        SDL_Rect dst;
+        int down;
+        SDL_Texture *t;
+        if (id >= T_SAVE && !touch_extra) continue;
+        r = touch_rect(&tcfg, l, id, w, h);
+        dst = (SDL_Rect){r.cx - r.w / 2, r.cy - r.h / 2, r.w, r.h};
+        down = id != T_DPAD && (touch_cur.ctl >> id & 1u);
+        t = touch_tex[id][down];
         if (!t) continue;
         SDL_SetTextureAlphaMod(t, alpha);
         SDL_RenderCopy(ren, t, NULL, &dst);
@@ -1049,6 +1057,7 @@ static void touch_poll(void) {
     int i;
     if (!touch_on) return;
     touch_win(&w, &h);
+    touch_extra = state_seen || touch_edit; /* save, load and rewind need a game with a resume point */
     touch_cur = touch_edit ? (TState){0, 0} : touch_state(&tcfg, touch_layout(&tcfg, w, h), fingers, w, h);
     touch_cur.ctl |= touch_latch.ctl; touch_cur.dirs |= touch_latch.dirs;
     touch_latch.ctl = touch_latch.dirs = 0;
@@ -1064,6 +1073,10 @@ static void touch_poll(void) {
                 for (i = 0; i < 4; i++) if (now & nav[i].bit) menu_pad(nav[i].b);
         } else if (fresh & 0xF0000u) touch_rep = 0;
     } else if (fresh & (1u << T_MENU)) { menu_open_now(); menu_by_pad = 1; }
+    else {
+        if (fresh & (1u << T_SAVE)) st_request(1);
+        if (fresh & (1u << T_LOAD)) st_request(2);
+    }
     touch_prev = now;
 }
 
@@ -1872,6 +1885,7 @@ static void play_frame(void) {
     {
         int rew = play_state_script();
         if (!opt_no_window && SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE]) rew = 1;
+        if (touch_on && !menu_open && !touch_edit && touch_cur.ctl & 1u << T_REWIND) rew = 1;
         play_state_tick(rew, !opt_no_window && (paused || menu_open || touch_edit));
         if (st_toast_left > 0) st_toast_left--;
     }

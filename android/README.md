@@ -63,6 +63,10 @@ Un fichero `files/stats` en la carpeta de la app activa la medición (`adb shell
 
 La salida (`work: p50, p99, max` cada 600 fotogramas, desglosado en `emu`, `tail` y `pres`) va a `adb logcat -s snesport`. Los resultados y su análisis están en `openspec/changes/android-frontend/tasks.md`.
 
+## Estados guardados
+
+En un juego con `[resume]` en su perfil (ALttP lo tiene) la pantalla táctil trae tres placas: **SAVE** y **LOAD** guardan y cargan el estado de la ranura 1, y **REWIND**, mantenida, rebobina. Son los mismos controles que F5, F7 y Retroceso en el PC (estados en `saves/`, formato de `snes_state.inc`) y se colocan y escalan en el editor de la pestaña Touch como el resto. No hay control para cambiar de ranura. En un juego sin `[resume]` no aparecen. Probado con las pruebas del motor (posiciones y pulsaciones); no se ha visto todavía en un teléfono.
+
 ## Ciclo de vida
 
 Al pasar a segundo plano el juego se detiene, se guarda la SRAM y el audio se pausa; al volver sigue donde estaba. Cerrar la app de verdad mata el proceso (SDL no admite un segundo `SDL_main`).

@@ -2835,6 +2835,34 @@ int main(void) {
         else CHECK(s.ctl == (1u << id) && s.dirs == 0);
         CHECK(touch_hit(&t, l, 1080, 2340, r.cx, r.cy) == id);
     }
+    /* save, load and rewind are only there for a game with a resume point: without it a finger on them presses nothing */
+    touch_extra = 0;
+    for (id = T_SAVE; id < T_COUNT; id++) {
+        memset(f, 0, sizeof f);
+        r = touch_rect(&t, l, id, 1080, 2340);
+        f[0].active = 1; f[0].x = (float)r.cx / 1080; f[0].y = (float)r.cy / 2340;
+        s = touch_state(&t, l, f, 1080, 2340);
+        CHECK(s.ctl == 0 && s.dirs == 0);
+    }
+    touch_extra = 1;
+    /* the same in landscape (a phone on its side): each control still presses only itself */
+    {
+        TLayout *ll = touch_layout(&t, 2340, 1080);
+        for (id = 0; id < T_COUNT; id++) {
+            memset(f, 0, sizeof f);
+            r = touch_rect(&t, ll, id, 2340, 1080);
+            f[0].active = 1; f[0].x = (float)r.cx / 2340; f[0].y = (float)r.cy / 1080;
+            s = touch_state(&t, ll, f, 2340, 1080);
+            if (id == T_DPAD) CHECK(s.ctl == 0);
+            else CHECK(s.ctl == (1u << id) && s.dirs == 0);
+        }
+    }
+    /* a settings file from before the state controls (no save, load or rewind lines) keeps their default places */
+    { FILE *g = fopen(path, "w"); fputs("size=100\nland.a=0.9,0.6,1.0\n", g); fclose(g); }
+    touch_load(&u, path);
+    touch_defaults(&t);
+    CHECK(u.land.c[T_SAVE].x == t.land.c[T_SAVE].x && u.port.c[T_REWIND].y == t.port.c[T_REWIND].y);
+    remove(path);
     /* the pad: left of the centre is left, above and to the right is up and right (a diagonal), the centre nothing */
     memset(f, 0, sizeof f);
     r = touch_rect(&t, l, T_DPAD, 1080, 2340);

@@ -126,7 +126,7 @@ Sin argumento de ROM (o con doble clic en el exe) se abre el diálogo de Windows
 | F10 | captura PNG |
 | F5 / F7 | guardar / cargar el estado de la ranura actual |
 | F3 / F4 | ranura anterior / siguiente (1 a 9) |
-| Retroceso (mantener) | rebobinar unos 10 s, sin sonido |
+| Retroceso (mantener) | rebobinar unos 10 s, sin sonido (en pantalla táctil: **SAVE**, **LOAD** y, mantenido, **REWIND**, solo en juegos con `[resume]`; siempre la ranura 1) |
 
 - Cualquier mando SDL funciona, también conectado en caliente: el primero es el jugador 1 y el segundo el jugador 2. `--print-keys` lista el teclado del jugador 1.
 - Las opciones viven en `config.ini` junto a la ROM: se crea con los valores por defecto la primera vez, conserva comentarios y claves que no conoce, y se relee al arrancar. La línea de comandos manda sobre el fichero solo en esa ejecución (`--scale N`, `--fullscreen`, `--opt CLAVE=VALOR`, repetible). Un `<rom>.keys` antiguo se importa una vez, si aún no hay `config.ini`.

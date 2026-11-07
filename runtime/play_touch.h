@@ -14,7 +14,11 @@
 
 /* ---- the controls ---- */
 
-enum { T_DPAD, T_A, T_B, T_X, T_Y, T_L, T_R, T_START, T_SELECT, T_MENU, T_COUNT };
+/* T_SAVE, T_LOAD and T_REWIND drive the save states (play_state.h): save the slot, load it, and rewind while held. They only
+ * exist for a game that has a resume point (`touch_extra`), and always while the layout is being edited. */
+enum { T_DPAD, T_A, T_B, T_X, T_Y, T_L, T_R, T_START, T_SELECT, T_MENU, T_SAVE, T_LOAD, T_REWIND, T_COUNT };
+
+static int touch_extra = 1; /* the controls from T_SAVE on count: hit tests and the state the fingers give skip them when it is 0 */
 
 /* Directions a finger on the pad asks for. */
 enum { TD_UP = 1, TD_DOWN = 2, TD_LEFT = 4, TD_RIGHT = 8 };
@@ -35,6 +39,7 @@ typedef struct { int w, h; float unit; const char *name; } TSpec;
 static const TSpec tspec[T_COUNT] = {
     {65, 65, 0.34f, "dpad"}, {25, 25, 0.13f, "a"}, {25, 25, 0.13f, "b"}, {25, 25, 0.13f, "x"}, {25, 25, 0.13f, "y"},
     {41, 17, 0.20f, "l"}, {41, 17, 0.20f, "r"}, {45, 13, 0.16f, "start"}, {45, 13, 0.16f, "select"}, {33, 13, 0.12f, "menu"},
+    {33, 13, 0.12f, "save"}, {33, 13, 0.12f, "load"}, {41, 13, 0.15f, "rewind"},
 };
 
 static void touch_defaults(TouchCfg *t) {
@@ -42,10 +47,12 @@ static void touch_defaults(TouchCfg *t) {
        on a phone as wide as 20:9. On a narrower window the bands are thinner and the controls reach onto the picture. */
     static const TCtl land[T_COUNT] = {
         {0.135f, 0.62f, 1}, {0.931f, 0.62f, 1}, {0.882f, 0.726f, 1}, {0.882f, 0.514f, 1}, {0.833f, 0.62f, 1},
-        {0.10f, 0.12f, 1}, {0.90f, 0.12f, 1}, {0.89f, 0.91f, 1}, {0.11f, 0.91f, 1}, {0.115f, 0.30f, 1}};
+        {0.10f, 0.12f, 1}, {0.90f, 0.12f, 1}, {0.89f, 0.91f, 1}, {0.11f, 0.91f, 1}, {0.115f, 0.30f, 1},
+        {0.90f, 0.26f, 1}, {0.90f, 0.34f, 1}, {0.115f, 0.39f, 1}};
     static const TCtl port[T_COUNT] = {
         {0.24f, 0.80f, 1}, {0.90f, 0.80f, 1}, {0.78f, 0.89f, 1}, {0.78f, 0.71f, 1}, {0.66f, 0.80f, 1},
-        {0.14f, 0.62f, 1}, {0.86f, 0.62f, 1}, {0.62f, 0.96f, 1}, {0.38f, 0.96f, 1}, {0.88f, 0.075f, 1}};
+        {0.14f, 0.62f, 1}, {0.86f, 0.62f, 1}, {0.62f, 0.96f, 1}, {0.38f, 0.96f, 1}, {0.88f, 0.075f, 1},
+        {0.38f, 0.075f, 1}, {0.62f, 0.075f, 1}, {0.14f, 0.075f, 1}};
     memcpy(t->land.c, land, sizeof land);
     memcpy(t->port.c, port, sizeof port);
     t->size = 100; t->opacity = 85; t->haptic = 1;
@@ -100,7 +107,9 @@ static TState touch_state(const TouchCfg *t, const TLayout *l, const TFinger *f,
         if (!f[i].active) continue;
         px = (int)(f[i].x * w); py = (int)(f[i].y * h);
         for (id = 0; id < T_COUNT; id++) {
-            TRect r = touch_rect(t, l, id, w, h);
+            TRect r;
+            if (id >= T_SAVE && !touch_extra) continue;
+            r = touch_rect(t, l, id, w, h);
             if (id == T_DPAD) {
                 float dx = (float)(px - r.cx), dy = (float)(py - r.cy), rad = r.w / 2.0f, dead = rad * 0.22f;
                 if (sqrtf(dx * dx + dy * dy) > rad * 1.25f) continue;
@@ -203,7 +212,7 @@ static void timg_put(TImg *im, int x, int y, uint32_t rgb) {
 #define TC_TEXT    0xFFFCE8u
 #define TC_SHADOW  0x28180Au
 
-/* The 5x7 shapes of the letters of the labels: only the ones the controls use (A B X Y L R and the words). */
+/* The 5x7 shapes of the letters of the labels: only the ones the controls use (A B X Y L R and the words, SAVE LOAD REWIND among them). */
 static const uint8_t tfont[][7] = {
     /* A */ {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11}, /* B */ {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E}, /* X */ {0x11,0x11,0x0A,0x04,0x0A,0x11,0x11},
     /* Y */ {0x11,0x11,0x0A,0x04,0x04,0x04,0x04}, /* L */ {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}, /* R */ {0x1E,0x11,0x11,0x1E,0x14,0x12,0x11},
@@ -213,10 +222,11 @@ static const uint8_t tfont[][7] = {
     /* O */ {0x0E,0x11,0x11,0x11,0x11,0x11,0x0E}, /* K */ {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, /* D */ {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E},
     /* I */ {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}, /* G */ {0x0E,0x11,0x10,0x17,0x11,0x11,0x0F}, /* J */ {0x07,0x02,0x02,0x02,0x02,0x12,0x0C},
     /* H */ {0x11,0x11,0x11,0x1F,0x11,0x11,0x11}, /* V */ {0x11,0x11,0x11,0x11,0x11,0x0A,0x04}, /* Z */ {0x1F,0x01,0x02,0x04,0x08,0x10,0x1F},
+    /* W */ {0x11,0x11,0x11,0x15,0x15,0x1B,0x11},
 };
 
 static const uint8_t *tglyph(char c) {
-    static const char order[] = "ABXYLRSTECMNU-+OKDIGJHVZ";
+    static const char order[] = "ABXYLRSTECMNU-+OKDIGJHVZW";
     const char *p = strchr(order, c);
     return p && c ? tfont[p - order] : NULL;
 }
@@ -381,6 +391,9 @@ static TImg touch_sprite(int id, int state) {
     case T_R: return spr_label(id, state, "R", 1);
     case T_START: return spr_label(id, state, "START", 1);
     case T_SELECT: return spr_label(id, state, "SELECT", 1);
+    case T_SAVE: return spr_label(id, state, "SAVE", 1);
+    case T_LOAD: return spr_label(id, state, "LOAD", 1);
+    case T_REWIND: return spr_label(id, state, "REWIND", 1);
     default: return spr_label(id, state, "MENU", 1);
     }
 }
