@@ -43,11 +43,17 @@ Con eso `gradle assembleRelease` firma el APK; sin ello lo firma con la clave de
 
 Antes de repartir un APK: `snes-recomp scan <rom> <carpeta>` sobre el APK descomprimido (fuera del repositorio) debe terminar sin hallazgos, y el APK debe llevar `NOTICE.txt`, la licencia de libtcc y la de SDL2 en `assets/licenses/`.
 
-## Avisos de versión nueva (`android-updates`)
+## Avisos de versión nueva y actualización desde la app (`android-updates`)
 
-Con el ajuste **Buscar actualizaciones al abrir** (apagado por defecto), la app consulta como mucho una vez al día la última release de GitHub (`snesPort.updateUrl` en `gradle.properties`; vacía, la app no lleva nada de esto) y, si su etiqueta es mayor que la `versionName` instalada, pregunta: **Descargar** (abre la página de la release en el navegador), **Ahora no** u **Omitir esta versión**. No instala nada: la descarga y la instalación las hace el usuario y Android comprueba que la firma sea la misma. El ajuste y el botón **Buscar actualizaciones ahora** están en la pantalla de ajustes (mantener pulsado el icono › *Ajustes y actualizaciones*, o la propia pantalla de elegir ROM); abrir la app normalmente va directo al juego. La app declara el permiso de Internet, pero no se conecta mientras el ajuste esté apagado.
+Con el ajuste **Buscar actualizaciones al abrir** (activo por defecto; se apaga en la pantalla de ajustes), la app consulta como mucho una vez al día la última release de GitHub (`snesPort.updateUrl` en `gradle.properties`; vacía, la app no lleva nada de esto) y, si su etiqueta es mayor que la `versionName` instalada, pregunta: **Descargar e instalar**, **Ahora no** u **Omitir esta versión**. Con el ajuste apagado no se conecta.
 
-Para que funcione, cada release de `alttp-recomp` se etiqueta `vX.Y` y la `versionName` del APK (en `app/build.gradle`, hoy `0.1` con `versionCode 1`) debe subir con ella. En depuración, un fichero `files/update_url` sustituye la dirección y un servidor local con `adb reverse` permite probar sin GitHub.
+**Descargar e instalar** (`UpdateInstaller`): si la release trae un APK y el `SHA256SUMS`, la app los baja con una barra de progreso (con **Cancelar**), comprueba el SHA-256 del APK contra el `SHA256SUMS` y, solo si coincide, se lo entrega al instalador de Android (`PackageInstaller`), que enseña su confirmación; al terminar, la app se cierra y se abre de nuevo ya actualizada. La primera vez Android pide permitir a la app instalar aplicaciones (permiso `REQUEST_INSTALL_PACKAGES`; la app abre esos ajustes). Android no deja instalar sin que el usuario confirme, y solo acepta el APK si lleva **la misma firma** que la app instalada, así que una release ajena no puede reemplazarla. Si la release no trae APK, el botón abre su página.
+
+La app sale en el idioma del teléfono (inglés por defecto y español: `res/values` y `res/values-es`); no hay selector propio dentro de la app. El ajuste y el botón **Buscar actualizaciones ahora** están en la pantalla de ajustes (mantener pulsado el icono › *Ajustes y actualizaciones*, o la propia pantalla de elegir ROM); abrir la app normalmente va directo al juego, salvo que haya una versión nueva.
+
+Para que funcione, cada release de `alttp-recomp` se etiqueta `vX.Y`, lleva el APK (`*.apk`) y `SHA256SUMS`, y la `versionName` del APK (en `app/build.gradle`, hoy `0.2` con `versionCode 2`) debe subir con ella. En depuración, un fichero `files/update_url` sustituye la dirección y un servidor local con `adb reverse` permite probar sin GitHub.
+
+**Probado sin móvil:** la interpretación del `SHA256SUMS` y que el APK 0.2 lleva la misma firma que el 0.1 (Android lo acepta como actualización). **Sin probar en un teléfono:** la descarga, el permiso y el instalador; ver `tasks.md` del cambio.
 
 ## Licencias
 

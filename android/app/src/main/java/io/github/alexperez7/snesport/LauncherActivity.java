@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
@@ -51,11 +52,11 @@ public class LauncherActivity extends Activity {
         title.setTextSize(20);
         title.setGravity(Gravity.CENTER);
         message = new TextView(this);
-        message.setText("Elige tu copia de la ROM (USA, .sfc o .smc). Se queda en este teléfono y no se envía a ningún sitio.");
+        message.setText(R.string.pick_message);
         message.setGravity(Gravity.CENTER);
         message.setPadding(0, 32, 0, 32);
         Button pick = new Button(this);
-        pick.setText(haveRom ? "Cambiar ROM" : "Elegir ROM");
+        pick.setText(haveRom ? R.string.change_rom : R.string.pick_rom);
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -63,25 +64,25 @@ public class LauncherActivity extends Activity {
             startActivityForResult(i, PICK_ROM);
         });
         Button licences = new Button(this);
-        licences.setText("Licencias");
+        licences.setText(R.string.licences);
         licences.setOnClickListener(v -> showLicences());
         col.addView(title);
         col.addView(message);
         if (haveRom) {
-            message.setText("Versión " + UpdateChecker.installedVersion(this));
+            message.setText(getString(R.string.version, UpdateChecker.installedVersion(this)));
             Button play = new Button(this);
-            play.setText("Jugar");
+            play.setText(R.string.play);
             play.setOnClickListener(v -> startGame());
             col.addView(play);
         }
         col.addView(pick);
         if (UpdateChecker.available(this)) {
             CheckBox auto = new CheckBox(this);
-            auto.setText("Buscar actualizaciones al abrir (usa Internet)");
+            auto.setText(R.string.auto_check);
             auto.setChecked(UpdateChecker.enabled(this));
             auto.setOnCheckedChangeListener((b, on) -> UpdateChecker.setEnabled(this, on));
             Button now = new Button(this);
-            now.setText("Buscar actualizaciones ahora");
+            now.setText(R.string.check_now);
             now.setOnClickListener(v -> checkNow(now));
             col.addView(auto);
             col.addView(now);
@@ -109,7 +110,7 @@ public class LauncherActivity extends Activity {
             String got = String.format("%08X", crc.getValue());
             if (!got.equalsIgnoreCase(want)) {
                 tmp.delete();
-                message.setText("Esta ROM no es la esperada (CRC32 " + got + ", se esperaba " + want + "). Prueba con la versión USA sin cabecera.");
+                message.setText(getString(R.string.rom_bad, got, want));
                 return;
             }
             File rom = new File(getFilesDir(), "rom.sfc");
@@ -117,7 +118,7 @@ public class LauncherActivity extends Activity {
             if (!tmp.renameTo(rom)) throw new IOException("no puedo guardar la ROM");
             startGame();
         } catch (IOException e) {
-            message.setText("No he podido leer la ROM: " + e.getMessage());
+            message.setText(getString(R.string.rom_read_fail, e.getMessage()));
         }
     }
 
@@ -131,7 +132,7 @@ public class LauncherActivity extends Activity {
         col.setOrientation(LinearLayout.VERTICAL);
         col.setGravity(Gravity.CENTER);
         TextView t = new TextView(this);
-        t.setText("Buscando actualizaciones...");
+        t.setText(R.string.checking);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, 32, 0, 0);
         col.addView(new ProgressBar(this));
@@ -152,34 +153,82 @@ public class LauncherActivity extends Activity {
         else startGame();
     }
 
-    /** «Descargar» abre la página de la release; «Ahora no» y «Omitir» siguen con `after`. */
+    /** «Descargar e instalar» baja el APK de la release, comprueba su hash y lo instala; sin APK en la release abre su página. */
     private void showUpdateDialog(UpdateChecker.Result r, Runnable after) {
         new AlertDialog.Builder(this)
-            .setTitle("Versión nueva")
-            .setMessage("Hay una versión nueva: " + r.tag + " (tienes " + UpdateChecker.installedVersion(this) + ").")
-            .setPositiveButton("Descargar", (d, w) -> {
-                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(r.url)));
-                finish();
+            .setTitle(R.string.update_title)
+            .setMessage(getString(R.string.new_version, r.tag, UpdateChecker.installedVersion(this)))
+            .setPositiveButton(r.canInstall() ? R.string.update_install : R.string.update_open_page, (d, w) -> {
+                if (r.canInstall()) installUpdate(r, after);
+                else {
+                    startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(r.url)));
+                    finish();
+                }
             })
-            .setNegativeButton("Ahora no", (d, w) -> after.run())
-            .setNeutralButton("Omitir esta versión", (d, w) -> { UpdateChecker.skip(this, r.tag); after.run(); })
+            .setNegativeButton(R.string.update_later, (d, w) -> after.run())
+            .setNeutralButton(R.string.update_skip, (d, w) -> { UpdateChecker.skip(this, r.tag); after.run(); })
             .setOnCancelListener(d -> after.run())
             .show();
+    }
+
+    /** Pide el permiso de instalar desde esta app si falta; si no, descarga con una barra de progreso y entrega el APK al sistema. */
+    private void installUpdate(UpdateChecker.Result r, Runnable after) {
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            new AlertDialog.Builder(this)
+                .setMessage(R.string.update_permission)
+                .setPositiveButton(R.string.update_open_settings, (d, w) -> {
+                    startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                    after.run();
+                })
+                .setNegativeButton(R.string.update_later, (d, w) -> after.run())
+                .show();
+            return;
+        }
+        ProgressBar bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(100);
+        bar.setPadding(48, 32, 48, 0);
+        AtomicBoolean cancel = new AtomicBoolean(false);
+        AlertDialog dlg = new AlertDialog.Builder(this)
+            .setTitle(R.string.update_downloading)
+            .setView(bar)
+            .setCancelable(false)
+            .setNegativeButton(R.string.cancel, (d, w) -> cancel.set(true))
+            .show();
+        Handler ui = new Handler(Looper.getMainLooper());
+        new Thread(() -> {
+            int error = 0;
+            try {
+                File apk = UpdateInstaller.download(this, r, p -> ui.post(() -> bar.setProgress(p)), cancel);
+                UpdateInstaller.install(this, apk);
+            } catch (UpdateInstaller.Failure f) {
+                error = f.resId;
+            } catch (IOException e) {
+                error = R.string.upd_fail_net;
+            }
+            final int err = error;
+            ui.post(() -> {
+                dlg.dismiss();
+                if (err != 0) {
+                    android.widget.Toast.makeText(this, err, android.widget.Toast.LENGTH_LONG).show();
+                    if (err == R.string.upd_cancelled) after.run();
+                }
+            });
+        }).start();
     }
 
     /** El botón de los ajustes: consulta ahora y dice en pantalla qué ha pasado. */
     private void checkNow(Button button) {
         button.setEnabled(false);
-        message.setText("Buscando actualizaciones...");
+        message.setText(R.string.checking);
         Handler ui = new Handler(Looper.getMainLooper());
         new Thread(() -> {
             UpdateChecker.Result r = UpdateChecker.query(this);
             ui.post(() -> {
                 button.setEnabled(true);
-                if (!r.ok) message.setText("No se pudo comprobar. Revisa la conexión e inténtalo de nuevo.");
-                else if (!r.newer) message.setText("Estás al día (versión " + UpdateChecker.installedVersion(this) + ").");
+                if (!r.ok) message.setText(R.string.check_failed);
+                else if (!r.newer) message.setText(getString(R.string.up_to_date, UpdateChecker.installedVersion(this)));
                 else {
-                    message.setText("Hay una versión nueva: " + r.tag + " (tienes " + UpdateChecker.installedVersion(this) + ").");
+                    message.setText(getString(R.string.new_version, r.tag, UpdateChecker.installedVersion(this)));
                     showUpdateDialog(r, () -> {});
                 }
             });
@@ -196,14 +245,14 @@ public class LauncherActivity extends Activity {
                 }
             }
         } catch (IOException e) {
-            sb.append("No se encuentran los avisos de licencia: ").append(e.getMessage());
+            sb.append(getString(R.string.licences_missing, e.getMessage()));
         }
         TextView text = new TextView(this);
         text.setText(sb);
         text.setPadding(32, 32, 32, 32);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(text);
-        new android.app.AlertDialog.Builder(this).setTitle("Licencias").setView(scroll).setPositiveButton("Cerrar", null).show();
+        new android.app.AlertDialog.Builder(this).setTitle(R.string.licences).setView(scroll).setPositiveButton(R.string.close, null).show();
     }
 
     private String expectedCrc() throws IOException {

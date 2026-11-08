@@ -49,7 +49,7 @@ public class GameActivity extends SDLActivity {
         progress.addView(new ProgressBar(this));
         progress.addView(progressText);
         addContentView(progress, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setProgress("Preparando el juego...");
+        setProgress("@preparing");
     }
 
     /** Lo llama el codigo nativo (launcher.c) desde su hilo: un texto cambia el aviso, null lo quita. */
@@ -57,7 +57,13 @@ public class GameActivity extends SDLActivity {
         runOnUiThread(() -> {
             if (progress == null) return;
             if (text == null) progress.setVisibility(android.view.View.GONE);
-            else { progressText.setText(text); progress.setVisibility(android.view.View.VISIBLE); }
+            else {
+                // El código nativo manda claves («@gen», «@compile») para que el texto salga en el idioma del teléfono.
+                int id = text.equals("@preparing") ? R.string.preparing : text.equals("@gen") ? R.string.gen_step
+                    : text.equals("@compile") ? R.string.compile_step : 0;
+                if (id != 0) progressText.setText(id); else progressText.setText(text);
+                progress.setVisibility(android.view.View.VISIBLE);
+            }
         });
     }
 

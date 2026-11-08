@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_settings">Ajustes y actualizaciones</string>
+    <string name="pick_message">Elige tu copia de la ROM (USA, .sfc o .smc). Se queda en este teléfono y no se envía a ningún sitio.</string>
+    <string name="pick_rom">Elegir ROM</string>
+    <string name="change_rom">Cambiar ROM</string>
+    <string name="licences">Licencias</string>
+    <string name="version">Versión %1$s</string>
+    <string name="play">Jugar</string>
+    <string name="auto_check">Buscar actualizaciones al abrir (usa Internet)</string>
+    <string name="check_now">Buscar actualizaciones ahora</string>
+    <string name="rom_bad">Esta ROM no es la esperada (CRC32 %1$s, se esperaba %2$s). Prueba con la versión USA sin cabecera.</string>
+    <string name="rom_read_fail">No he podido leer la ROM: %1$s</string>
+    <string name="checking">Buscando actualizaciones...</string>
+    <string name="check_failed">No se pudo comprobar. Revisa la conexión e inténtalo de nuevo.</string>
+    <string name="up_to_date">Estás al día (versión %1$s).</string>
+    <string name="new_version">Hay una versión nueva: %1$s (tienes %2$s).</string>
+    <string name="licences_missing">No se encuentran los avisos de licencia: %1$s</string>
+    <string name="close">Cerrar</string>
+    <string name="cancel">Cancelar</string>
+    <string name="update_title">Versión nueva</string>
+    <string name="update_install">Descargar e instalar</string>
+    <string name="update_open_page">Abrir la página de la release</string>
+    <string name="update_later">Ahora no</string>
+    <string name="update_skip">Omitir esta versión</string>
+    <string name="update_permission">Para instalar la actualización, Android necesita que permitas a esta app instalar aplicaciones. Pulsa Abrir ajustes, actívalo, vuelve y busca actualizaciones otra vez.</string>
+    <string name="update_open_settings">Abrir ajustes</string>
+    <string name="update_downloading">Descargando la actualización...</string>
+    <string name="upd_fail_net">La descarga falló. Revisa la conexión e inténtalo de nuevo.</string>
+    <string name="upd_fail_hash">El fichero descargado no coincide con su suma de comprobación, así que no se instaló.</string>
+    <string name="upd_cancelled">Descarga cancelada.</string>
+    <string name="upd_fail_install">No se pudo instalar la actualización: %1$s</string>
+    <string name="preparing">Preparando el juego...</string>
+    <string name="gen_step">Generando el código del juego (1 de 2)...</string>
+    <string name="compile_step">Compilando el juego (2 de 2)...</string>
+</resources>

@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
         n_game++;
     }
 
-    progress("Generando el código del juego (1 de 2)...");
+    progress("@gen");
     t0 = now_ms();
     gen = snes_gen_generate((const uint8_t *)rom, rom_len, toml, gnames, gtexts, n_game);
     t1 = now_ms();
@@ -204,7 +204,7 @@ int main(int argc, char **argv) {
     free(rom);
     t2 = now_ms();
 
-    progress("Compilando el juego (2 de 2)...");
+    progress("@compile");
     s = tcc_new();
     tcc_set_error_func(s, NULL, on_tcc_error);
     tcc_set_options(s, "-nostdinc -nostdlib");

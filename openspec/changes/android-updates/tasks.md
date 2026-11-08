@@ -21,3 +21,10 @@
 
 - La API real de GitHub devuelve 404 para `alttp-recomp` porque aún no hay ninguna release: probar con una real cuando se publique la primera.
 - Mantener pulsado el icono (atajo) con el dedo.
+
+## 4. Descargar e instalar desde la app (2026-11-08)
+
+- [x] 4.1 `UpdateChecker` guarda el APK y el `SHA256SUMS` de la release; `UpdateInstaller` baja ambos, comprueba el SHA-256 y entrega el APK a `PackageInstaller`; `UpdateReceiver` enseña la confirmación del sistema. Permiso `REQUEST_INSTALL_PACKAGES`, pregunta de permiso y barra de progreso con Cancelar. Aviso activo por defecto.
+- [x] 4.2 Textos en `res/values` (inglés) y `res/values-es`; el código nativo manda claves (`@gen`, `@compile`).
+- [x] 4.3 Comprobado sin móvil: compila (APK 0.2, `versionCode 2`), mismo certificado que el 0.1, análisis del `SHA256SUMS` real de la v0.1.
+- [ ] 4.4 **Sin probar en un teléfono**: partiendo del 0.1 instalado, con la release v0.2 publicada: aviso al abrir, permiso de instalar, descarga, hash, confirmación, reinicio ya en 0.2; el caso del hash que no coincide y el de cancelar.

@@ -1,5 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">SNES Port</string>
-    <string name="shortcut_settings">Ajustes y actualizaciones</string>
+    <string name="shortcut_settings">Settings and updates</string>
+    <string name="pick_message">Choose your copy of the ROM (USA, .sfc or .smc). It stays on this phone and is not sent anywhere.</string>
+    <string name="pick_rom">Choose ROM</string>
+    <string name="change_rom">Change ROM</string>
+    <string name="licences">Licences</string>
+    <string name="version">Version %1$s</string>
+    <string name="play">Play</string>
+    <string name="auto_check">Check for updates on start (uses the Internet)</string>
+    <string name="check_now">Check for updates now</string>
+    <string name="rom_bad">This is not the expected ROM (CRC32 %1$s, expected %2$s). Try the USA version without a header.</string>
+    <string name="rom_read_fail">Could not read the ROM: %1$s</string>
+    <string name="checking">Checking for updates...</string>
+    <string name="check_failed">Could not check. Check your connection and try again.</string>
+    <string name="up_to_date">You are up to date (version %1$s).</string>
+    <string name="new_version">There is a new version: %1$s (you have %2$s).</string>
+    <string name="licences_missing">The licence notices were not found: %1$s</string>
+    <string name="close">Close</string>
+    <string name="cancel">Cancel</string>
+    <string name="update_title">New version</string>
+    <string name="update_install">Download and install</string>
+    <string name="update_open_page">Open release page</string>
+    <string name="update_later">Not now</string>
+    <string name="update_skip">Skip this version</string>
+    <string name="update_permission">To install the update, Android needs you to allow this app to install apps. Tap Open settings, turn it on, then come back and check for updates again.</string>
+    <string name="update_open_settings">Open settings</string>
+    <string name="update_downloading">Downloading the update...</string>
+    <string name="upd_fail_net">The download failed. Check your connection and try again.</string>
+    <string name="upd_fail_hash">The downloaded file does not match its checksum, so it was not installed.</string>
+    <string name="upd_cancelled">Download cancelled.</string>
+    <string name="upd_fail_install">The update could not be installed: %1$s</string>
+    <string name="preparing">Preparing the game...</string>
+    <string name="gen_step">Generating the game code (1 of 2)...</string>
+    <string name="compile_step">Compiling the game (2 of 2)...</string>
 </resources>

@@ -12,7 +12,8 @@ import org.json.JSONObject;
 
 /**
  * Aviso opcional de versión nueva (cambio android-updates): consulta la última release de GitHub y compara su
- * etiqueta con la versión instalada. No instala nada; el aviso lleva a la página de la release. Apagado por defecto.
+ * etiqueta con la versión instalada. Si la release trae un APK y su SHA256SUMS, la app puede descargarlo e instalarlo
+ * (UpdateInstaller); si no, el aviso lleva a la página de la release. Activo por defecto (se apaga en los ajustes).
  */
 final class UpdateChecker {
     static final long DAY_MS = 24L * 60 * 60 * 1000;
@@ -22,12 +23,25 @@ final class UpdateChecker {
     static final class Result {
         final boolean ok, newer;
         final String tag, url;
+        /** El APK de la release (descarga directa), su nombre y el SHA256SUMS de la misma release; vacíos si no los hay. */
+        final String apkUrl, apkName, sumsUrl;
 
         Result(boolean ok, boolean newer, String tag, String url) {
+            this(ok, newer, tag, url, "", "", "");
+        }
+
+        Result(boolean ok, boolean newer, String tag, String url, String apkUrl, String apkName, String sumsUrl) {
             this.ok = ok;
             this.newer = newer;
             this.tag = tag;
             this.url = url;
+            this.apkUrl = apkUrl;
+            this.apkName = apkName;
+            this.sumsUrl = sumsUrl;
+        }
+
+        boolean canInstall() {
+            return !apkUrl.isEmpty() && !apkName.isEmpty() && !sumsUrl.isEmpty();
         }
     }
 
@@ -58,7 +72,7 @@ final class UpdateChecker {
     }
 
     static boolean enabled(Context c) {
-        return available(c) && prefs(c).getBoolean("check", false);
+        return available(c) && prefs(c).getBoolean("check", true);
     }
 
     static void setEnabled(Context c, boolean on) {
@@ -123,7 +137,18 @@ final class UpdateChecker {
             JSONObject json = new JSONObject(body);
             String tag = json.optString("tag_name", ""), page = json.optString("html_url", "");
             if (!looksLikeVersion(tag) || !page.startsWith("https://")) return new Result(false, false, "", "");
-            prefs(c).edit().putLong("last", System.currentTimeMillis()).putString("tag", tag).putString("link", page).apply();
+            String apk = "", apkName = "", sums = "";
+            org.json.JSONArray assets = json.optJSONArray("assets");
+            for (int i = 0; assets != null && i < assets.length(); i++) {
+                JSONObject a = assets.optJSONObject(i);
+                if (a == null) continue;
+                String name = a.optString("name", ""), dl = a.optString("browser_download_url", "");
+                if (!dl.startsWith("https://github.com/")) continue;
+                if (name.matches("[A-Za-z0-9._-]+\\.apk")) { apk = dl; apkName = name; }
+                else if (name.equals("SHA256SUMS")) sums = dl;
+            }
+            prefs(c).edit().putLong("last", System.currentTimeMillis()).putString("tag", tag).putString("link", page)
+                .putString("apk", apk).putString("apkname", apkName).putString("sums", sums).apply();
             return fromCache(c);
         } catch (Exception e) {
             return new Result(false, false, "", "");
@@ -137,7 +162,8 @@ final class UpdateChecker {
         SharedPreferences p = prefs(c);
         String tag = p.getString("tag", ""), link = p.getString("link", "");
         if (tag.isEmpty() || link.isEmpty()) return new Result(false, false, "", "");
-        return new Result(true, compare(tag, installedVersion(c)) > 0, tag, link);
+        return new Result(true, compare(tag, installedVersion(c)) > 0, tag, link,
+            p.getString("apk", ""), p.getString("apkname", ""), p.getString("sums", ""));
     }
 
     /** ¿Hace menos de 24 horas de la última consulta? */
