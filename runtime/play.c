@@ -853,6 +853,7 @@ static void slot_open_now(void);
 static void slot_close(void);
 static void slot_pad(SDL_GameControllerButton b);
 static int slot_tap(int px, int py, int w, int h);
+static int menu_tap(int px, int py, int w, int h);
 
 static TouchCfg tcfg;
 static char touch_path[1100];
@@ -1015,6 +1016,7 @@ static void touch_finger(const SDL_Event *e) {
     if (slot < 0) return;
     fingers[slot].x = e->tfinger.x; fingers[slot].y = e->tfinger.y;
     touch_win(&w, &h);
+    if (menu_open && e->type == SDL_FINGERDOWN && menu_tap((int)(e->tfinger.x * w), (int)(e->tfinger.y * h), w, h)) { fingers[slot].active = 0; return; }
     if (slot_open && e->type == SDL_FINGERDOWN && slot_tap((int)(e->tfinger.x * w), (int)(e->tfinger.y * h), w, h)) { fingers[slot].active = 0; return; }
     if (e->type == SDL_FINGERDOWN && !touch_edit) {
         TFinger one[TOUCH_FINGERS];
@@ -1375,24 +1377,33 @@ static void opt_label(int opt, char *out, size_t n) {
     else if (d->names) { char w[32]; snprintf(w, sizeof w, "%s", out); snprintf(out, n, "%s", tr(w)); } /* the word as shown; the file keeps the English one */
 }
 
+/* Where tab `t` is in the 256x224 picture of the menu: its left edge and width. The tabs share the width: each its text, a
+ * margin, a gap between them, and what is left over split evenly. */
+static void menu_tab_span(int t, int *xo, int *wo) {
+    int i, used = 0, extra, x = ROW_X + 4;
+    for (i = 0; i < tab_count(); i++) used += text_w(tr(tab_names[i])) + tab_margin() + tab_gap();
+    extra = (ROW_W - 8 - used + tab_gap()) / tab_count();
+    for (i = 0; i < t; i++) x += text_w(tr(tab_names[i])) + tab_margin() + extra + tab_gap();
+    *xo = x;
+    *wo = text_w(tr(tab_names[t])) + tab_margin() + extra;
+}
+
 /* The menu over the picture `fb`, into fb_menu. */
 static void menu_draw(const uint8_t *fb) {
     char val[96], line[96];
     menu_lang_sync();
-    int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab], extra, used = 0;
+    int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab];
     const char *help;
     ui_backdrop(&cv, fb);
     ui_panel(&cv, PX, PY, PW, PH);
-    for (t = 0; t < tab_count(); t++) used += text_w(tr(tab_names[t])) + tab_margin() + tab_gap(); /* the tabs share the width: each its text, 12 pixels of margin, 3 apart */
-    extra = (ROW_W - 8 - used + tab_gap()) / tab_count();
     text_draw2x(&cv, PX + (PW - text_w2x(tr("OPTIONS"))) / 2, PY + 7, tr("OPTIONS"), UI_GOLD, UI_SHADOW);
     ui_rule(&cv, PX + 10, PY + 25, PW - 20);
-    for (t = 0, x = ROW_X + 4; t < tab_count(); t++) {
-        int on = t == menu_tab, w = text_w(tr(tab_names[t])) + tab_margin() + extra;
+    for (t = 0; t < tab_count(); t++) {
+        int on = t == menu_tab, w;
+        menu_tab_span(t, &x, &w);
         if (on) { cv_rect(&cv, x, PY + 30, w, 13, 0x4A64C8u); cv_rect(&cv, x, PY + 30, w, 1, 0xE8ECFAu); }
         else cv_rect(&cv, x, PY + 33, w, 10, 0x141C50u);
         text_center(&cv, x, w, PY + (on ? 33 : 34), tr(tab_names[t]), on ? UI_GOLD : UI_DIM);
-        x += w + tab_gap();
     }
     if (menu_tab == TAB_CONTROLS) {
         int labw, keyx, keyw;
@@ -1487,6 +1498,74 @@ static void overlay_compose(void (*draw)(const uint8_t *)) {
 }
 
 static void menu_compose(void) { overlay_compose(menu_draw); }
+
+/* Whether row `i` of the current tab shows a value with arrows or a bar (a tap on its left or right half steps it down or up) as
+ * opposed to an action (a tap does it). On the Controls tab only the player row has one. */
+static int menu_row_has_value(int i) {
+    switch (menu_tab) {
+    case TAB_IMAGE: { int idx[N_IMAGE]; return i < image_rows(idx); }
+    case TAB_AUDIO: return i < 4;
+    case TAB_CONTROLS: return i == 0;
+    case TAB_TOUCH: return i < 3;
+    default: return i == 0 || i - 1 < GOPTS;
+    }
+}
+
+/* A finger down on the menu (the menu answers to touch as well as to the pad and the keys): a tab picks it, a row selects
+ * it and its action or its value (left half down, right half up) is done at once, a tap outside the panel closes the menu.
+ * While a question or a key assignment waits, a tap on the notice answers yes and a tap anywhere else no. Returns 1 when
+ * the tap was the menu's (0 when it is on one of the on-screen controls, which keep working). */
+static int menu_tap_canvas(int cx, int cy);
+
+static int menu_tap(int px, int py, int w, int h) {
+    int lines = view_lines(), e = (show_w - SCREEN_W) / 2, cx, cy;
+    Rect r;
+    if (touch_hit(&tcfg, touch_layout(&tcfg, w, h), w, h, px, py) >= 0) return 0;
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, show_w);
+    touch_place(&r, w, h);
+    if (px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) { cx = cy = -1; }
+    else {
+        cx = (int)((long)(px - r.x) * show_w / r.w) - e;
+        cy = (int)((long)(py - r.y) * lines / r.h) + cfg.eff.v[O_OVERSCAN];
+    }
+    return menu_tap_canvas(cx, cy);
+}
+
+/* The same on the 256x224 picture of the menu (-1, -1 for outside the picture); the tests tap it directly (--menu-keys tap@X:Y). */
+static int menu_tap_canvas(int cx, int cy) {
+    int i, n, x, tw;
+    menu_by_pad = 1; /* the help line speaks of buttons, the right words for a finger too */
+    menu_lang_sync();
+    if (menu_confirm || menu_ask || menu_capture >= 0) {
+        int on_notice = cx >= PX && cx < PX + PW && cy >= PY + PH - 30 && cy < PY + PH - 17;
+        menu_key(on_notice && menu_capture < 0 ? SDL_SCANCODE_RETURN : SDL_SCANCODE_ESCAPE);
+        menu_by_pad = 1;
+        return 1;
+    }
+    if (cx < PX || cx >= PX + PW || cy < PY || cy >= PY + PH) { menu_close(); return 1; }
+    for (i = 0; i < tab_count(); i++) {
+        menu_tab_span(i, &x, &tw);
+        if (cx >= x && cx < x + tw + tab_gap() && cy >= PY + 28 && cy < PY + 46) {
+            if (i != menu_tab) menu_tab_move(i - menu_tab);
+            return 1;
+        }
+    }
+    n = menu_count(menu_tab);
+    {
+        int top = menu_tab == TAB_CONTROLS ? CTL_Y - 2 : ROW_Y - 2, rh = menu_tab == TAB_CONTROLS ? CTL_H : ROW_H;
+        if (cx < ROW_X || cx >= ROW_X + ROW_W || cy < top) return 1;
+        i = (cy - top) / rh;
+        if (i >= n) return 1;
+        menu_sel[menu_tab] = i;
+        menu_msg[0] = 0;
+        if (menu_row_has_value(i) && cx >= (menu_tab == TAB_CONTROLS ? ROW_X + ROW_W / 2 : VAL_R - VAL_W - 4)) {
+            int mid = menu_tab == TAB_CONTROLS ? ROW_X + ROW_W / 2 : VAL_R - VAL_W / 2 - 4;
+            menu_change(cx < mid ? -1 : 1);
+        } else if (menu_tab == TAB_CONTROLS && i == 0) menu_change(cx < ROW_X + ROW_W / 2 ? -1 : 1);
+        else menu_change(0);
+    }
+    return 1;
+}
 
 #include "play_state.h"
 
@@ -1893,6 +1972,7 @@ static void open_audio(void) {
 
 /* For the menu tests: SDL key names to press, one per frame from frame 3, and a picture of the menu at the end. */
 static SDL_Scancode menu_script[64];
+static int menu_script_tx[64], menu_script_ty[64]; /* a tap@X:Y entry: the key is UNKNOWN and these are the point */
 static int menu_script_n, menu_script_i;
 static const char *menu_shot_path;
 static int menu_shot_page;
@@ -1909,7 +1989,11 @@ static void play_frame(void) {
         play_state_tick(rew, !opt_no_window && (paused || menu_open || slot_open || touch_edit));
         if (st_toast_left > 0) st_toast_left--;
     }
-    if (menu_script_i < menu_script_n && frames >= 3) ui_key(menu_script[menu_script_i++]);
+    if (menu_script_i < menu_script_n && frames >= 3) {
+        int k = menu_script_i++;
+        if (menu_script[k] == SDL_SCANCODE_UNKNOWN) menu_tap_canvas(menu_script_tx[k], menu_script_ty[k]);
+        else ui_key(menu_script[k]);
+    }
     if (menu_shot_path && frames + 1 >= max_frames) {
         if (menu_shot_slot && !slot_open) slot_open_now();
         if (slot_open) overlay_compose(slot_draw);
@@ -2058,9 +2142,18 @@ int main(int argc, char **argv) {
             char *tok, list[1024];
             snprintf(list, sizeof list, "%s", argv[++i]);
             for (tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
-                SDL_Scancode sc = SDL_GetScancodeFromName(trim(tok));
-                if (sc == SDL_SCANCODE_UNKNOWN || menu_script_n == 64) { bad = 1; break; }
-                menu_script[menu_script_n++] = sc;
+                char *t = trim(tok);
+                int tx, ty;
+                if (menu_script_n == 64) { bad = 1; break; }
+                if (sscanf(t, "tap@%d:%d", &tx, &ty) == 2) { /* a tap on the picture of the menu */
+                    menu_script[menu_script_n] = SDL_SCANCODE_UNKNOWN; menu_script_tx[menu_script_n] = tx; menu_script_ty[menu_script_n++] = ty;
+                    continue;
+                }
+                {
+                    SDL_Scancode sc = SDL_GetScancodeFromName(t);
+                    if (sc == SDL_SCANCODE_UNKNOWN) { bad = 1; break; }
+                    menu_script[menu_script_n++] = sc;
+                }
             }
             if (bad) break;
         }
