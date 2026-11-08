@@ -31,10 +31,19 @@ final class ZeldaUi {
     /** El fondo con el marco: degradado verde oscuro, damero tenue, tres filetes dorados y un rombo en cada esquina. */
     static final class Backdrop extends FrameLayout {
         private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int insL, insT, insR, insB;
 
         Backdrop(Context c) {
             super(c);
             setWillNotDraw(false);
+            // El marco y los rombos quedan dentro de las barras del sistema; el fondo llega hasta el borde.
+            setOnApplyWindowInsetsListener((v, ins) -> {
+                insL = ins.getSystemWindowInsetLeft(); insT = ins.getSystemWindowInsetTop();
+                insR = ins.getSystemWindowInsetRight(); insB = ins.getSystemWindowInsetBottom();
+                setPadding(insL, insT, insR, insB);
+                invalidate();
+                return ins;
+            });
         }
 
         @Override
@@ -56,12 +65,12 @@ final class ZeldaUi {
             for (int i = 0; i < 3; i++) {
                 p.setColor(col[i]);
                 float m = dp(c, 10 + i * 3);
-                cv.drawRect(m, m, w - m, h - m, p);
+                cv.drawRect(insL + m, insT + m, w - insR - m, h - insB - m, p);
             }
             p.setStyle(Paint.Style.FILL);
             float r = dp(c, 9), o = dp(c, 24);
             for (int i = 0; i < 4; i++) {
-                float cx = (i & 1) != 0 ? w - o : o, cy = (i & 2) != 0 ? h - o : o;
+                float cx = (i & 1) != 0 ? w - insR - o : insL + o, cy = (i & 2) != 0 ? h - insB - o : insT + o;
                 Path d = new Path();
                 d.moveTo(cx, cy - r); d.lineTo(cx + r, cy); d.lineTo(cx, cy + r); d.lineTo(cx - r, cy); d.close();
                 p.setColor(GOLD_LO);

@@ -101,13 +101,9 @@ public class LauncherActivity extends Activity {
         View lang = new ZeldaUi.LangButton(this, Lang.get(this));
         lang.setOnClickListener(v -> { Lang.toggle(this); recreate(); });
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
-        lp.topMargin = ZeldaUi.dp(this, 26);
-        lp.rightMargin = ZeldaUi.dp(this, 26);
+        lp.topMargin = ZeldaUi.dp(this, 40);
+        lp.rightMargin = ZeldaUi.dp(this, 40);
         root.addView(lang, lp);
-        root.setOnApplyWindowInsetsListener((v, ins) -> { // las barras del sistema no tapan el marco
-            v.setPadding(ins.getSystemWindowInsetLeft(), ins.getSystemWindowInsetTop(), ins.getSystemWindowInsetRight(), ins.getSystemWindowInsetBottom());
-            return ins;
-        });
         message.setMovementMethod(null);
         setContentView(root);
     }
@@ -181,7 +177,7 @@ public class LauncherActivity extends Activity {
 
     /** «Descargar e instalar» baja el APK de la release, comprueba su hash y lo instala; sin APK en la release abre su página. */
     private void showUpdateDialog(UpdateChecker.Result r, Runnable after) {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(this, R.style.ZeldaDialog)
             .setTitle(R.string.update_title)
             .setMessage(getString(R.string.new_version, r.tag, UpdateChecker.installedVersion(this)))
             .setPositiveButton(r.canInstall() ? R.string.update_install : R.string.update_open_page, (d, w) -> {
@@ -200,7 +196,7 @@ public class LauncherActivity extends Activity {
     /** Pide el permiso de instalar desde esta app si falta; si no, descarga con una barra de progreso y entrega el APK al sistema. */
     private void installUpdate(UpdateChecker.Result r, Runnable after) {
         if (!getPackageManager().canRequestPackageInstalls()) {
-            new AlertDialog.Builder(this)
+            new AlertDialog.Builder(this, R.style.ZeldaDialog)
                 .setMessage(R.string.update_permission)
                 .setPositiveButton(R.string.update_open_settings, (d, w) -> {
                     startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
@@ -214,7 +210,7 @@ public class LauncherActivity extends Activity {
         bar.setMax(100);
         bar.setPadding(48, 32, 48, 0);
         AtomicBoolean cancel = new AtomicBoolean(false);
-        AlertDialog dlg = new AlertDialog.Builder(this)
+        AlertDialog dlg = new AlertDialog.Builder(this, R.style.ZeldaDialog)
             .setTitle(R.string.update_downloading)
             .setView(bar)
             .setCancelable(false)
@@ -275,10 +271,12 @@ public class LauncherActivity extends Activity {
         }
         TextView text = new TextView(this);
         text.setText(sb);
+        text.setTextColor(ZeldaUi.TEXT);
+        text.setTextSize(13);
         text.setPadding(32, 32, 32, 32);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         scroll.addView(text);
-        new android.app.AlertDialog.Builder(this).setTitle(R.string.licences).setView(scroll).setPositiveButton(R.string.close, null).show();
+        new AlertDialog.Builder(this, R.style.ZeldaDialog).setTitle(R.string.licences).setView(scroll).setPositiveButton(R.string.close, null).show();
     }
 
     private String expectedCrc() throws IOException {

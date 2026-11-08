@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Diálogos con el aspecto del lanzador (dorado sobre verde oscuro). -->
+    <style name="ZeldaDialog" parent="@android:style/Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:windowBackground">@drawable/zelda_dialog_bg</item>
+        <item name="android:textColorPrimary">#FFFFF0A0</item>
+        <item name="android:textColorSecondary">#FFC8D8B8</item>
+        <item name="android:textColor">#FFC8D8B8</item>
+        <item name="android:colorAccent">#FFF8D860</item>
+        <item name="android:colorBackground">#FF12281C</item>
+        <item name="android:buttonBarButtonStyle">@style/ZeldaDialogButton</item>
+    </style>
+    <style name="ZeldaDialogButton" parent="@android:style/Widget.DeviceDefault.Button.Borderless.Small">
+        <item name="android:textColor">#FFF8D860</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+</resources>
