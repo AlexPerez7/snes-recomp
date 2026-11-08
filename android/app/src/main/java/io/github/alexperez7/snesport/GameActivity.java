@@ -68,6 +68,11 @@ public class GameActivity extends SDLActivity {
     }
 
     @Override
+    protected void attachBaseContext(android.content.Context base) {
+        super.attachBaseContext(Lang.wrap(base));
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
         // SDL no admite un segundo SDL_main en el mismo proceso: al cerrar el juego de verdad, el proceso muere

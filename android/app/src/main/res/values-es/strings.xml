@@ -33,4 +33,5 @@
     <string name="preparing">Preparando el juego...</string>
     <string name="gen_step">Generando el código del juego (1 de 2)...</string>
     <string name="compile_step">Compilando el juego (2 de 2)...</string>
+    <string name="language">Idioma</string>
 </resources>

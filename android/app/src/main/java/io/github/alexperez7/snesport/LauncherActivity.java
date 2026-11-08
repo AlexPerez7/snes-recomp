@@ -14,6 +14,8 @@ import android.view.Gravity;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.FrameLayout;
+import android.view.ViewGroup;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -45,50 +47,74 @@ public class LauncherActivity extends Activity {
         }
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER);
-        col.setPadding(48, 48, 48, 48);
-        TextView title = new TextView(this);
-        title.setText("The Legend of Zelda: A Link to the Past");
-        title.setTextSize(20);
-        title.setGravity(Gravity.CENTER);
-        message = new TextView(this);
-        message.setText(R.string.pick_message);
-        message.setGravity(Gravity.CENTER);
-        message.setPadding(0, 32, 0, 32);
-        Button pick = new Button(this);
-        pick.setText(haveRom ? R.string.change_rom : R.string.pick_rom);
+        col.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView title = ZeldaUi.text(this, getString(R.string.app_name), 30, ZeldaUi.GOLD_HI, true);
+        title.setShadowLayer(4, 2, 2, ZeldaUi.OUTLINE);
+        TextView subtitle = ZeldaUi.text(this, "The Legend of Zelda: A Link to the Past", 14, ZeldaUi.TEXT, false);
+        message = ZeldaUi.text(this, getString(R.string.pick_message), 14, ZeldaUi.TEXT, false);
+        message.setPadding(0, ZeldaUi.dp(this, 18), 0, ZeldaUi.dp(this, 6));
+        Button pick = ZeldaUi.button(this, getString(haveRom ? R.string.change_rom : R.string.pick_rom), !haveRom);
         pick.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             i.addCategory(Intent.CATEGORY_OPENABLE);
             i.setType("*/*");
             startActivityForResult(i, PICK_ROM);
         });
-        Button licences = new Button(this);
-        licences.setText(R.string.licences);
+        Button licences = ZeldaUi.button(this, getString(R.string.licences), false);
         licences.setOnClickListener(v -> showLicences());
+        View tri = new ZeldaUi.Triforce(this);
+        col.addView(tri, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        title.setPadding(0, ZeldaUi.dp(this, 14), 0, ZeldaUi.dp(this, 2));
         col.addView(title);
+        col.addView(subtitle);
         col.addView(message);
         if (haveRom) {
             message.setText(getString(R.string.version, UpdateChecker.installedVersion(this)));
-            Button play = new Button(this);
-            play.setText(R.string.play);
+            Button play = ZeldaUi.button(this, getString(R.string.play), true);
             play.setOnClickListener(v -> startGame());
             col.addView(play);
         }
         col.addView(pick);
         if (UpdateChecker.available(this)) {
-            CheckBox auto = new CheckBox(this);
-            auto.setText(R.string.auto_check);
-            auto.setChecked(UpdateChecker.enabled(this));
+            CheckBox auto = ZeldaUi.check(this, getString(R.string.auto_check), UpdateChecker.enabled(this));
             auto.setOnCheckedChangeListener((b, on) -> UpdateChecker.setEnabled(this, on));
-            Button now = new Button(this);
-            now.setText(R.string.check_now);
+            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            alp.topMargin = ZeldaUi.dp(this, 16);
+            Button now = ZeldaUi.button(this, getString(R.string.check_now), false);
             now.setOnClickListener(v -> checkNow(now));
-            col.addView(auto);
+            col.addView(auto, alp);
             col.addView(now);
         }
         col.addView(licences);
-        setContentView(col);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.setFillViewport(true);
+        FrameLayout.LayoutParams sp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        int side = ZeldaUi.dp(this, 36);
+        col.setPadding(side, ZeldaUi.dp(this, 48), side, ZeldaUi.dp(this, 36));
+        col.setMinimumHeight(0);
+        LinearLayout holder = new LinearLayout(this); // centra la columna cuando hay sitio de sobra
+        holder.setGravity(Gravity.CENTER);
+        holder.addView(col, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        scroll.addView(holder, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        ZeldaUi.Backdrop root = new ZeldaUi.Backdrop(this);
+        root.addView(scroll, sp);
+        View lang = new ZeldaUi.LangButton(this, Lang.get(this));
+        lang.setOnClickListener(v -> { Lang.toggle(this); recreate(); });
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.END);
+        lp.topMargin = ZeldaUi.dp(this, 26);
+        lp.rightMargin = ZeldaUi.dp(this, 26);
+        root.addView(lang, lp);
+        root.setOnApplyWindowInsetsListener((v, ins) -> { // las barras del sistema no tapan el marco
+            v.setPadding(ins.getSystemWindowInsetLeft(), ins.getSystemWindowInsetTop(), ins.getSystemWindowInsetRight(), ins.getSystemWindowInsetBottom());
+            return ins;
+        });
+        message.setMovementMethod(null);
+        setContentView(root);
+    }
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        super.attachBaseContext(Lang.wrap(base));
     }
 
     @Override
@@ -131,13 +157,13 @@ public class LauncherActivity extends Activity {
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setGravity(Gravity.CENTER);
-        TextView t = new TextView(this);
-        t.setText(R.string.checking);
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(0, 32, 0, 0);
-        col.addView(new ProgressBar(this));
+        TextView t = ZeldaUi.text(this, getString(R.string.checking), 16, ZeldaUi.TEXT, false);
+        t.setPadding(0, ZeldaUi.dp(this, 24), 0, 0);
+        col.addView(new ZeldaUi.Triforce(this));
         col.addView(t);
-        setContentView(col);
+        ZeldaUi.Backdrop root = new ZeldaUi.Backdrop(this);
+        root.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
         final boolean[] done = {false};
         Handler ui = new Handler(Looper.getMainLooper());
         ui.postDelayed(() -> { if (!done[0]) { done[0] = true; startGame(); } }, 3000);
