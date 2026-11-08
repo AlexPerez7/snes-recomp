@@ -39,12 +39,6 @@ public class LauncherActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         boolean haveRom = new File(getFilesDir(), "rom.sfc").isFile();
-        if (haveRom && !ACTION_SETTINGS.equals(getIntent().getAction())) {
-            // Abrir la app va directo al juego; solo con el ajuste de actualizaciones activo se mira antes si hay versión nueva.
-            if (UpdateChecker.enabled(this)) checkThenStart();
-            else startGame();
-            return;
-        }
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setGravity(Gravity.CENTER_HORIZONTAL);
@@ -106,6 +100,8 @@ public class LauncherActivity extends Activity {
         root.addView(lang, lp);
         message.setMovementMethod(null);
         setContentView(root);
+        // Siempre se pasa por el lanzador; con el ajuste activo se mira aquí si hay versión nueva (el juego espera a que se pulse «Jugar»).
+        if (haveRom && UpdateChecker.enabled(this)) autoCheck();
     }
 
     @Override
@@ -138,41 +134,31 @@ public class LauncherActivity extends Activity {
             File rom = new File(getFilesDir(), "rom.sfc");
             rom.delete();
             if (!tmp.renameTo(rom)) throw new IOException("no puedo guardar la ROM");
-            startGame();
+            recreate(); // de vuelta al lanzador, ya con «Jugar»
         } catch (IOException e) {
             message.setText(getString(R.string.rom_read_fail, e.getMessage()));
         }
     }
 
-    /** Con el ajuste activo: espera como mucho 3 s a la red (una consulta al día) y abre el juego pase lo que pase. */
-    private void checkThenStart() {
+    /** Con el ajuste activo: una consulta al día (si no, lo último que se supo); si hay versión nueva que no se omitió, pregunta. */
+    private void autoCheck() {
         if (UpdateChecker.fresh(this)) {
-            decide(UpdateChecker.fromCache(this));
+            offer(UpdateChecker.fromCache(this));
             return;
         }
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setGravity(Gravity.CENTER);
-        TextView t = ZeldaUi.text(this, getString(R.string.checking), 16, ZeldaUi.TEXT, false);
-        t.setPadding(0, ZeldaUi.dp(this, 24), 0, 0);
-        col.addView(new ZeldaUi.Triforce(this));
-        col.addView(t);
-        ZeldaUi.Backdrop root = new ZeldaUi.Backdrop(this);
-        root.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(root);
-        final boolean[] done = {false};
         Handler ui = new Handler(Looper.getMainLooper());
-        ui.postDelayed(() -> { if (!done[0]) { done[0] = true; startGame(); } }, 3000);
         new Thread(() -> {
             UpdateChecker.Result r = UpdateChecker.query(this);
-            ui.post(() -> { if (!done[0]) { done[0] = true; decide(r); } });
+            ui.post(() -> offer(r));
         }).start();
     }
 
-    /** Si hay una versión nueva que no se ha omitido, pregunta; si no, abre el juego. */
-    private void decide(UpdateChecker.Result r) {
-        if (r.ok && r.newer && !UpdateChecker.skipped(this, r.tag)) showUpdateDialog(r, this::startGame);
-        else startGame();
+    private void offer(UpdateChecker.Result r) {
+        if (isFinishing() || isDestroyed()) return;
+        if (r.ok && r.newer && !UpdateChecker.skipped(this, r.tag)) {
+            message.setText(getString(R.string.new_version, r.tag, UpdateChecker.installedVersion(this)));
+            showUpdateDialog(r, () -> {});
+        }
     }
 
     /** «Descargar e instalar» baja el APK de la release, comprueba su hash y lo instala; sin APK en la release abre su página. */
