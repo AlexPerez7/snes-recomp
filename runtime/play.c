@@ -368,6 +368,9 @@ static uint16_t read_pad(int player) {
 
 /* The device player 1 used last, for input_label: 1 a controller, 0 the keyboard. */
 static int last_input_pad;
+/* The last input was a finger on the on-screen controls (or none yet, with them on): input_label names their buttons, not a key. */
+static int last_input_touch;
+static int touch_on; /* (defined with the touch controls below) */
 
 /* The name a pad button has in the label: the face buttons by their letter, the others as the console names them. */
 static const char *pad_label(int code) {
@@ -387,6 +390,10 @@ static const char *pad_label(int code) {
 /* input_label (snes_rt.h): the first button of the preferred device bound to `mask`; if that device has none, the other one. */
 static int play_input_label(uint16_t mask, char *out, size_t n) {
     int first = last_input_pad && pads[0] ? BIND_PAD : BIND_KEY, pass, i;
+    if (touch_on && last_input_touch && n > 1) { /* the on-screen buttons are named as the console's */
+        const char *t = mask == 0x0080 ? "A" : mask == 0x8000 ? "B" : mask == 0x0040 ? "X" : mask == 0x4000 ? "Y" : NULL;
+        if (t) { out[0] = t[0]; out[1] = 0; return 2; }
+    }
     for (pass = 0; pass < 2; pass++) {
         int dev = pass ? !first : first;
         if (dev == BIND_PAD && !pads[0]) continue;
@@ -888,6 +895,7 @@ static void touch_init(const char *rom_path) {
     }
     touch_load(&tcfg, touch_path);
     touch_visible = 1;
+    last_input_touch = 1;
     if (SDL_InitSubSystem(SDL_INIT_HAPTIC) == 0 && SDL_NumHaptics() > 0) {
         touch_haptic = SDL_HapticOpen(0);
         if (touch_haptic && SDL_HapticRumbleInit(touch_haptic) != 0) { SDL_HapticClose(touch_haptic); touch_haptic = NULL; }
@@ -1012,6 +1020,7 @@ static void touch_finger(const SDL_Event *e) {
         if (slot < 0) return;
         fingers[slot].active = 1; fingers[slot].id = fid;
         touch_visible = 1;
+        last_input_touch = 1;
     }
     if (slot < 0) return;
     fingers[slot].x = e->tfinger.x; fingers[slot].y = e->tfinger.y;
@@ -1622,8 +1631,8 @@ static void handle_events(void) {
         if (e.type == SDL_APP_WILLENTERBACKGROUND) { srm_save(); touch_save_cfg(); }
         if (e.type == SDL_APP_DIDENTERFOREGROUND) t_next = SDL_GetPerformanceCounter(); /* the time spent away is not a stall */
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) { if (touch_on) touch_finger(&e); continue; }
-        if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; touch_visible = 0; }
-        if (e.type == SDL_KEYDOWN) last_input_pad = 0;
+        if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; last_input_touch = 0; touch_visible = 0; }
+        if (e.type == SDL_KEYDOWN) { last_input_pad = 0; last_input_touch = 0; }
         if (e.type == SDL_CONTROLLERBUTTONDOWN && slot_open) slot_pad((SDL_GameControllerButton)e.cbutton.button);
         else if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
