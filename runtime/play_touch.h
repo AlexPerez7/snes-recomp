@@ -95,6 +95,22 @@ static int touch_hit(const TouchCfg *t, const TLayout *l, int w, int h, int px, 
     return -1;
 }
 
+/* The directions a thumb at (dx, dy) from the centre of the pad gives: nothing inside the dead circle; otherwise one of
+ * eight sectors. A diagonal needs the thumb near 45 degrees (the shorter axis at least 0.6 of the longer, so about
+ * 28 degrees wide); the rest of each quadrant is the plain direction. With each axis judged on its own, almost any
+ * touch off the centre gave a diagonal and the character walked sideways by accident. */
+static unsigned touch_pad_dirs(float dx, float dy, float dead) {
+    float ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+    unsigned d = 0;
+    int horiz = 1, vert = 1;
+    if (dx * dx + dy * dy <= dead * dead) return 0;
+    if (ay < ax * 0.6f) vert = 0;
+    else if (ax < ay * 0.6f) horiz = 0;
+    if (horiz) d |= dx < 0 ? TD_LEFT : TD_RIGHT;
+    if (vert) d |= dy < 0 ? TD_UP : TD_DOWN;
+    return d;
+}
+
 /* The state the fingers give: `ctl` has bit (1 << T_x) for each pressed control other than the pad, `dirs` the
  * directions of the pad. */
 typedef struct { unsigned ctl, dirs; } TState;
@@ -111,10 +127,9 @@ static TState touch_state(const TouchCfg *t, const TLayout *l, const TFinger *f,
             if (id >= T_SAVE && !touch_extra) continue;
             r = touch_rect(t, l, id, w, h);
             if (id == T_DPAD) {
-                float dx = (float)(px - r.cx), dy = (float)(py - r.cy), rad = r.w / 2.0f, dead = rad * 0.22f;
+                float dx = (float)(px - r.cx), dy = (float)(py - r.cy), rad = r.w / 2.0f;
                 if (sqrtf(dx * dx + dy * dy) > rad * 1.25f) continue;
-                if (dx < -dead) s.dirs |= TD_LEFT; else if (dx > dead) s.dirs |= TD_RIGHT;
-                if (dy < -dead) s.dirs |= TD_UP; else if (dy > dead) s.dirs |= TD_DOWN;
+                s.dirs |= touch_pad_dirs(dx, dy, rad * 0.22f);
             } else if (tspec[id].w == tspec[id].h) { /* round: a circle a little larger than the drawing */
                 float dx = (float)(px - r.cx), dy = (float)(py - r.cy), rad = r.w / 2.0f * 1.2f;
                 if (dx * dx + dy * dy <= rad * rad) s.ctl |= 1u << id;

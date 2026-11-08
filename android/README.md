@@ -51,7 +51,7 @@ Con el ajuste **Buscar actualizaciones al abrir** (activo por defecto; se apaga 
 
 La app sale en el idioma del teléfono (inglés por defecto y español: `res/values` y `res/values-es`) y tiene el botón del globo (arriba a la derecha, `Lang.java`) para cambiarlo; se guarda y vale también para el aviso de carga. La pantalla de inicio usa el mismo aspecto que los lanzadores de Windows y Linux (`ZeldaUi.java`: piedra verde con damero, marco dorado, Trifuerza, botones de placa). El ajuste y el botón **Buscar actualizaciones ahora** están en la pantalla de ajustes (mantener pulsado el icono › *Ajustes y actualizaciones*, o la propia pantalla de elegir ROM); abrir la app pasa siempre por el lanzador (con ROM elegida sale «Jugar» y, con el ajuste activo, el aviso de versión nueva).
 
-Para que funcione, cada release de `alttp-recomp` se etiqueta `vX.Y`, lleva el APK (`*.apk`) y `SHA256SUMS`, y la `versionName` del APK (en `app/build.gradle`, hoy `0.5` con `versionCode 5`) debe subir con ella. En depuración, un fichero `files/update_url` sustituye la dirección y un servidor local con `adb reverse` permite probar sin GitHub.
+Para que funcione, cada release de `alttp-recomp` se etiqueta `vX.Y`, lleva el APK (`*.apk`) y `SHA256SUMS`, y la `versionName` del APK (en `app/build.gradle`, hoy `0.6` con `versionCode 6`) debe subir con ella. En depuración, un fichero `files/update_url` sustituye la dirección y un servidor local con `adb reverse` permite probar sin GitHub.
 
 **Probado sin móvil:** la interpretación del `SHA256SUMS` y que el APK 0.2 lleva la misma firma que el 0.1 (Android lo acepta como actualización). **Sin probar en un teléfono:** la descarga, el permiso y el instalador; ver `tasks.md` del cambio.
 

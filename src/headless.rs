@@ -2926,6 +2926,30 @@ int main(void) {
     f[0].x = (float)r.cx / 1080; f[0].y = (float)r.cy / 2340;
     s = touch_state(&t, l, f, 1080, 2340);
     CHECK(s.dirs == 0);
+    /* the sectors: a thumb a little off the axis still gives the plain direction, only about 45 degrees gives a diagonal,
+     * and the same in all four quadrants (this was the "two directions at once by accident" of the old per-axis test) */
+    {
+        static const struct { float ang; unsigned want; } cases[] = {
+            {0, TD_RIGHT}, {15, TD_RIGHT}, {25, TD_RIGHT}, {45, TD_RIGHT | TD_DOWN}, {65, TD_DOWN}, {90, TD_DOWN},
+            {115, TD_DOWN}, {135, TD_DOWN | TD_LEFT}, {155, TD_LEFT}, {180, TD_LEFT}, {205, TD_LEFT}, {225, TD_LEFT | TD_UP},
+            {245, TD_UP}, {270, TD_UP}, {295, TD_UP}, {315, TD_UP | TD_RIGHT}, {335, TD_RIGHT}};
+        int c;
+        r = touch_rect(&t, l, T_DPAD, 1080, 2340);
+        for (c = 0; c < (int)(sizeof cases / sizeof cases[0]); c++) {
+            float rad = r.w * 0.38f, a = cases[c].ang * 3.14159265f / 180.0f;
+            int rr;
+            for (rr = 0; rr < 2; rr++) { /* near the middle and near the edge of the pad */
+                float q = rr ? rad : rad * 0.5f;
+                memset(f, 0, sizeof f);
+                f[0].active = 1; f[0].x = (r.cx + q * cosf(a)) / 1080; f[0].y = (r.cy + q * sinf(a)) / 2340;
+                s = touch_state(&t, l, f, 1080, 2340);
+                if (s.dirs != cases[c].want) printf("angle %.0f radius %d: got %u, wanted %u\n", cases[c].ang, rr, s.dirs, cases[c].want);
+                CHECK(s.dirs == cases[c].want);
+            }
+        }
+    }
+    memset(f, 0, sizeof f);
+    f[0].active = 1; f[0].x = (float)r.cx / 1080; f[0].y = (float)r.cy / 2340;
     /* two fingers: a direction and a button together; a finger that is lifted presses nothing */
     f[0].x = (float)(r.cx - r.w / 3) / 1080; f[0].y = (float)r.cy / 2340;
     r = touch_rect(&t, l, T_B, 1080, 2340);
