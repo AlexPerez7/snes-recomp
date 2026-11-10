@@ -392,7 +392,7 @@ static int play_input_label(uint16_t mask, char *out, size_t n) {
     int first = last_input_pad && pads[0] ? BIND_PAD : BIND_KEY, pass, i;
     if (touch_on && last_input_touch && n > 1) { /* the on-screen buttons are named as the console's */
         const char *t = mask == 0x0080 ? "A" : mask == 0x8000 ? "B" : mask == 0x0040 ? "X" : mask == 0x4000 ? "Y" : NULL;
-        if (t) { out[0] = t[0]; out[1] = 0; return 2; }
+        if (t) { out[0] = t[0]; out[1] = 0; return 1; } /* 1, not 2: spelled with the letters of the font; the game's own icon of the letter is not legible */
     }
     for (pass = 0; pass < 2; pass++) {
         int dev = pass ? !first : first;
