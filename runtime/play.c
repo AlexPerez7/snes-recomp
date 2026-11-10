@@ -1633,6 +1633,11 @@ static void handle_events(void) {
         if (e.type == SDL_FINGERDOWN || e.type == SDL_FINGERMOTION || e.type == SDL_FINGERUP) { if (touch_on) touch_finger(&e); continue; }
         if (e.type == SDL_CONTROLLERBUTTONDOWN) { last_input_pad = 1; last_input_touch = 0; touch_visible = 0; }
         if (e.type == SDL_KEYDOWN) { last_input_pad = 0; last_input_touch = 0; }
+        if (e.type == SDL_CONTROLLERBUTTONDOWN && !slot_open && !menu_open && (e.cbutton.button == SDL_CONTROLLER_BUTTON_LEFTSTICK || e.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK)) {
+            /* L3 + R3 (both sticks pressed): the menu, for a controller without a keyboard or the touch plates */
+            SDL_GameController *gc = SDL_GameControllerFromInstanceID(e.cbutton.which);
+            if (gc && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK) && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSTICK)) { menu_open_now(); menu_by_pad = 1; continue; }
+        }
         if (e.type == SDL_CONTROLLERBUTTONDOWN && slot_open) slot_pad((SDL_GameControllerButton)e.cbutton.button);
         else if (e.type == SDL_CONTROLLERBUTTONDOWN && menu_open) menu_pad((SDL_GameControllerButton)e.cbutton.button);
         if (e.type == SDL_KEYDOWN && !e.key.repeat) {
