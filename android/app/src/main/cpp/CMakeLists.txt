@@ -10,6 +10,7 @@ foreach(v SNES_RECOMP_DIR TINYCC_DIR SDL2_DIR SNES_GEN_LIB)
     if(NOT DEFINED ${v})
         message(FATAL_ERROR "falta ${v} (lo pasa app/build.gradle)")
     endif()
+    file(TO_CMAKE_PATH "${${v}}" ${v}) # Gradle en Windows pasa rutas con \, que CMake leería como escapes
 endforeach()
 if(NOT EXISTS ${TINYCC_DIR}/libtcc.c)
     message(FATAL_ERROR "no están las fuentes de TinyCC en ${TINYCC_DIR} (ver android/gradle.properties)")
