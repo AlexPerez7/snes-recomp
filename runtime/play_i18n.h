@@ -46,9 +46,8 @@ static const I18n i18n_table[] = {
     {"Cannot load", "No se puede cargar"}, {"Cannot read the state", "No se puede leer el estado"},
     {"Cannot write the state", "No se puede escribir el estado"},
     {"Save states are not available in this game", "Este juego no admite estados"},
-    {"an interrupt is running", "hay una interrupción en curso"},
-    {"the game is switching execution contexts", "el juego cambia de contexto"},
-    {"another execution context is running", "corre otro contexto"},
+    {"wait a moment and try again", "espera un momento y reinténtalo"},
+    {"not possible during the intro or title screen", "no se puede en la intro ni en el título"},
     {"not a state of this version", "estado de otra versión"}, {"state of another game", "estado de otro juego"},
     {"state taken at another stack depth", "estado tomado en otro punto"}, {"out of memory", "sin memoria"},
     /* the help line */

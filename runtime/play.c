@@ -2604,6 +2604,7 @@ int main(int argc, char **argv) {
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0"); /* a finger is a finger, not a mouse click */
     cfg_writable = !opt_no_window || menu_script_n > 0;
     config_load(path);
+    menu_lang_sync(); /* the toasts of the states speak the language of the game from the first frame, not from the first time the menu is opened */
     ppu_set_wide(cfg.eff.v[O_WIDE]);
     audio_music_vol = cfg.eff.v[O_MUSIC_VOLUME];
     audio_sfx_vol = cfg.eff.v[O_SFX_VOLUME];

@@ -81,10 +81,10 @@ static void state_io(StateIO *io, Cpu *c) {
  * in the game, so what is required is that no switch has happened for a while. */
 static const char *state_point_why(void) {
     int j;
-    if (cur_ctx != 0) return "another execution context is running";
-    if (in_nmi || ctxs[0].depth) return "an interrupt is running";
+    if (cur_ctx != 0) return "wait a moment and try again";
+    if (in_nmi || ctxs[0].depth) return "wait a moment and try again";
     for (j = 1; j < MAX_CTX; j++) {
-        if (ctxs[j].used && frames - ctx_last_switch < STATE_QUIET_FRAMES) return "the game is switching execution contexts";
+        if (ctxs[j].used && frames - ctx_last_switch < STATE_QUIET_FRAMES) return "not possible during the intro or title screen";
     }
     return NULL;
 }

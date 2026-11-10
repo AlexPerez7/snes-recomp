@@ -3754,7 +3754,7 @@ int main(void) {
             {"empty cell of the slot picker (a picture is 48 wide)", 44, {"EMPTY"}},
             {"button of the Controls tab", 66, {"Up", "Down", "Left", "Right"}},
             {"column header of the Controls tab", 64, {"Keyboard", "Controller"}},
-            {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "an interrupt is running", "the game is switching execution contexts", "another execution context is running", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},
+            {"toast", 240, {"State saved (slot %d)", "State loaded (slot %d)", "Slot %d", "Slot %d is empty", "Cannot save", "Cannot load", "Cannot read the state", "Cannot write the state", "Save states are not available in this game", "wait a moment and try again", "not possible during the intro or title screen", "not a state of this version", "state of another game", "state taken at another stack depth", "out of memory"}},
             {"question of the phone menu", 184, {"Quit the game?", "Restore everything to the defaults?", "Press a button of the controller", "Used by P%d %s. Replace?"}},
         };
         static const char *const tabs[] = {"Image", "Audio", "Controls", "Game", "Touch"};
