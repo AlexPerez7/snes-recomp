@@ -26,6 +26,9 @@ static const I18n i18n_table[] = {
     /* Game */
     {"Fast forward", "Avance rápido"}, {"max", "máx."}, {"Language", "Idioma"}, {"Resume", "Continuar"}, {"Save game now", "Guardar partida ahora"}, {"Restore all defaults", "Restaurar todo"},
     {"Quit", "Salir"},
+    {"Session", "Partida"}, {"Screen", "Pantalla"}, {"Sound", "Sonido"}, {"Touch controls", "Controles táctiles"}, {"Game options", "Opciones del juego"}, {"States", "Estados"},
+    {"Player", "Jugador"}, {"App settings", "Ajustes de la app"}, {"Cancel", "Cancelar"}, {"Press a button of the controller", "Pulsa un botón del mando"}, {"Used by P%d %s. Replace?", "J%d usa %s. ¿Cambiar?"},
+    {"Yes", "Sí"}, {"No", "No"}, {"Quit the game?", "¿Salir del juego?"}, {"Restore everything to the defaults?", "¿Restaurar todo?"},
     /* Touch */
     {"Touch", "Tacto"}, {"Size", "Tamaño"}, {"Opacity", "Opacidad"}, {"Vibration", "Vibración"}, {"Edit layout", "Editar disposición"},
     {"Reset layout", "Restaurar disposición"},

@@ -49,6 +49,9 @@
 #else
 #include <errno.h>
 #include <sys/stat.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 #endif
 
 static int opt_no_window, opt_fullscreen, opt_scale;
@@ -861,6 +864,15 @@ static void slot_close(void);
 static void slot_pad(SDL_GameControllerButton b);
 static int slot_tap(int px, int py, int w, int h);
 static int menu_tap(int px, int py, int w, int h);
+static void mm_open(void);                 /* the menu of the phone (touch_on): see "the menu of the phone" below */
+static void mm_key(SDL_Scancode sc);
+static void mm_draw(const uint8_t *fb);
+static int mm_tap(int cx, int cy);
+static void mm_press(int cx, int cy);   /* a finger down on the menu of the phone: the tap waits for the finger to rise, a drag scrolls */
+static void mm_drag_to(int cy);
+static void mm_release(int64_t fid);
+static int mm_dragging(int64_t fid);
+static int menu_canvas_pt(int px, int py, int w, int h, int *cx, int *cy);
 
 static TouchCfg tcfg;
 static char touch_path[1100];
@@ -1014,6 +1026,17 @@ static void touch_draw(void) {
 static void touch_finger(const SDL_Event *e) {
     int i, slot = -1, w, h, id;
     int64_t fid = (int64_t)e->tfinger.fingerId;
+    if (menu_open && !slot_open) { /* the menu of the phone: a finger that lands on it is a tap or a drag (see mm_press) */
+        int cx, cy;
+        touch_win(&w, &h);
+        if (e->type == SDL_FINGERDOWN) {
+            if (menu_canvas_pt((int)(e->tfinger.x * w), (int)(e->tfinger.y * h), w, h, &cx, &cy)) { touch_visible = 1; last_input_touch = 1; mm_press(cx, cy); mm_release(fid); return; }
+        } else if (mm_dragging(fid)) {
+            if (e->type == SDL_FINGERMOTION && menu_canvas_pt((int)(e->tfinger.x * w), (int)(e->tfinger.y * h), w, h, &cx, &cy)) mm_drag_to(cy);
+            else if (e->type == SDL_FINGERUP) mm_release(-2);
+            return;
+        }
+    }
     for (i = 0; i < TOUCH_FINGERS; i++) if (fingers[i].active && fingers[i].id == fid) slot = i;
     if (e->type == SDL_FINGERDOWN) {
         if (slot < 0) for (i = 0; i < TOUCH_FINGERS && slot < 0; i++) if (!fingers[i].active) slot = i;
@@ -1202,7 +1225,7 @@ static void menu_assign(int dev, int code) {
         int o = bind_find(binds, nbinds, dev, code);
         menu_pending.dev = dev; menu_pending.code = code; menu_pending.player = menu_player; menu_pending.button = mask;
         menu_confirm = 1;
-        snprintf(menu_msg, sizeof menu_msg, tr("Used by P%d %s: Enter replaces, Esc cancels"), binds[o].player + 1, button_name((uint16_t)binds[o].button));
+        snprintf(menu_msg, sizeof menu_msg, tr(touch_on ? "Used by P%d %s. Replace?" : "Used by P%d %s: Enter replaces, Esc cancels"), binds[o].player + 1, button_name((uint16_t)binds[o].button));
     } else {
         menu_capture = -1;
         menu_msg[0] = 0;
@@ -1242,6 +1265,7 @@ static void menu_key(SDL_Scancode sc) {
         else menu_assign(BIND_KEY, sc);
         return;
     }
+    if (touch_on) { mm_key(sc); return; }
     switch (sc) {
     case SDL_SCANCODE_UP: menu_move(-1); break;
     case SDL_SCANCODE_DOWN: menu_move(1); break;
@@ -1401,6 +1425,7 @@ static void menu_tab_span(int t, int *xo, int *wo) {
 static void menu_draw(const uint8_t *fb) {
     char val[96], line[96];
     menu_lang_sync();
+    if (touch_on) { mm_draw(fb); return; }
     int i, t, x, n = menu_count(menu_tab), s = menu_sel[menu_tab];
     const char *help;
     ui_backdrop(&cv, fb);
@@ -1473,6 +1498,367 @@ static void menu_draw(const uint8_t *fb) {
     menu_tick++;
 }
 
+/* ---- the menu of the phone ----
+ * With the on-screen controls (Android, or --touch) the menu is not the tabs of the desktop: it is a list of sections, each a page of
+ * tall rows that a finger can hit (20 of the 224 lines of the canvas, about 14 mm on a phone). Rows: an action, a value that a tap on its
+ * left or right half steps down or up, a slider (a tap on the bar sets it), or a way into another page. Back goes up a page, the cross
+ * closes. A page with more than MM_VIS rows scrolls: the pad follows the cursor, and arrows at the foot move a page for a finger. */
+enum { MM_MAIN, MM_SESSION, MM_SCREEN, MM_SOUND, MM_TOUCH, MM_PAD, MM_OPTS, MM_PAGES };
+enum { MK_ACTION, MK_VALUE, MK_SLIDER, MK_SUB, MK_TEXT }; /* MK_TEXT: the value is only shown, at the right, and a tap does the action */
+enum { MM_ROW_H = 20, MM_ROW_Y = 34, MM_VIS = 8, MM_VAL_X = 126, MM_BAR_X = 130, MM_BAR_W = 66 };
+typedef struct { const char *label; int kind; char val[64]; int pct, dimL, dimR; } MRow;
+static const char *const mm_titles[MM_PAGES] = {"OPTIONS", "Session", "Screen", "Sound", "Touch controls", "Controller", "Game options"};
+static const int mm_screen_opts[] = {O_FILTER, O_SCALING, O_WIDE, O_SCANLINES, O_FPS};
+static const char *const mm_screen_labels[] = {"Filter", "Scaling", "Wide", "Scanlines", "FPS counter"};
+static const int mm_sound_opts[] = {O_VOLUME, O_MUSIC_VOLUME, O_SFX_VOLUME};
+static const char *const mm_sound_labels[] = {"Volume", "Music volume", "Effects volume"};
+#define MM_NSCREEN ((int)(sizeof mm_screen_opts / sizeof mm_screen_opts[0]))
+static int mm_page, mm_sel[MM_PAGES], mm_scroll[MM_PAGES];
+
+/* The settings of the app (language, updates, licences, the ROM) are those of the launcher: the Android app puts it on top of the game. */
+#ifdef __ANDROID__
+static void app_settings_open(void) {
+    JNIEnv *env = (JNIEnv *)SDL_AndroidGetJNIEnv();
+    jobject act = (jobject)SDL_AndroidGetActivity();
+    jclass cls;
+    jmethodID m;
+    if (!env || !act) return;
+    cls = (*env)->GetObjectClass(env, act);
+    m = (*env)->GetMethodID(env, cls, "openSettings", "()V");
+    if (m) (*env)->CallVoidMethod(env, act, m);
+    (*env)->DeleteLocalRef(env, cls);
+    (*env)->DeleteLocalRef(env, act);
+    menu_close();
+}
+#else
+static void app_settings_open(void) {}
+#endif
+
+static void mm_open(void) {
+    mm_page = MM_MAIN;
+    memset(mm_sel, 0, sizeof mm_sel);
+    memset(mm_scroll, 0, sizeof mm_scroll);
+}
+
+/* The page the row `i` of the main page leads to (row 0 is Resume, which closes the menu), or -1 for the row that opens the settings of
+ * the app (the launcher: language, updates, licences), which exists only in the Android app. */
+static int mm_main_target(int i) {
+    int t[8], n = 0;
+    t[n++] = MM_MAIN; t[n++] = MM_SESSION; t[n++] = MM_SCREEN; t[n++] = MM_SOUND; t[n++] = MM_TOUCH; t[n++] = MM_PAD;
+    if (GOPTS > 0) t[n++] = MM_OPTS;
+    t[n++] = -1;
+    return t[i];
+}
+
+static int mm_count(int page) {
+    switch (page) {
+    case MM_MAIN:
+#ifdef __ANDROID__
+        return GOPTS > 0 ? 8 : 7;
+#else
+        return GOPTS > 0 ? 7 : 6;
+#endif
+    case MM_SESSION: return 5;
+    case MM_SCREEN: return MM_NSCREEN + 1;
+    case MM_SOUND: return 4;
+    case MM_TOUCH: return 5;
+    case MM_PAD: return 13;
+    default: return GOPTS;
+    }
+}
+
+/* What row `i` of `page` shows. */
+static void mm_row(int page, int i, MRow *r) {
+    memset(r, 0, sizeof *r);
+    r->kind = MK_ACTION;
+    switch (page) {
+    case MM_MAIN:
+        if (i == 0) r->label = "Resume";
+        else if (mm_main_target(i) < 0) r->label = "App settings";
+        else { r->label = mm_titles[mm_main_target(i)]; r->kind = MK_SUB; }
+        break;
+    case MM_PAD:
+        if (i == 0) { r->label = "Player"; r->kind = MK_VALUE; snprintf(r->val, sizeof r->val, tr("Player %d"), menu_player + 1); r->dimL = menu_player == 0; r->dimR = menu_player == 1; }
+        else {
+            r->label = btn_labels[i - 1]; r->kind = MK_TEXT;
+            bind_cell(r->val, sizeof r->val, BIND_PAD, menu_player, 0x8000 >> (i - 1));
+            if (!r->val[0]) snprintf(r->val, sizeof r->val, "-");
+        }
+        break;
+    case MM_SESSION:
+        if (i == 0) { r->label = "States"; r->kind = MK_SUB; }
+        else if (i == 1) r->label = "Save game now";
+        else if (i == 2) { r->label = "Fast forward"; r->kind = MK_VALUE; opt_label(O_FFSPEED, r->val, sizeof r->val); }
+        else r->label = i == 3 ? "Restore all defaults" : "Quit";
+        break;
+    case MM_SCREEN:
+        if (i == MM_NSCREEN) { r->label = "Restore defaults"; break; }
+        {
+            int o = mm_screen_opts[i];
+            const OptDef *d = &opt_defs[o];
+            int v = cfg.eff.v[o];
+            r->label = mm_screen_labels[i]; r->kind = MK_VALUE;
+            opt_label(o, r->val, sizeof r->val);
+            r->dimL = !d->names && v <= d->lo; r->dimR = !d->names && v >= d->hi;
+        }
+        break;
+    case MM_SOUND:
+        if (i == 3) { r->label = "Restore defaults"; break; }
+        r->label = mm_sound_labels[i]; r->kind = MK_SLIDER;
+        r->pct = cfg.eff.v[mm_sound_opts[i]];
+        snprintf(r->val, sizeof r->val, "%d", r->pct);
+        break;
+    case MM_TOUCH:
+        if (i == 0) { r->label = "Size"; r->kind = MK_VALUE; snprintf(r->val, sizeof r->val, "%d%%", tcfg.size); r->dimL = tcfg.size <= 50; r->dimR = tcfg.size >= 150; }
+        else if (i == 1) { r->label = "Opacity"; r->kind = MK_VALUE; snprintf(r->val, sizeof r->val, "%d%%", tcfg.opacity); r->dimL = tcfg.opacity <= 10; r->dimR = tcfg.opacity >= 100; }
+        else if (i == 2) { r->label = "Vibration"; r->kind = MK_VALUE; snprintf(r->val, sizeof r->val, "%s", tr(tcfg.haptic ? "On" : "Off")); }
+        else r->label = i == 3 ? "Edit layout" : "Reset layout";
+        break;
+    default:
+        gopt_init();
+        r->label = snes_game_opts[i].label; r->kind = MK_VALUE;
+        snprintf(r->val, sizeof r->val, "%s", snes_game_opts[i].names[gopt_eff[i]]);
+        break;
+    }
+}
+
+static void mm_follow(void) { /* the window of rows holds the cursor */
+    int *sc = &mm_scroll[mm_page], s = mm_sel[mm_page], n = mm_count(mm_page);
+    if (s < *sc) *sc = s;
+    if (s >= *sc + MM_VIS) *sc = s - MM_VIS + 1;
+    if (*sc > n - MM_VIS) *sc = n - MM_VIS;
+    if (*sc < 0) *sc = 0;
+}
+
+static void mm_move(int d) {
+    int n = mm_count(mm_page);
+    mm_sel[mm_page] = (mm_sel[mm_page] + d + n) % n;
+    menu_msg[0] = 0;
+    mm_follow();
+}
+
+static void mm_back(void) {
+    if (mm_page == MM_MAIN) menu_close();
+    else { mm_page = MM_MAIN; menu_msg[0] = 0; }
+}
+
+/* Left or right on row `i` (dir -1 or +1), or a tap or Enter on it (dir 0: the rows that do something; a value steps up). */
+static void mm_change(int page, int i, int dir) {
+    menu_msg[0] = 0;
+    switch (page) {
+    case MM_MAIN:
+        if (dir < 0) break;
+        if (i == 0) menu_close();
+        else if (mm_main_target(i) < 0) app_settings_open();
+        else { mm_page = mm_main_target(i); mm_follow(); }
+        break;
+    case MM_PAD:
+        if (i == 0) menu_player = (menu_player + (dir ? dir : 1) + 2) % 2;
+        else if (dir == 0) { menu_capture = i - 1; menu_msg[0] = 0; }
+        break;
+    case MM_SESSION:
+        if (i == 2) opt_change(O_FFSPEED, dir ? dir : 1);
+        else if (dir < 0) break;
+        else if (i == 0) { menu_close(); slot_open_now(); }
+        else if (i == 1) { srm_save(); snprintf(menu_msg, sizeof menu_msg, tr("Saved game written")); }
+        else menu_ask = i == 3 ? ASK_RESTORE : ASK_QUIT;
+        break;
+    case MM_SCREEN:
+        if (i == MM_NSCREEN) { if (dir == 0) restore_image(); }
+        else opt_change(mm_screen_opts[i], dir ? dir : 1);
+        break;
+    case MM_SOUND:
+        if (i == 3) { if (dir == 0) restore_audio(); }
+        else if (dir) opt_change(mm_sound_opts[i], dir);
+        break;
+    case MM_TOUCH:
+        touch_menu_change(i, dir);
+        break;
+    default:
+        {
+            const GameOptDef *d = &snes_game_opts[i];
+            gopt_init();
+            gopt_set_user(i, (gopt_eff[i] + (dir ? dir : 1) + d->n) % d->n);
+        }
+        break;
+    }
+}
+
+/* A key (or a controller button, which menu_pad turns into one) on the menu of the phone. */
+static void mm_key(SDL_Scancode sc) {
+    if (menu_ask) {
+        if (sc == SDL_SCANCODE_RETURN) {
+            int what = menu_ask;
+            menu_ask = ASK_NONE;
+            if (what == ASK_QUIT) stop(0, "quit from the menu");
+            else restore_all();
+        } else if (sc == SDL_SCANCODE_ESCAPE) menu_ask = ASK_NONE;
+        return;
+    }
+    switch (sc) {
+    case SDL_SCANCODE_UP: mm_move(-1); break;
+    case SDL_SCANCODE_DOWN: mm_move(1); break;
+    case SDL_SCANCODE_LEFT: mm_change(mm_page, mm_sel[mm_page], -1); break;
+    case SDL_SCANCODE_RIGHT: mm_change(mm_page, mm_sel[mm_page], 1); break;
+    case SDL_SCANCODE_RETURN: mm_change(mm_page, mm_sel[mm_page], 0); break;
+    case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F1: mm_back(); break;
+    default: break;
+    }
+}
+
+/* A raised button of the panel. */
+static void mm_button(int x, int y, int w, int h, uint32_t fill) {
+    cv_rect(&cv, x, y, w, h, fill);
+    cv_rect(&cv, x, y, w, 1, 0xE8ECFAu);
+    cv_rect(&cv, x, y + h - 1, w, 1, 0x0A0E30u);
+}
+
+static void mm_cross(int cx, int cy, uint32_t rgb) { /* the close mark: an x of 7 by 7 */
+    int k;
+    for (k = 0; k < 7; k++) { cv_put(&cv, cx - 3 + k, cy - 3 + k, rgb); cv_put(&cv, cx - 3 + k, cy + 3 - k, rgb); cv_put(&cv, cx - 2 + k, cy - 3 + k, rgb); cv_put(&cv, cx - 2 + k, cy + 3 - k, rgb); }
+}
+
+static void mm_draw(const uint8_t *fb) {
+    char fit[96];
+    int i, n = mm_count(mm_page), s = mm_sel[mm_page], first = mm_scroll[mm_page];
+    const char *title = tr(mm_titles[mm_page]);
+    ui_backdrop(&cv, fb);
+    ui_panel(&cv, PX, PY, PW, PH);
+    if (text_w2x(title) <= PW - 80) text_draw2x(&cv, PX + (PW - text_w2x(title)) / 2, PY + 7, title, UI_GOLD, UI_SHADOW);
+    else text_center(&cv, PX, PW, PY + 10, title, UI_GOLD);
+    if (mm_page != MM_MAIN) { mm_button(PX + 8, PY + 5, 26, 17, 0x4A64C8u); ui_arrow(&cv, PX + 19, PY + 10, -1, UI_TEXT); }
+    mm_button(PX + PW - 34, PY + 5, 26, 17, 0x4A64C8u);
+    mm_cross(PX + PW - 21, PY + 13, UI_TEXT);
+    ui_rule(&cv, PX + 10, PY + 25, PW - 20);
+    for (i = first; i < n && i < first + MM_VIS; i++) {
+        MRow r;
+        int on = i == s, y = MM_ROW_Y + (i - first) * MM_ROW_H, ty = y + 6;
+        mm_row(mm_page, i, &r);
+        cv_rect(&cv, ROW_X, y, ROW_W, MM_ROW_H - 2, on ? 0x34489Cu : 0x1A2670u);
+        text_fit(fit, sizeof fit, tr(r.label), r.kind == MK_ACTION || r.kind == MK_SUB ? ROW_W - 30 : r.kind == MK_TEXT ? 100 : MM_VAL_X - ROW_X - 14);
+        text_draw(&cv, ROW_X + 8, ty, fit, on ? UI_GOLD : UI_TEXT, 1);
+        if (r.kind == MK_VALUE) {
+            text_fit(fit, sizeof fit, tr(r.val), 84);
+            ui_arrow(&cv, MM_VAL_X, ty, -1, r.dimL ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
+            text_center(&cv, MM_VAL_X + 6, 88, ty, fit, on ? UI_GOOD : UI_TEXT);
+            ui_arrow(&cv, ROW_X + ROW_W - 8, ty, 1, r.dimR ? 0x4A5688u : (on ? UI_TEXT : UI_DIM));
+        } else if (r.kind == MK_SLIDER) {
+            ui_bar(&cv, MM_BAR_X, y + 6, MM_BAR_W, 7, r.pct);
+            text_right(&cv, ROW_X + ROW_W - 6, ty, r.val, on ? UI_GOOD : UI_TEXT);
+        } else if (r.kind == MK_TEXT) {
+            text_fit(fit, sizeof fit, r.val, 100);
+            text_right(&cv, ROW_X + ROW_W - 8, ty, fit, r.val[0] == '-' && !r.val[1] ? UI_DIM : (on ? UI_GOOD : UI_TEXT));
+        } else if (r.kind == MK_SUB) ui_arrow(&cv, ROW_X + ROW_W - 12, ty, 1, on ? UI_TEXT : UI_DIM);
+    }
+    if (n > MM_VIS) { /* the arrows of the foot and where the window is */
+        int bar_h = (PH - 66) * MM_VIS / n, bar_y = MM_ROW_Y + (PH - 66 - bar_h) * first / (n - MM_VIS);
+        cv_rect(&cv, PX + PW - 7, bar_y, 2, bar_h, UI_DIM);
+        mm_button(ROW_X, MM_ROW_Y + MM_VIS * MM_ROW_H + 1, 34, 14, 0x2A3A90u);
+        mm_button(ROW_X + ROW_W - 34, MM_ROW_Y + MM_VIS * MM_ROW_H + 1, 34, 14, 0x2A3A90u);
+        for (i = 0; i < 4; i++) { /* a small triangle up on the left, down on the right */
+            cv_rect(&cv, ROW_X + 17 - i, MM_ROW_Y + MM_VIS * MM_ROW_H + 4 + i, 1 + 2 * i, 1, first > 0 ? UI_TEXT : 0x4A5688u);
+            cv_rect(&cv, ROW_X + ROW_W - 17 - i, MM_ROW_Y + MM_VIS * MM_ROW_H + 11 - i, 1 + 2 * i, 1, first + MM_VIS < n ? UI_TEXT : 0x4A5688u);
+        }
+    }
+    if (menu_msg[0] && !menu_confirm) { text_fit(fit, sizeof fit, menu_msg, ROW_W - 80); text_center(&cv, ROW_X + 38, ROW_W - 76, MM_ROW_Y + MM_VIS * MM_ROW_H + 5, fit, UI_WARN); }
+    if (menu_ask || menu_confirm || menu_capture >= 0) { /* the question over everything: two buttons, or one to cancel the wait for a button */
+        const char *q = menu_capture >= 0 && !menu_confirm ? tr("Press a button of the controller") : menu_confirm ? menu_msg
+            : tr(menu_ask == ASK_QUIT ? "Quit the game?" : "Restore everything to the defaults?");
+        ui_panel(&cv, 28, 74, 200, 76);
+        text_fit(fit, sizeof fit, q, 184);
+        text_center(&cv, 28, 200, 90, fit, UI_TEXT);
+        if (menu_capture >= 0 && !menu_confirm) {
+            mm_button(92, 112, 72, 24, 0xA03C3Cu);
+            text_center(&cv, 92, 72, 120, tr("Cancel"), UI_TEXT);
+        } else {
+            mm_button(44, 112, 72, 24, 0x3C8C40u);
+            text_center(&cv, 44, 72, 120, tr("Yes"), UI_TEXT);
+            mm_button(140, 112, 72, 24, 0xA03C3Cu);
+            text_center(&cv, 140, 72, 120, tr("No"), UI_TEXT);
+        }
+    }
+    menu_tick++;
+}
+
+/* A finger down on the menu of the phone, at (cx, cy) of the 256x224 canvas (-1, -1 outside the picture). */
+static int mm_tap(int cx, int cy) {
+    int n = mm_count(mm_page), i;
+    MRow r;
+    if (menu_ask || menu_confirm || menu_capture >= 0) { /* the buttons of the question; a tap anywhere else says no (or cancels the wait) */
+        menu_key(menu_capture >= 0 && !menu_confirm ? SDL_SCANCODE_ESCAPE : cx >= 44 && cx < 116 && cy >= 112 && cy < 136 ? SDL_SCANCODE_RETURN : SDL_SCANCODE_ESCAPE);
+        return 1;
+    }
+    if (cx < PX || cx >= PX + PW || cy < PY || cy >= PY + PH) { menu_close(); return 1; }
+    if (cy < PY + 26) { /* the bar of the title: back at the left, the cross at the right */
+        if (cx >= PX + PW - 38) menu_close();
+        else if (mm_page != MM_MAIN && cx < PX + 38) mm_back();
+        return 1;
+    }
+    if (cy < MM_ROW_Y) return 1;
+    if (cy >= MM_ROW_Y + MM_VIS * MM_ROW_H) { /* the foot: a page up (left) or down (right) when the list is longer than the window */
+        if (n > MM_VIS) {
+            int *sc = &mm_scroll[mm_page];
+            *sc += cx < PX + PW / 2 ? -(MM_VIS - 1) : MM_VIS - 1;
+            if (*sc > n - MM_VIS) *sc = n - MM_VIS;
+            if (*sc < 0) *sc = 0;
+            if (mm_sel[mm_page] < *sc) mm_sel[mm_page] = *sc;
+            if (mm_sel[mm_page] >= *sc + MM_VIS) mm_sel[mm_page] = *sc + MM_VIS - 1;
+        }
+        return 1;
+    }
+    i = mm_scroll[mm_page] + (cy - MM_ROW_Y) / MM_ROW_H;
+    if (cx < ROW_X || cx >= ROW_X + ROW_W || i >= n) return 1;
+    mm_sel[mm_page] = i;
+    menu_msg[0] = 0;
+    mm_row(mm_page, i, &r);
+    if (r.kind == MK_VALUE && cx >= MM_VAL_X) mm_change(mm_page, i, cx < MM_VAL_X + 52 ? -1 : 1);
+    else if (r.kind == MK_SLIDER) {
+        if (cx >= MM_BAR_X - 2 && cx < MM_BAR_X + MM_BAR_W + 2) { /* the bar sets the value where it is touched, in steps of 5 */
+            int v = (cx - MM_BAR_X) * 100 / (MM_BAR_W - 1);
+            v = (v + 2) / 5 * 5;
+            if (v < 0) v = 0;
+            if (v > 100) v = 100;
+            config_user_set(&cfg, mm_sound_opts[i], v);
+            apply_option(mm_sound_opts[i]);
+        }
+    } else mm_change(mm_page, i, 0);
+    return 1;
+}
+
+/* A finger on the list: it scrolls the page when it moves (more than 3 pixels of the picture), and a finger that rises without having
+ * moved is a tap where it landed. Only one finger drives the menu. */
+static int64_t mm_fid = -1;
+static int mm_down, mm_cx0, mm_cy0, mm_sc0, mm_moved;
+
+static int mm_dragging(int64_t fid) { return mm_down && (fid < 0 || fid == mm_fid); }
+
+static void mm_press(int cx, int cy) {
+    menu_by_pad = 1;
+    menu_lang_sync();
+    mm_down = 1; mm_cx0 = cx; mm_cy0 = cy; mm_sc0 = mm_scroll[mm_page]; mm_moved = 0;
+}
+
+static void mm_drag_to(int cy) {
+    int n = mm_count(mm_page), sc;
+    if (menu_ask || menu_confirm || menu_capture >= 0) return;
+    if (!mm_moved && (cy - mm_cy0 < 4 && mm_cy0 - cy < 4)) return;
+    mm_moved = 1;
+    if (n <= MM_VIS || mm_cy0 < MM_ROW_Y || mm_cy0 >= MM_ROW_Y + MM_VIS * MM_ROW_H) return;
+    sc = mm_sc0 + (mm_cy0 - cy + (mm_cy0 > cy ? MM_ROW_H / 2 : -MM_ROW_H / 2)) / MM_ROW_H;
+    if (sc > n - MM_VIS) sc = n - MM_VIS;
+    if (sc < 0) sc = 0;
+    mm_scroll[mm_page] = sc;
+    if (mm_sel[mm_page] < sc) mm_sel[mm_page] = sc;
+    if (mm_sel[mm_page] >= sc + MM_VIS) mm_sel[mm_page] = sc + MM_VIS - 1;
+}
+
+/* The finger rose (fid -2) or it was only noted down (the id is kept: the first call after mm_press passes it). */
+static void mm_release(int64_t fid) {
+    if (fid >= 0) { mm_fid = fid; return; }
+    mm_down = 0;
+    if (!mm_moved) mm_tap(mm_cx0, mm_cy0);
+}
+
 /* The frames per second, counted over a second of frames, for the `fps` option. */
 static int fps_val, fps_n;
 static uint64_t fps_t0;
@@ -1526,6 +1912,22 @@ static int menu_row_has_value(int i) {
  * the tap was the menu's (0 when it is on one of the on-screen controls, which keep working). */
 static int menu_tap_canvas(int cx, int cy);
 
+/* Where the window point (px, py) is on the 256x224 picture of the menu (-1, -1 outside it); 0 when it is on a control of the screen. */
+static int menu_canvas_pt(int px, int py, int w, int h, int *cxo, int *cyo) {
+    int lines = view_lines(), e = (show_w - SCREEN_W) / 2, cx, cy;
+    Rect r;
+    if (touch_hit(&tcfg, touch_layout(&tcfg, w, h), w, h, px, py) >= 0) return 0;
+    r = view_rect(w, h, cfg.eff.v[O_ASPECT], cfg.eff.v[O_SCALING], lines, show_w);
+    touch_place(&r, w, h);
+    if (px < r.x || py < r.y || px >= r.x + r.w || py >= r.y + r.h) { cx = cy = -1; }
+    else {
+        cx = (int)((long)(px - r.x) * show_w / r.w) - e;
+        cy = (int)((long)(py - r.y) * lines / r.h) + cfg.eff.v[O_OVERSCAN];
+    }
+    *cxo = cx; *cyo = cy;
+    return 1;
+}
+
 static int menu_tap(int px, int py, int w, int h) {
     int lines = view_lines(), e = (show_w - SCREEN_W) / 2, cx, cy;
     Rect r;
@@ -1545,6 +1947,7 @@ static int menu_tap_canvas(int cx, int cy) {
     int i, n, x, tw;
     menu_by_pad = 1; /* the help line speaks of buttons, the right words for a finger too */
     menu_lang_sync();
+    if (touch_on) return mm_tap(cx, cy);
     if (menu_confirm || menu_ask || menu_capture >= 0) {
         int on_notice = cx >= PX && cx < PX + PW && cy >= PY + PH - 30 && cy < PY + PH - 17;
         menu_key(on_notice && menu_capture < 0 ? SDL_SCANCODE_RETURN : SDL_SCANCODE_ESCAPE);
@@ -1604,6 +2007,7 @@ static const uint8_t *shown_frame(void) {
 
 static void menu_open_now(void) {
     menu_open = 1; menu_capture = -1; menu_confirm = 0; menu_ask = ASK_NONE; menu_msg[0] = 0; menu_tick = 0;
+    mm_open();
 }
 
 /* Any key: Esc or F1 opens the menu; with the menu open, the keys drive it (Esc and F1 close it). */

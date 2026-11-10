@@ -67,6 +67,11 @@ public class GameActivity extends SDLActivity {
         });
     }
 
+    /** Lo llama el menu del juego (play.c, «Ajustes de la app»): el lanzador (idioma, actualizaciones, licencias, ROM) encima del juego. */
+    public void openSettings() {
+        runOnUiThread(() -> startActivity(new android.content.Intent(this, LauncherActivity.class)));
+    }
+
     @Override
     protected void attachBaseContext(android.content.Context base) {
         super.attachBaseContext(Lang.wrap(base));
