@@ -98,7 +98,7 @@ tasks.register('gameAssets', Sync) {
         // Android no lista carpetas de assets con rutas de ficheros: un índice para copiarlos.
         def root = gameAssets.get().asFile
         def lines = []
-        root.eachFileRecurse { f -> if (f.isFile() && f.name != 'index.txt') lines << root.toPath().relativize(f.toPath()).toString() }
+        root.eachFileRecurse { f -> if (f.isFile() && f.name != 'index.txt') lines << root.toPath().relativize(f.toPath()).toString().replace('\\', '/') }
         new File(root, 'index.txt').text = lines.sort().join('\n') + '\n'
     }
 }
