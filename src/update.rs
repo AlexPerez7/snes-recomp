@@ -427,9 +427,9 @@ mod tests {
     fn info_needs_a_repo_and_a_version() {
         let d = tmp("info");
         assert!(read_info(&d).is_none());
-        std::fs::write(d.join("update.info"), "repo=AlexPerez7/alttp-recomp\nversion=0.1\n").unwrap();
+        std::fs::write(d.join("update.info"), "repo=AlekayDevs/alttp-recomp\nversion=0.1\n").unwrap();
         let i = read_info(&d).unwrap();
-        assert_eq!((i.repo.as_str(), i.version.as_str()), ("AlexPerez7/alttp-recomp", "0.1"));
+        assert_eq!((i.repo.as_str(), i.version.as_str()), ("AlekayDevs/alttp-recomp", "0.1"));
         std::fs::write(d.join("update.info"), "repo=oops\nversion=0.1\n").unwrap();
         assert!(read_info(&d).is_none());
     }

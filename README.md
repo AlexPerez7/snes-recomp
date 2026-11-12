@@ -4,7 +4,7 @@ Recompilador estático de ROMs de SNES (CPU 65816) escrito en Rust desde cero. T
 
 > **Aviso legal.** Este repositorio no contiene ninguna ROM ni recurso de ningún juego, ni lo tendrá. Cada usuario debe aportar su propia copia obtenida legalmente. El C generado deriva de la ROM, así que va a `out/` (ignorado por git) y no debe subirse ni distribuirse. Proyecto independiente, sin relación con Nintendo ni con ningún titular de derechos de los juegos.
 
-Este repositorio es el **motor**: recompilador, runtime y `snes-port`. No incrusta ningún juego; cada juego es un *perfil* (`games/<id>.toml` y, si lo necesita, C propio) que vive en su propio repositorio. El primero es *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`): [`alttp-recomp`](https://github.com/AlexPerez7/alttp-recomp), que ya se juega en una ventana con imagen, sonido, teclado/mando y partidas guardadas.
+Este repositorio es el **motor**: recompilador, runtime y `snes-port`. No incrusta ningún juego; cada juego es un *perfil* (`games/<id>.toml` y, si lo necesita, C propio) que vive en su propio repositorio. El primero es *The Legend of Zelda: A Link to the Past* (USA, CRC32 `777AAC2F`): [`alttp-recomp`](https://github.com/AlekayDevs/alttp-recomp), que ya se juega en una ventana con imagen, sonido, teclado/mando y partidas guardadas.
 
 Licencia: [MIT](LICENSE) (solo el código de este repositorio; no da derechos sobre ningún juego). Para contribuir, mira [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -14,8 +14,8 @@ Cada juego vive en su propio repositorio (perfil, C propio y paquete jugable en 
 
 | Juego | Repositorio | Estado |
 |---|---|---|
-| *The Legend of Zelda: A Link to the Past* (USA) | [alttp-recomp](https://github.com/AlexPerez7/alttp-recomp) | jugable, con mejoras y traducción al español |
-| *Donkey Kong Country 2: Diddy's Kong Quest* (USA, Rev 1) | [dkc2-recomp](https://github.com/AlexPerez7/dkc2-recomp) | solo la base; falta el mapeo HiROM del motor y el perfil |
+| *The Legend of Zelda: A Link to the Past* (USA) | [alttp-recomp](https://github.com/AlekayDevs/alttp-recomp) | jugable, con mejoras y traducción al español |
+| *Donkey Kong Country 2: Diddy's Kong Quest* (USA, Rev 1) | [dkc2-recomp](https://github.com/AlekayDevs/dkc2-recomp) | solo la base; falta el mapeo HiROM del motor y el perfil |
 
 ## Cómo funciona
 
