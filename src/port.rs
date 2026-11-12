@@ -380,6 +380,9 @@ fn compile(compiler: &Compiler, dir: &Path, sdl: &Path, fast: bool) -> Result<()
 
 const WINDOW: usize = 32;
 const MIN_DISTINCT: usize = 8;
+/// A window whose step changes this many times or fewer, at any stride, is a ramp that one or two bytes bend (a
+/// clamped end: `00 02 04 ... FC FF`, the colour-scaling table of any graphics library) and carries no information.
+const MAX_BENDS: usize = 2;
 
 fn window_hashes(data: &[u8], mut each: impl FnMut(usize, u64)) {
     const B: u64 = 0x100_0000_01B3;
@@ -394,7 +397,8 @@ fn window_hashes(data: &[u8], mut each: impl FnMut(usize, u64)) {
     let mut counts = [0u16; 256];
     let mut distinct = 0usize;
     // For each stride (1: bytes, 2: 16-bit words, 4: 32-bit words): how many times the step between the values of
-    // a position changes inside the window. 0 for some stride means a run or a ramp (`8A 8B 8C ...`, `00 3F 00 40 ...`).
+    // a position changes inside the window. Up to `MAX_BENDS` for some stride means a run or a ramp, perhaps clamped at an
+    // end (`8A 8B 8C ...`, `00 3F 00 40 ...`, `00 02 04 ... FC FF`).
     const STRIDES: [usize; 3] = [1, 2, 4];
     let bend = |k: usize, s: usize| (k >= 2 * s && data[k].wrapping_sub(data[k - s]) != data[k - s].wrapping_sub(data[k - 2 * s])) as usize;
     let mut bends = [0usize; 3];
@@ -418,7 +422,7 @@ fn window_hashes(data: &[u8], mut each: impl FnMut(usize, u64)) {
             distinct += 1;
         }
         counts[b as usize] += 1;
-        if i + 1 >= WINDOW && distinct >= MIN_DISTINCT && bends.iter().all(|&n| n > 0) {
+        if i + 1 >= WINDOW && distinct >= MIN_DISTINCT && bends.iter().all(|&n| n > MAX_BENDS) {
             each(i + 1 - WINDOW, h);
         }
     }
@@ -426,7 +430,8 @@ fn window_hashes(data: &[u8], mut each: impl FnMut(usize, u64)) {
 
 /// An index of the windows of 32 consecutive bytes of the ROM. Windows that carry no information are left out:
 /// those with fewer than 8 different values (runs of padding) and those that are a ramp of bytes or of 16 or 32-bit
-/// words (`8A 8B 8C ...`), which any program holds as a table.
+/// words (`8A 8B 8C ...`), even with a byte or two out of line at an end (`00 02 04 ... FC FF`), which any program
+/// holds as a table.
 pub struct RomIndex<'a> {
     rom: &'a [u8],
     windows: HashMap<u64, Vec<usize>>,
@@ -961,6 +966,14 @@ mod tests {
         }
         std::fs::write(dir.join("table.c"), (0..64u8).map(|i| 0x80u8.wrapping_add(i)).collect::<Vec<u8>>()).unwrap();
         assert!(find_rom_bytes(&ramp_rom, &dir).is_none());
+        // nor is a ramp with its last byte clamped (`00 02 ... FC FF`, as in SDL2.dll): the scan must not stop on it
+        let clamped: Vec<u8> = (0..31u8).map(|i| i * 2).chain(std::iter::once(0xFF)).collect();
+        let mut clamp_rom = fake_rom();
+        clamp_rom[0x3000..0x3000 + 32].copy_from_slice(&clamped);
+        let mut in_file = vec![9u8, 9, 9];
+        in_file.extend_from_slice(&clamped);
+        std::fs::write(dir.join("table.c"), &in_file).unwrap();
+        assert!(find_rom_bytes(&clamp_rom, &dir).is_none());
         // 31 bytes are not enough
         std::fs::write(dir.join("table.c"), &with[..34]).unwrap();
         assert!(find_rom_bytes(&rom, &dir).is_none());
