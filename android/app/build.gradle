@@ -12,7 +12,7 @@ def gameAssets = layout.buildDirectory.dir('generated/gameAssets')
 def gameRes = new File(profile.parentFile, (profile.name - '.toml') + '/android/res')
 
 android {
-    namespace 'io.github.alexperez7.snesport'
+    namespace 'io.github.alekaydevs.snesport'
     compileSdk 35
     ndkVersion '27.2.12479018'
 

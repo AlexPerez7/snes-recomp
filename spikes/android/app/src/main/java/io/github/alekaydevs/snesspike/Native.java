@@ -1,4 +1,4 @@
-package io.github.alexperez7.snesspike;
+package io.github.alekaydevs.snesspike;
 
 /** Lo nativo de la prueba (app/src/main/cpp/spike_jni.c). */
 public final class Native {

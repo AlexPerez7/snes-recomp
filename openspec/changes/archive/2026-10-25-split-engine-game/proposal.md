@@ -28,5 +28,5 @@ El proyecto ya tiene una frontera clara entre el motor (recompilador, runtime y 
 
 - `src/games.rs` (sin perfiles incrustados, búsqueda en carpetas), `src/port.rs`, `src/main.rs` (`load_config` usa el catálogo; subcomando `scan`), pruebas que usan la ROM real en `src/codegen.rs`, `src/headless.rs`, `src/port.rs` y `src/config.rs`.
 - `scripts/release.ps1` (el zip del motor ya no lleva `games/`), `.gitignore`, `README.md`, `CLAUDE.md`, nuevos `LICENSE` y `CONTRIBUTING.md`.
-- Fuera del repo: crear `AlexPerez7/alttp-recomp`, cambiar la visibilidad de `AlexPerez7/snes-recomp`, descripción y temas de ambos.
+- Fuera del repo: crear `AlekayDevs/alttp-recomp`, cambiar la visibilidad de `AlekayDevs/snes-recomp`, descripción y temas de ambos.
 - Sin dependencias nuevas. El historial publicado lleva el nombre y el correo reales de los commits.

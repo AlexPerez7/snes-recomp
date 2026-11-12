@@ -1,4 +1,4 @@
-package io.github.alexperez7.snesport;
+package io.github.alekaydevs.snesport;
 
 import android.content.res.AssetManager;
 import android.graphics.Color;

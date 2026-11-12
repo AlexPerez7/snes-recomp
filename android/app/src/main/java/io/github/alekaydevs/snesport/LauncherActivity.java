@@ -1,4 +1,4 @@
-package io.github.alexperez7.snesport;
+package io.github.alekaydevs.snesport;
 
 import android.app.Activity;
 import android.app.AlertDialog;
@@ -32,7 +32,7 @@ public class LauncherActivity extends Activity {
     private static final int PICK_ROM = 1;
     private TextView message;
 
-    private static final String ACTION_SETTINGS = "io.github.alexperez7.snesport.SETTINGS";
+    private static final String ACTION_SETTINGS = "io.github.alekaydevs.snesport.SETTINGS";
     private boolean started;
 
     @Override

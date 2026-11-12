@@ -1,4 +1,4 @@
-package io.github.alexperez7.snesspike;
+package io.github.alekaydevs.snesspike;
 
 import android.app.Activity;
 import android.os.Bundle;

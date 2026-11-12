@@ -10,12 +10,12 @@ def profile = rootProject.file(providers.gradleProperty('snesSpike.gameProfile')
 def spikeAssets = layout.buildDirectory.dir('generated/spikeAssets')
 
 android {
-    namespace 'io.github.alexperez7.snesspike'
+    namespace 'io.github.alekaydevs.snesspike'
     compileSdk 35
     ndkVersion '27.2.12479018'
 
     defaultConfig {
-        applicationId 'io.github.alexperez7.snesspike'
+        applicationId 'io.github.alekaydevs.snesspike'
         minSdk 29
         targetSdk 35
         versionCode 1

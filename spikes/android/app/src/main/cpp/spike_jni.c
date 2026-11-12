@@ -71,7 +71,7 @@ static int write_text(const char *path, const char *text) {
 
 /* ---- Generación ---- */
 
-JNIEXPORT jstring JNICALL Java_io_github_alexperez7_snesspike_Native_generate(JNIEnv *env, jclass cls, jbyteArray rom,
+JNIEXPORT jstring JNICALL Java_io_github_alekaydevs_snesspike_Native_generate(JNIEnv *env, jclass cls, jbyteArray rom,
         jstring toml, jobjectArray names, jobjectArray texts, jstring out_dir) {
     jsize n = (*env)->GetArrayLength(env, names), i;
     const char **cn = calloc((size_t)n + 1, sizeof *cn), **ct = calloc((size_t)n + 1, sizeof *ct);
@@ -201,7 +201,7 @@ static int add_dir(TCCState *s, const char *dir) {
 
 /* mode 0: en memoria (tcc_relocate). mode 1 (plan B): tcc escribe <salida>/game.so y se carga con dlopen.
  * cpu >= 0 fija el hilo (y los que cree) a ese núcleo. No vuelve si la ejecución empieza: termina con exit. */
-JNIEXPORT jstring JNICALL Java_io_github_alexperez7_snesspike_Native_bench(JNIEnv *env, jclass cls, jstring src_dir,
+JNIEXPORT jstring JNICALL Java_io_github_alekaydevs_snesspike_Native_bench(JNIEnv *env, jclass cls, jstring src_dir,
         jstring tcc_include, jstring lib_dir, jstring rom_path, jint frames, jint cpu, jint mode, jstring out_dir) {
     const char *src = (*env)->GetStringUTFChars(env, src_dir, NULL);
     const char *inc = (*env)->GetStringUTFChars(env, tcc_include, NULL);
