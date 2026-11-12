@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security problem / Problema de seguridad
+    url: https://github.com/AlekayDevs/snes-recomp/security/advisories/new
+    about: Report it privately, not as a public issue.
+  - name: Problem in A Link to the Past / Problema en el juego
+    url: https://github.com/AlekayDevs/alttp-recomp/issues/new/choose
+    about: Game, translation and quality-of-life options go to alttp-recomp.

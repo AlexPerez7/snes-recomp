@@ -1,0 +1,38 @@
+name: Engine bug / Fallo del motor
+description: The translator, PPU, sound, runtime, launcher or Android app misbehaves. / Fallo del traductor, la PPU, el sonido, el runtime, el lanzador o la app de Android.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never attach a ROM, saves, save states, dumps or screenshots with a game's graphics.** Describe it in words. / Nunca adjuntes ROMs, partidas, estados, volcados ni capturas con gráficos de un juego.
+  - type: input
+    id: version
+    attributes:
+      label: Version / Versión
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System / Sistema
+      options: [Windows, Linux, Android]
+    validations:
+      required: true
+  - type: input
+    id: game
+    attributes:
+      label: Game and ROM CRC32 / Juego y CRC32
+      placeholder: A Link to the Past, 777AAC2F
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / Qué ocurrió
+      description: What you did, what you expected, what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log or error text / Registro o mensaje
+      render: text
